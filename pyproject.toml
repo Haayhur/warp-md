@@ -1,0 +1,47 @@
+[build-system]
+requires = ["maturin>=1.4"]
+build-backend = "maturin"
+
+[project]
+name = "warp-md"
+version = "0.1.5"
+description = "warp-md Python bindings"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+cli = ["PyYAML"]
+gist = ["openmm"]
+
+[project.scripts]
+warp-md = "warp_md.cli:main"
+
+[tool.maturin]
+manifest-path = "crates/traj-py/Cargo.toml"
+module-name = "warp_md.traj_py"
+python-source = "python"
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+    "crates/**",
+    "python/**",
+    "scripts/**",
+    "docs/**",
+    "MANIFEST.in",
+]
+sdist-include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+    "crates/**",
+    "python/**",
+    "scripts/**",
+    "docs/**",
+    "MANIFEST.in",
+]

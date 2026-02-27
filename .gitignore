@@ -1,0 +1,74 @@
+# Rust build artifacts
+/target/
+*.rlib
+*.rmeta
+*.d
+
+# CUDA / native build artifacts
+*.ptx
+*.cubin
+*.fatbin
+*.o
+*.obj
+
+# Python build/test artifacts
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.dylib
+*.dll
+*.egg-info/
+/dist/
+/build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+*venv*/
+.agent/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local/private coordination docs
+AGENTS.md
+
+# Local scratch artifacts
+tmp/
+oracle_review.tar.gz
+gpu_result.md
+external_reader*.md
+crates/*/cargo_errors.txt
+
+# Generated runtime outputs
+results/
+outputs/
+internal/validation/runs/
+
+# Public-snapshot exclusions
+examples/
+internal/
+manuscript/
+validation/
+notebooks/validation/
+scripts/
+benchmark.py
+benchmark_extended.py
+run_real_benchmark.py
+test_benchmark.py
+test_simple_benchmark.py
+
+# Bytecode noise from benchmark runs
+*.pyc
+
+# Notebook artifacts (internal-only)
+*.ipynb

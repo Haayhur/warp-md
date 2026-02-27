@@ -1,0 +1,8 @@
+# Space-level variables for warp-md documentation
+# Reference with: <code class="expression">space.vars.variable_name</code>
+
+version: "0.1.0"
+python_version: "3.9+"
+rust_version: "1.70+"
+default_device: "auto"
+repo_url: "https://github.com/your-org/warp-md"

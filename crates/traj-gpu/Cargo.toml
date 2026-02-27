@@ -1,0 +1,13 @@
+[package]
+name = "traj-gpu"
+version = "0.1.5"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+traj-core = { path = "../traj-core" }
+traj-kernels = { path = "../traj-kernels" }
+cudarc = { version = "0.19", optional = true, features = ["driver", "nvrtc", "cuda-12040"] }
+
+[features]
+cuda = ["cudarc"]

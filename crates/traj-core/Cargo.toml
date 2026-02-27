@@ -1,0 +1,13 @@
+[package]
+name = "traj-core"
+version = "0.1.5"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+rand = "0.8.5"
+serde = { version = "1.0.197", features = ["derive"] }
+nalgebra = "0.32"
+fxhash = "0.2"
+
+[dev-dependencies]

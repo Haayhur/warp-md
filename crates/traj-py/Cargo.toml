@@ -1,0 +1,21 @@
+[package]
+name = "traj-py"
+version = "0.1.5"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "traj_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+traj-core = { path = "../traj-core" }
+traj-io = { path = "../traj-io" }
+traj-engine = { path = "../traj-engine" }
+warp-pack = { path = "../warp-pack" }
+pyo3 = { version = "0.21", features = ["extension-module"] }
+numpy = "0.21"
+serde_json = "1.0.115"
+
+[features]
+cuda = ["traj-engine/cuda"]

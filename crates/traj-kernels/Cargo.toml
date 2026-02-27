@@ -1,0 +1,8 @@
+[package]
+name = "traj-kernels"
+version = "0.1.5"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+
