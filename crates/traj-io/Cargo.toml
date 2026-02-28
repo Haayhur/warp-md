@@ -1,0 +1,13 @@
+[package]
+name = "traj-io"
+version = "0.1.5"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+traj-core = { path = "../traj-core" }
+xdrfile = "0.3"
+bytemuck = { version = "1.15", features = ["extern_crate_alloc"] }
+
+[dev-dependencies]
+tempfile = "3.10"

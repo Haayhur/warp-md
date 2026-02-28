@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Fetch sample data
+        run: |
+          git clone --depth 1 https://github.com/scychon/trj_analysis.git /tmp/trj_analysis_repo
+          if command -v git-lfs >/dev/null; then
+            git -C /tmp/trj_analysis_repo lfs install --local
+            git -C /tmp/trj_analysis_repo lfs pull
+          fi
+      - name: Verify sample data
+        run: |
+          test $(stat -c %s /tmp/trj_analysis_repo/data/bmimC1Hnopol_bf4nopol.gro) -gt 100
+          test $(stat -c %s /tmp/trj_analysis_repo/data/bmimC1Hnopol_bf4nopol_pbc_20.xtc) -gt 1024
+      - name: Run CPU tests
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          cargo test -p traj-engine sample_msd_structure_factor -- --ignored
+
+  python-pack-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install maturin==1.5.1 pytest
+
+      - name: Build wheel (CPU)
+        run: |
+          maturin build --release
+
+      - name: Install wheel and run pack export tests
+        run: |
+          python -m pip install --find-links target/wheels warp-md
+          python -m pytest python/warp_md/tests/test_pack.py

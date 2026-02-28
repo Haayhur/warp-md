@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/traj-core",
+  "crates/traj-io",
+  "crates/traj-engine",
+  "crates/traj-gpu",
+  "crates/traj-kernels",
+  "crates/traj-py",
+  "crates/warp-pack",
+  "crates/warp-pep",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"

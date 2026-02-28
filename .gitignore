@@ -1,0 +1,53 @@
+# Rust
+/target/
+*.rlib
+*.rmeta
+*.d
+
+# CUDA artifacts
+*.ptx
+*.cubin
+*.fatbin
+*.o
+*.obj
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.dylib
+*.dll
+*.egg-info/
+/dist/
+/build/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Tools
+.vscode/
+.idea/
+*venv*
+# OS
+.DS_Store
+Thumbs.db
+
+AGENTS.md
+architect.md
+*gpu_result*
+*oracle*
+*tmp/*
+.agent/*
+*results/*
+*png
+*dcd
+*xtc
+*json
+*csv
+
+# Local release notes (private workflow docs)
+LOCAL_PUBLIC_RELEASE_PATHWAY.md
