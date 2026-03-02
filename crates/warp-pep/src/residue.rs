@@ -30,9 +30,26 @@ impl Atom {
 /// Three-letter residue name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResName {
-    GLY, ALA, SER, CYS, VAL, ILE, LEU, THR,
-    ARG, LYS, ASP, GLU, ASN, GLN, MET, HIS,
-    PRO, PHE, TYR, TRP,
+    GLY,
+    ALA,
+    SER,
+    CYS,
+    VAL,
+    ILE,
+    LEU,
+    THR,
+    ARG,
+    LYS,
+    ASP,
+    GLU,
+    ASN,
+    GLN,
+    MET,
+    HIS,
+    PRO,
+    PHE,
+    TYR,
+    TRP,
     /// Acetyl N-terminal cap (not a standard amino acid).
     ACE,
     /// N-methylamide C-terminal cap (not a standard amino acid).
@@ -42,26 +59,53 @@ pub enum ResName {
 impl ResName {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::GLY => "GLY", Self::ALA => "ALA", Self::SER => "SER",
-            Self::CYS => "CYS", Self::VAL => "VAL", Self::ILE => "ILE",
-            Self::LEU => "LEU", Self::THR => "THR", Self::ARG => "ARG",
-            Self::LYS => "LYS", Self::ASP => "ASP", Self::GLU => "GLU",
-            Self::ASN => "ASN", Self::GLN => "GLN", Self::MET => "MET",
-            Self::HIS => "HIS", Self::PRO => "PRO", Self::PHE => "PHE",
-            Self::TYR => "TYR", Self::TRP => "TRP",
-            Self::ACE => "ACE", Self::NME => "NME",
+            Self::GLY => "GLY",
+            Self::ALA => "ALA",
+            Self::SER => "SER",
+            Self::CYS => "CYS",
+            Self::VAL => "VAL",
+            Self::ILE => "ILE",
+            Self::LEU => "LEU",
+            Self::THR => "THR",
+            Self::ARG => "ARG",
+            Self::LYS => "LYS",
+            Self::ASP => "ASP",
+            Self::GLU => "GLU",
+            Self::ASN => "ASN",
+            Self::GLN => "GLN",
+            Self::MET => "MET",
+            Self::HIS => "HIS",
+            Self::PRO => "PRO",
+            Self::PHE => "PHE",
+            Self::TYR => "TYR",
+            Self::TRP => "TRP",
+            Self::ACE => "ACE",
+            Self::NME => "NME",
         }
     }
 
     pub fn from_one_letter(c: char) -> Option<Self> {
         match c {
-            'G' => Some(Self::GLY), 'A' => Some(Self::ALA), 'S' => Some(Self::SER),
-            'C' => Some(Self::CYS), 'V' => Some(Self::VAL), 'I' => Some(Self::ILE),
-            'L' => Some(Self::LEU), 'T' => Some(Self::THR), 'R' => Some(Self::ARG),
-            'K' => Some(Self::LYS), 'D' => Some(Self::ASP), 'E' => Some(Self::GLU),
-            'N' => Some(Self::ASN), 'Q' => Some(Self::GLN), 'M' => Some(Self::MET),
-            'H' => Some(Self::HIS), 'P' => Some(Self::PRO), 'F' => Some(Self::PHE),
-            'Y' => Some(Self::TYR), 'W' => Some(Self::TRP),
+            'G' => Some(Self::GLY),
+            'A' => Some(Self::ALA),
+            'S' => Some(Self::SER),
+            'C' => Some(Self::CYS),
+            'V' => Some(Self::VAL),
+            'I' => Some(Self::ILE),
+            'L' => Some(Self::LEU),
+            'T' => Some(Self::THR),
+            'R' => Some(Self::ARG),
+            'K' => Some(Self::LYS),
+            'D' => Some(Self::ASP),
+            'E' => Some(Self::GLU),
+            'N' => Some(Self::ASN),
+            'Q' => Some(Self::GLN),
+            'M' => Some(Self::MET),
+            'H' => Some(Self::HIS),
+            'P' => Some(Self::PRO),
+            'F' => Some(Self::PHE),
+            'Y' => Some(Self::TYR),
+            'W' => Some(Self::TRP),
             // ACE/NME have no one-letter codes
             _ => None,
         }
@@ -69,27 +113,54 @@ impl ResName {
 
     pub fn to_one_letter(self) -> char {
         match self {
-            Self::GLY => 'G', Self::ALA => 'A', Self::SER => 'S',
-            Self::CYS => 'C', Self::VAL => 'V', Self::ILE => 'I',
-            Self::LEU => 'L', Self::THR => 'T', Self::ARG => 'R',
-            Self::LYS => 'K', Self::ASP => 'D', Self::GLU => 'E',
-            Self::ASN => 'N', Self::GLN => 'Q', Self::MET => 'M',
-            Self::HIS => 'H', Self::PRO => 'P', Self::PHE => 'F',
-            Self::TYR => 'Y', Self::TRP => 'W',
+            Self::GLY => 'G',
+            Self::ALA => 'A',
+            Self::SER => 'S',
+            Self::CYS => 'C',
+            Self::VAL => 'V',
+            Self::ILE => 'I',
+            Self::LEU => 'L',
+            Self::THR => 'T',
+            Self::ARG => 'R',
+            Self::LYS => 'K',
+            Self::ASP => 'D',
+            Self::GLU => 'E',
+            Self::ASN => 'N',
+            Self::GLN => 'Q',
+            Self::MET => 'M',
+            Self::HIS => 'H',
+            Self::PRO => 'P',
+            Self::PHE => 'F',
+            Self::TYR => 'Y',
+            Self::TRP => 'W',
             Self::ACE | Self::NME => 'X',
         }
     }
 
     pub fn from_three_letter(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
-            "GLY" => Some(Self::GLY), "ALA" => Some(Self::ALA), "SER" => Some(Self::SER),
-            "CYS" => Some(Self::CYS), "VAL" => Some(Self::VAL), "ILE" => Some(Self::ILE),
-            "LEU" => Some(Self::LEU), "THR" => Some(Self::THR), "ARG" => Some(Self::ARG),
-            "LYS" => Some(Self::LYS), "ASP" => Some(Self::ASP), "GLU" => Some(Self::GLU),
-            "ASN" => Some(Self::ASN), "GLN" => Some(Self::GLN), "MET" => Some(Self::MET),
-            "HIS" => Some(Self::HIS), "PRO" => Some(Self::PRO), "PHE" => Some(Self::PHE),
-            "TYR" => Some(Self::TYR), "TRP" => Some(Self::TRP),
-            "ACE" => Some(Self::ACE), "NME" => Some(Self::NME),
+            "GLY" => Some(Self::GLY),
+            "ALA" => Some(Self::ALA),
+            "SER" => Some(Self::SER),
+            "CYS" => Some(Self::CYS),
+            "VAL" => Some(Self::VAL),
+            "ILE" => Some(Self::ILE),
+            "LEU" => Some(Self::LEU),
+            "THR" => Some(Self::THR),
+            "ARG" => Some(Self::ARG),
+            "LYS" => Some(Self::LYS),
+            "ASP" => Some(Self::ASP),
+            "GLU" => Some(Self::GLU),
+            "ASN" => Some(Self::ASN),
+            "GLN" => Some(Self::GLN),
+            "MET" => Some(Self::MET),
+            "HIS" => Some(Self::HIS),
+            "PRO" => Some(Self::PRO),
+            "PHE" => Some(Self::PHE),
+            "TYR" => Some(Self::TYR),
+            "TRP" => Some(Self::TRP),
+            "ACE" => Some(Self::ACE),
+            "NME" => Some(Self::NME),
             // Amber force field variants → canonical type
             "CYX" => Some(Self::CYS),
             "HID" | "HIE" | "HIP" => Some(Self::HIS),
@@ -128,8 +199,12 @@ pub enum AmberVariant {
 impl AmberVariant {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::CYX => "CYX", Self::HID => "HID", Self::HIE => "HIE",
-            Self::HIP => "HIP", Self::ASH => "ASH", Self::GLH => "GLH",
+            Self::CYX => "CYX",
+            Self::HID => "HID",
+            Self::HIE => "HIE",
+            Self::HIP => "HIP",
+            Self::ASH => "ASH",
+            Self::GLH => "GLH",
             Self::LYN => "LYN",
         }
     }
@@ -309,9 +384,12 @@ impl Structure {
     pub fn sequence(&self) -> String {
         self.chains
             .iter()
-            .flat_map(|c| c.residues.iter()
-                .filter(|r| !r.name.is_cap())
-                .map(|r| r.name.to_one_letter()))
+            .flat_map(|c| {
+                c.residues
+                    .iter()
+                    .filter(|r| !r.name.is_cap())
+                    .map(|r| r.name.to_one_letter())
+            })
             .collect()
     }
 
@@ -321,9 +399,12 @@ impl Structure {
         self.chains
             .iter()
             .map(|c| {
-                let seq: String = c.residues.iter()
+                let seq: String = c
+                    .residues
+                    .iter()
                     .filter(|r| !r.name.is_cap())
-                    .map(|r| r.name.to_one_letter()).collect();
+                    .map(|r| r.name.to_one_letter())
+                    .collect();
                 (c.id, seq)
             })
             .collect()

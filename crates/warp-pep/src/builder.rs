@@ -73,7 +73,10 @@ pub fn add_residue(
     omega_override: Option<f64>,
 ) {
     let chain = struc.chain_a_mut();
-    let prev = chain.residues.last().expect("chain must have at least one residue");
+    let prev = chain
+        .residues
+        .last()
+        .expect("chain must have at least one residue");
     let prev_n = find_coord(prev, "N");
     let prev_ca = find_coord(prev, "CA");
     let prev_c = find_coord(prev, "C");
@@ -86,20 +89,36 @@ pub fn add_residue(
 
     // Place new backbone atoms
     let n_coord = calculate_coordinates(
-        prev_n, prev_ca, prev_c,
-        geo.peptide_bond, geo.ca_c_n_angle, psi_im1,
+        prev_n,
+        prev_ca,
+        prev_c,
+        geo.peptide_bond,
+        geo.ca_c_n_angle,
+        psi_im1,
     );
     let ca_coord = calculate_coordinates(
-        prev_ca, prev_c, n_coord,
-        geo.ca_n_length, geo.c_n_ca_angle, omega,
+        prev_ca,
+        prev_c,
+        n_coord,
+        geo.ca_n_length,
+        geo.c_n_ca_angle,
+        omega,
     );
     let c_coord = calculate_coordinates(
-        prev_c, n_coord, ca_coord,
-        geo.ca_c_length, geo.n_ca_c_angle, phi,
+        prev_c,
+        n_coord,
+        ca_coord,
+        geo.ca_c_length,
+        geo.n_ca_c_angle,
+        phi,
     );
     let o_coord = calculate_coordinates(
-        n_coord, ca_coord, c_coord,
-        geo.c_o_length, geo.ca_c_o_angle, geo.n_ca_c_o_diangle,
+        n_coord,
+        ca_coord,
+        c_coord,
+        geo.c_o_length,
+        geo.ca_c_o_angle,
+        geo.n_ca_c_o_diangle,
     );
 
     let mut res = Residue::new(geo.residue_name, seg_id);
@@ -113,8 +132,12 @@ pub fn add_residue(
     // Fix previous residue's O to face the new N
     let prev_mut = chain.residues.last_mut().unwrap();
     let new_o_for_prev = calculate_coordinates(
-        n_coord, prev_ca, prev_c,
-        geo.c_o_length, geo.ca_c_o_angle, 180.0,
+        n_coord,
+        prev_ca,
+        prev_c,
+        geo.c_o_length,
+        geo.ca_c_o_angle,
+        180.0,
     );
     if let Some(o_atom) = prev_mut.atom_mut("O") {
         o_atom.coord = new_o_for_prev;
@@ -123,8 +146,12 @@ pub fn add_residue(
     // Also fix current residue O: place trans to N across CA-C bond
     // (matching PeptideBuilder reference — ghost N computed but not used for O)
     let corrected_o = calculate_coordinates(
-        n_coord, ca_coord, c_coord,
-        geo.c_o_length, geo.ca_c_o_angle, 180.0,
+        n_coord,
+        ca_coord,
+        c_coord,
+        geo.c_o_length,
+        geo.ca_c_o_angle,
+        180.0,
     );
     // Overwrite O in new res before push
     if let Some(o_atom) = res.atom_mut("O") {
@@ -221,9 +248,13 @@ impl RamaPreset {
 
 /// Parse a one-letter code (d-amino: lowercase) and return the appropriate geometry.
 fn parse_one_letter_geo(ch: char) -> Result<Geo, String> {
-    let (aa, is_d) = parse_d_amino_acid(ch)
-        .ok_or_else(|| format!("unknown amino acid '{}'", ch))?;
-    Ok(if is_d { d_geometry(aa) } else { geometry::geometry(aa) })
+    let (aa, is_d) =
+        parse_d_amino_acid(ch).ok_or_else(|| format!("unknown amino acid '{}'", ch))?;
+    Ok(if is_d {
+        d_geometry(aa)
+    } else {
+        geometry::geometry(aa)
+    })
 }
 
 /// Build a peptide in the extended conformation from a one-letter sequence.
@@ -310,7 +341,11 @@ pub struct ResSpec {
 /// Parse a dash-separated three-letter sequence (e.g. "ALA-CYX-HID-GLU-MSE").
 /// Returns a Vec of ResSpec, preserving Amber variant and non-standard info.
 pub fn parse_three_letter_sequence(seq: &str) -> Result<Vec<ResSpec>, String> {
-    let tokens: Vec<&str> = seq.split('-').map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+    let tokens: Vec<&str> = seq
+        .split('-')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .collect();
     if tokens.is_empty() {
         return Err("empty sequence".into());
     }
@@ -603,8 +638,18 @@ mod tests {
     #[test]
     fn test_build_from_specs_rejects_caps() {
         let specs = vec![
-            ResSpec { name: ResName::ACE, variant: None, non_std: None, d_form: false },
-            ResSpec { name: ResName::ALA, variant: None, non_std: None, d_form: false },
+            ResSpec {
+                name: ResName::ACE,
+                variant: None,
+                non_std: None,
+                d_form: false,
+            },
+            ResSpec {
+                name: ResName::ALA,
+                variant: None,
+                non_std: None,
+                d_form: false,
+            },
         ];
         let err = make_extended_structure_from_specs(&specs).unwrap_err();
         assert!(err.contains("terminal cap"));
@@ -662,8 +707,14 @@ mod tests {
 
     #[test]
     fn test_rama_preset_parse() {
-        assert_eq!(RamaPreset::from_str("alpha-helix"), Some(RamaPreset::AlphaHelix));
-        assert_eq!(RamaPreset::from_str("BETA_SHEET"), Some(RamaPreset::BetaSheet));
+        assert_eq!(
+            RamaPreset::from_str("alpha-helix"),
+            Some(RamaPreset::AlphaHelix)
+        );
+        assert_eq!(
+            RamaPreset::from_str("BETA_SHEET"),
+            Some(RamaPreset::BetaSheet)
+        );
         assert_eq!(RamaPreset::from_str("ppii"), Some(RamaPreset::PolyProII));
         assert_eq!(RamaPreset::from_str("extended"), Some(RamaPreset::Extended));
         assert!(RamaPreset::from_str("unknown").is_none());
@@ -697,8 +748,15 @@ mod tests {
         let mut struc = make_extended_structure("AA").unwrap();
         add_terminal_oxt(&mut struc);
         add_terminal_oxt(&mut struc); // second call should not duplicate
-        let oxt_count = struc.chain_a().residues.last().unwrap()
-            .atoms.iter().filter(|a| a.name == "OXT").count();
+        let oxt_count = struc
+            .chain_a()
+            .residues
+            .last()
+            .unwrap()
+            .atoms
+            .iter()
+            .filter(|a| a.name == "OXT")
+            .count();
         assert_eq!(oxt_count, 1);
     }
 
@@ -707,11 +765,17 @@ mod tests {
         let mut struc = make_extended_structure("AA").unwrap();
         crate::caps::add_caps(&mut struc);
         add_terminal_oxt(&mut struc);
-        let total_oxt = struc.chain_a().residues.iter()
+        let total_oxt = struc
+            .chain_a()
+            .residues
+            .iter()
             .flat_map(|r| r.atoms.iter())
             .filter(|a| a.name == "OXT")
             .count();
-        assert_eq!(total_oxt, 0, "OXT should not be added when NME cap is terminal");
+        assert_eq!(
+            total_oxt, 0,
+            "OXT should not be added when NME cap is terminal"
+        );
     }
 
     // ----- D-amino acid tests -----
@@ -768,7 +832,10 @@ mod tests {
         let struc = make_extended_structure_from_specs(&specs).unwrap();
         let pca_res = &struc.chain_a().residues[0];
         // PCA should not have OE2
-        assert!(pca_res.atom_coord("OE2").is_none(), "PCA should not have OE2");
+        assert!(
+            pca_res.atom_coord("OE2").is_none(),
+            "PCA should not have OE2"
+        );
         assert_eq!(pca_res.amber_name(), "PCA");
     }
 
@@ -796,7 +863,12 @@ mod tests {
 
 /// Compute dihedral angle in degrees (used in tests).
 #[cfg(test)]
-fn dihedral_angle(a: crate::coord::Vec3, b: crate::coord::Vec3, c: crate::coord::Vec3, d: crate::coord::Vec3) -> f64 {
+fn dihedral_angle(
+    a: crate::coord::Vec3,
+    b: crate::coord::Vec3,
+    c: crate::coord::Vec3,
+    d: crate::coord::Vec3,
+) -> f64 {
     let b1 = b.sub(a);
     let b2 = c.sub(b);
     let b3 = d.sub(c);

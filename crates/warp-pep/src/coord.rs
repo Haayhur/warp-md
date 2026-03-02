@@ -120,17 +120,13 @@ pub fn calculate_coordinates(
     let ang_rad = deg2rad(angle_deg);
     let f_val = (bx * bx + by * by + bz * bz).sqrt() * length * ang_rad.cos();
 
-    let denom = b * b * (bx * bx + bz * bz)
-        + a * a * (by * by + bz * bz)
-        - 2.0 * a * bx * bz * g
+    let denom = b * b * (bx * bx + bz * bz) + a * a * (by * by + bz * bz) - 2.0 * a * bx * bz * g
         + (bx * bx + by * by) * g * g
         - 2.0 * b * by * (a * bx + bz * g);
 
     let inner = (b * bz - by * g).powi(2)
         * (-(f_val * f_val) * (a * a + b * b + g * g)
-            + (b * b * (bx * bx + bz * bz)
-                + a * a * (by * by + bz * bz)
-                - 2.0 * a * bx * bz * g
+            + (b * b * (bx * bx + bz * bz) + a * a * (by * by + bz * bz) - 2.0 * a * bx * bz * g
                 + (bx * bx + by * by) * g * g
                 - 2.0 * b * by * (a * bx + bz * g))
                 * length
@@ -138,23 +134,20 @@ pub fn calculate_coordinates(
 
     let cst = inner.abs().sqrt();
 
-    let x_val = (b * b * bx * f_val - a * b * by * f_val
-        + f_val * g * (-a * bz + bx * g)
-        + cst)
-        / denom;
+    let x_val =
+        (b * b * bx * f_val - a * b * by * f_val + f_val * g * (-a * bz + bx * g) + cst) / denom;
 
     let (y_val, z_val);
     if (b == 0.0 || bz == 0.0) && (by == 0.0 || g == 0.0) {
-        let c1_inner = g * g
-            * (-a * a * x_val * x_val
-                + (b * b + g * g) * (length - x_val) * (length + x_val));
+        let c1_inner = g
+            * g
+            * (-a * a * x_val * x_val + (b * b + g * g) * (length - x_val) * (length + x_val));
         let c1 = c1_inner.abs().sqrt();
         y_val = (-a * b * x_val + c1) / (b * b + g * g);
         z_val = -(a * g * g * x_val + b * c1) / (g * (b * b + g * g));
     } else {
         let d_factor = b * bz - by * g;
-        y_val = (a * a * by * f_val * d_factor
-            + g * (-f_val * d_factor * d_factor + bx * cst)
+        y_val = (a * a * by * f_val * d_factor + g * (-f_val * d_factor * d_factor + bx * cst)
             - a * (b * b * bx * bz * f_val - b * bx * by * f_val * g + bz * cst))
             / (d_factor * denom);
         z_val = (a * a * bz * f_val * d_factor
@@ -207,9 +200,6 @@ mod tests {
         let o = calculate_coordinates(n, ca, c, 1.23, 120.5, -60.5);
         // Sanity: O should be ~1.23 Å from C
         let dist = o.sub(c).length();
-        assert!(
-            (dist - 1.23).abs() < 0.02,
-            "O-C distance {dist} not ~1.23"
-        );
+        assert!((dist - 1.23).abs() < 0.02, "O-C distance {dist} not ~1.23");
     }
 }

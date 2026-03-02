@@ -24,7 +24,12 @@ pub fn measure_phi_psi(chain: &Chain) -> Vec<PhiPsi> {
 
         let phi = if i > 0 {
             let prev = &chain.residues[i - 1];
-            match (prev.atom_coord("C"), res.atom_coord("N"), res.atom_coord("CA"), res.atom_coord("C")) {
+            match (
+                prev.atom_coord("C"),
+                res.atom_coord("N"),
+                res.atom_coord("CA"),
+                res.atom_coord("C"),
+            ) {
                 (Some(c_prev), Some(n_i), Some(ca_i), Some(c_i)) => {
                     Some(calc_dihedral(c_prev, n_i, ca_i, c_i))
                 }
@@ -36,7 +41,12 @@ pub fn measure_phi_psi(chain: &Chain) -> Vec<PhiPsi> {
 
         let psi = if i + 1 < n {
             let next = &chain.residues[i + 1];
-            match (res.atom_coord("N"), res.atom_coord("CA"), res.atom_coord("C"), next.atom_coord("N")) {
+            match (
+                res.atom_coord("N"),
+                res.atom_coord("CA"),
+                res.atom_coord("C"),
+                next.atom_coord("N"),
+            ) {
                 (Some(n_i), Some(ca_i), Some(c_i), Some(n_next)) => {
                     Some(calc_dihedral(n_i, ca_i, c_i, n_next))
                 }
@@ -48,7 +58,12 @@ pub fn measure_phi_psi(chain: &Chain) -> Vec<PhiPsi> {
 
         let omega = if i > 0 {
             let prev = &chain.residues[i - 1];
-            match (prev.atom_coord("CA"), prev.atom_coord("C"), res.atom_coord("N"), res.atom_coord("CA")) {
+            match (
+                prev.atom_coord("CA"),
+                prev.atom_coord("C"),
+                res.atom_coord("N"),
+                res.atom_coord("CA"),
+            ) {
                 (Some(ca_prev), Some(c_prev), Some(n_i), Some(ca_i)) => {
                     Some(calc_dihedral(ca_prev, c_prev, n_i, ca_i))
                 }
@@ -91,15 +106,39 @@ pub fn rmsd_coords(a: &[Vec3], b: &[Vec3]) -> Option<f64> {
 
 /// RMSD of all atoms between two structures (must have identical atom counts per residue/chain).
 pub fn rmsd_all_atoms(a: &Structure, b: &Structure) -> Option<f64> {
-    let ca: Vec<Vec3> = a.chains.iter().flat_map(|c| c.residues.iter().flat_map(|r| r.atoms.iter().map(|at| at.coord))).collect();
-    let cb: Vec<Vec3> = b.chains.iter().flat_map(|c| c.residues.iter().flat_map(|r| r.atoms.iter().map(|at| at.coord))).collect();
+    let ca: Vec<Vec3> = a
+        .chains
+        .iter()
+        .flat_map(|c| {
+            c.residues
+                .iter()
+                .flat_map(|r| r.atoms.iter().map(|at| at.coord))
+        })
+        .collect();
+    let cb: Vec<Vec3> = b
+        .chains
+        .iter()
+        .flat_map(|c| {
+            c.residues
+                .iter()
+                .flat_map(|r| r.atoms.iter().map(|at| at.coord))
+        })
+        .collect();
     rmsd_coords(&ca, &cb)
 }
 
 /// RMSD over Cα atoms only between two structures.
 pub fn rmsd_ca(a: &Structure, b: &Structure) -> Option<f64> {
-    let ca: Vec<Vec3> = a.chains.iter().flat_map(|c| c.residues.iter().filter_map(|r| r.atom_coord("CA"))).collect();
-    let cb: Vec<Vec3> = b.chains.iter().flat_map(|c| c.residues.iter().filter_map(|r| r.atom_coord("CA"))).collect();
+    let ca: Vec<Vec3> = a
+        .chains
+        .iter()
+        .flat_map(|c| c.residues.iter().filter_map(|r| r.atom_coord("CA")))
+        .collect();
+    let cb: Vec<Vec3> = b
+        .chains
+        .iter()
+        .flat_map(|c| c.residues.iter().filter_map(|r| r.atom_coord("CA")))
+        .collect();
     rmsd_coords(&ca, &cb)
 }
 
@@ -108,13 +147,20 @@ pub fn radius_of_gyration(struc: &Structure) -> f64 {
     let coords: Vec<Vec3> = struc
         .chains
         .iter()
-        .flat_map(|c| c.residues.iter().flat_map(|r| r.atoms.iter().map(|a| a.coord)))
+        .flat_map(|c| {
+            c.residues
+                .iter()
+                .flat_map(|r| r.atoms.iter().map(|a| a.coord))
+        })
         .collect();
     if coords.is_empty() {
         return 0.0;
     }
     let n = coords.len() as f64;
-    let com = coords.iter().fold(Vec3::zero(), |acc, c| acc.add(*c)).scale(1.0 / n);
+    let com = coords
+        .iter()
+        .fold(Vec3::zero(), |acc, c| acc.add(*c))
+        .scale(1.0 / n);
     let sum_sq: f64 = coords.iter().map(|c| c.sub(com).dot(c.sub(com))).sum();
     (sum_sq / n).sqrt()
 }
@@ -147,8 +193,10 @@ mod tests {
         for pp in &angles[1..3] {
             if let Some(phi) = pp.phi {
                 let normed = if phi > 180.0 { phi - 360.0 } else { phi };
-                assert!(normed.abs() > 40.0 && normed.abs() < 75.0,
-                    "phi={phi} (normed={normed}) not near ±57°");
+                assert!(
+                    normed.abs() > 40.0 && normed.abs() < 75.0,
+                    "phi={phi} (normed={normed}) not near ±57°"
+                );
             }
         }
     }
@@ -172,7 +220,10 @@ mod tests {
         let a = make_preset_structure("AAA", RamaPreset::AlphaHelix).unwrap();
         let b = make_preset_structure("AAA", RamaPreset::BetaSheet).unwrap();
         let r = rmsd_ca(&a, &b).unwrap();
-        assert!(r > 0.1, "different conformations should have non-zero RMSD, got {r}");
+        assert!(
+            r > 0.1,
+            "different conformations should have non-zero RMSD, got {r}"
+        );
     }
 
     #[test]
@@ -197,7 +248,9 @@ mod tests {
         for pp in &angles[1..] {
             if let Some(omega) = pp.omega {
                 assert!(
-                    (omega - 180.0).abs() < 10.0 || (omega + 180.0).abs() < 10.0 || (omega - 360.0).abs() < 10.0,
+                    (omega - 180.0).abs() < 10.0
+                        || (omega + 180.0).abs() < 10.0
+                        || (omega - 360.0).abs() < 10.0,
                     "omega={omega} not near 180°"
                 );
             }

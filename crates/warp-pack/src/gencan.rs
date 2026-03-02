@@ -1,19 +1,20 @@
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use crate::atom_params::AtomParams;
 use crate::config::PackConfig;
 use crate::error::{PackError, PackResult};
 use crate::gencan_objective::{
     build_bounds, compute_gradient_from_grad_pos, compute_gradient_from_grad_pos_into,
-    compute_objective, compute_objective_only, compute_objective_with_buffer, grad_norm,
-    pack_variables, project_step, update_positions, validate_molecule_counts, Bounds, MolInfo,
-    ObjectiveBuffer,
+    compute_objective_only, compute_objective_with_buffer, grad_norm, pack_variables, project_step,
+    update_positions, validate_molecule_counts, Bounds, MolInfo, ObjectiveBuffer,
 };
 use crate::geom::Vec3;
 use crate::pack::AtomRecord;
 use crate::pack_ops::TemplateEntry;
 use crate::pbc::PbcBox;
 use crate::placement::PlacementRecord;
+use crate::streaming::StreamEmitter;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct GencanResult {
@@ -54,6 +55,7 @@ pub(crate) fn optimize_gencan(
     include_overlap: bool,
     active_spec: Option<usize>,
     active_mol: Option<usize>,
+    emitter: Option<StreamEmitter>,
 ) -> PackResult<GencanResult> {
     let total_mols = placements.len();
     if total_mols == 0 {
@@ -191,10 +193,12 @@ pub(crate) fn optimize_gencan(
         update_positions(&x, placements, &mol_info, atoms, positions);
     }
 
+    let gencan_start = Instant::now();
     for iter in 0..maxit {
         iters_used = iter + 1;
         update_positions(&x, placements, &mol_info, atoms, positions);
         counters.obj_calls += 1;
+        let elapsed_ms = crate::streaming::duration_ms(gencan_start.elapsed());
         let (obj_value, obj_overlap, obj_constraint) = compute_objective_with_buffer(
             atoms,
             positions,
@@ -221,6 +225,23 @@ pub(crate) fn optimize_gencan(
         let gpeucn2 = proj.gpeucn2;
         let gieucn2 = proj.gieucn2;
         let nind = proj.nind;
+
+        // Emit iteration progress event
+        if let Some(ref emitter) = emitter {
+            if emitter.is_enabled() {
+                emitter.emit_gencan_iteration(&crate::streaming::GencanIterationEvent {
+                    iteration: iter,
+                    max_iterations: maxit,
+                    obj_value,
+                    obj_overlap,
+                    obj_constraint,
+                    pg_sup,
+                    pg_norm,
+                    elapsed_ms,
+                });
+            }
+        }
+
         if gpsupn0.is_none() {
             let gps0 = pg_sup.max(1.0e-12);
             gpsupn0 = Some(gps0);
@@ -497,7 +518,7 @@ pub(crate) fn optimize_gencan(
 
     update_positions(&x, placements, &mol_info, atoms, positions);
     counters.obj_calls += 1;
-    let obj = compute_objective(
+    let (obj_value, obj_overlap, obj_constraint) = compute_objective_with_buffer(
         atoms,
         positions,
         atom_params,
@@ -528,9 +549,9 @@ pub(crate) fn optimize_gencan(
         );
     }
     Ok(GencanResult {
-        value: obj.value,
-        max_overlap: obj.max_overlap,
-        max_constraint: obj.max_constraint,
+        value: obj_value,
+        max_overlap: obj_overlap,
+        max_constraint: obj_constraint,
     })
 }
 
@@ -546,6 +567,7 @@ pub(crate) fn evaluate_state(
     include_overlap: bool,
     active_spec: Option<usize>,
     active_mol: Option<usize>,
+    objective_buffer: &mut ObjectiveBuffer,
 ) -> PackResult<GencanResult> {
     let mol_info = build_mol_info(cfg, atoms, mol_spec, templates, active_spec, active_mol)?;
     let overlap_atoms = collect_selected_overlap_atoms(atoms, &mol_info);
@@ -560,8 +582,7 @@ pub(crate) fn evaluate_state(
     } else {
         1.0
     };
-    let mut objective_buffer = ObjectiveBuffer::default();
-    let obj = compute_objective(
+    let (value, max_overlap, max_constraint) = compute_objective_with_buffer(
         atoms,
         positions,
         atom_params,
@@ -574,12 +595,12 @@ pub(crate) fn evaluate_state(
         short_scale,
         cfg.fbins.unwrap_or(3.0f32.sqrt()),
         radmax,
-        &mut objective_buffer,
+        objective_buffer,
     );
     Ok(GencanResult {
-        value: obj.value,
-        max_overlap: obj.max_overlap,
-        max_constraint: obj.max_constraint,
+        value,
+        max_overlap,
+        max_constraint,
     })
 }
 

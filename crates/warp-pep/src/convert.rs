@@ -46,12 +46,12 @@ pub fn structure_to_pack_output(struc: &Structure) -> PackOutput {
         .ssbonds
         .iter()
         .filter_map(|ss| {
-            let i1 = atoms.iter().position(|a| {
-                a.chain == ss.chain1 && a.resid == ss.resid1 && a.name == "SG"
-            })?;
-            let i2 = atoms.iter().position(|a| {
-                a.chain == ss.chain2 && a.resid == ss.resid2 && a.name == "SG"
-            })?;
+            let i1 = atoms
+                .iter()
+                .position(|a| a.chain == ss.chain1 && a.resid == ss.resid1 && a.name == "SG")?;
+            let i2 = atoms
+                .iter()
+                .position(|a| a.chain == ss.chain2 && a.resid == ss.resid2 && a.name == "SG")?;
             Some((i1, i2))
         })
         .collect();
@@ -90,8 +90,12 @@ pub fn molecule_data_to_structure(mol: &MoleculeData) -> Result<Structure, Strin
             let (resname, variant) = if let Some(ns) = nsr {
                 (ns.canonical(), None)
             } else {
-                parse_amber_name(&arec.resname)
-                    .ok_or_else(|| format!("unknown residue name '{}' at resid {}", arec.resname, arec.resid))?
+                parse_amber_name(&arec.resname).ok_or_else(|| {
+                    format!(
+                        "unknown residue name '{}' at resid {}",
+                        arec.resname, arec.resid
+                    )
+                })?
             };
             let mut res = Residue::new(resname, arec.resid);
             res.variant = variant;
@@ -149,11 +153,7 @@ pub fn infer_format(path: &str) -> &str {
 }
 
 /// Write a warp-pep Structure to a file in the given format (or auto-detect from extension).
-pub fn write_structure(
-    struc: &Structure,
-    path: &str,
-    format: Option<&str>,
-) -> Result<(), String> {
+pub fn write_structure(struc: &Structure, path: &str, format: Option<&str>) -> Result<(), String> {
     let pack_out = structure_to_pack_output(struc);
     let fmt = format.unwrap_or_else(|| infer_format(path));
     let write_conect = !pack_out.bonds.is_empty();
@@ -170,10 +170,7 @@ pub fn write_structure(
 pub fn write_structure_stdout(struc: &Structure, format: &str) -> Result<(), String> {
     let pack_out = structure_to_pack_output(struc);
     let write_conect = !pack_out.bonds.is_empty();
-    let tmp = std::env::temp_dir().join(format!(
-        "warp_pep_stdout_{}.tmp",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("warp_pep_stdout_{}.tmp", std::process::id()));
     let tmp_path = tmp.to_string_lossy().to_string();
     let spec = OutputSpec {
         path: tmp_path.clone(),
@@ -182,8 +179,8 @@ pub fn write_structure_stdout(struc: &Structure, format: &str) -> Result<(), Str
     };
     write_output(&pack_out, &spec, false, 0.0, write_conect, false)
         .map_err(|e| format!("write failed: {}", e))?;
-    let contents = std::fs::read_to_string(&tmp_path)
-        .map_err(|e| format!("read tmp failed: {}", e))?;
+    let contents =
+        std::fs::read_to_string(&tmp_path).map_err(|e| format!("read tmp failed: {}", e))?;
     let _ = std::fs::remove_file(&tmp_path);
     print!("{}", contents);
     Ok(())
@@ -314,18 +311,19 @@ mod tests {
     #[test]
     fn test_non_contiguous_chain_segments_reuse_chain_ids() {
         use warp_pack::geom::Vec3 as PackVec3;
-        let mk = |name: &str, elem: &str, resname: &str, resid: i32, chain: char, x: f32| AtomRecord {
-            record_kind: warp_pack::pack::AtomRecordKind::Atom,
-            name: name.into(),
-            element: elem.into(),
-            resname: resname.into(),
-            resid,
-            chain,
-            segid: String::new(),
-            charge: 0.0,
-            position: PackVec3::new(x, 0.0, 0.0),
-            mol_id: 0,
-        };
+        let mk =
+            |name: &str, elem: &str, resname: &str, resid: i32, chain: char, x: f32| AtomRecord {
+                record_kind: warp_pack::pack::AtomRecordKind::Atom,
+                name: name.into(),
+                element: elem.into(),
+                resname: resname.into(),
+                resid,
+                chain,
+                segid: String::new(),
+                charge: 0.0,
+                position: PackVec3::new(x, 0.0, 0.0),
+                mol_id: 0,
+            };
         let mol = MoleculeData {
             atoms: vec![
                 mk("N", "N", "ALA", 1, 'A', 0.0),

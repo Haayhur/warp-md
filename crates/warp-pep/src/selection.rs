@@ -61,9 +61,8 @@ struct ResIdRange {
 
 const BACKBONE_NAMES: &[&str] = &["N", "CA", "C", "O", "OXT"];
 const STANDARD_AA: &[&str] = &[
-    "GLY", "ALA", "SER", "CYS", "VAL", "ILE", "LEU", "THR",
-    "ARG", "LYS", "ASP", "GLU", "ASN", "GLN", "MET", "HIS",
-    "PRO", "PHE", "TYR", "TRP",
+    "GLY", "ALA", "SER", "CYS", "VAL", "ILE", "LEU", "THR", "ARG", "LYS", "ASP", "GLU", "ASN",
+    "GLN", "MET", "HIS", "PRO", "PHE", "TYR", "TRP",
 ];
 
 impl Selector {
@@ -72,10 +71,14 @@ impl Selector {
             Self::All => true,
             Self::Name(names) => names.iter().any(|n| n.eq_ignore_ascii_case(&a.atom_name)),
             Self::ResName(names) => names.iter().any(|n| n.eq_ignore_ascii_case(&a.resname)),
-            Self::ResId(ranges) => ranges.iter().any(|r| a.resid >= r.start && a.resid <= r.end),
+            Self::ResId(ranges) => ranges
+                .iter()
+                .any(|r| a.resid >= r.start && a.resid <= r.end),
             Self::Chain(ids) => ids.contains(&a.chain_id),
             Self::Element(elems) => elems.iter().any(|e| e.eq_ignore_ascii_case(&a.element)),
-            Self::Protein => STANDARD_AA.iter().any(|s| s.eq_ignore_ascii_case(&a.resname)),
+            Self::Protein => STANDARD_AA
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(&a.resname)),
             Self::Backbone => BACKBONE_NAMES.contains(&a.atom_name.as_str()),
             Self::SideChain => {
                 !BACKBONE_NAMES.contains(&a.atom_name.as_str())
@@ -209,7 +212,10 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Result<Selector, String> {
-        let tok = self.peek().ok_or("unexpected end of selection")?.to_lowercase();
+        let tok = self
+            .peek()
+            .ok_or("unexpected end of selection")?
+            .to_lowercase();
 
         match tok.as_str() {
             "(" => {
@@ -220,10 +226,22 @@ impl Parser {
                     _ => Err("expected ')'".into()),
                 }
             }
-            "all" => { self.next(); Ok(Selector::All) }
-            "protein" => { self.next(); Ok(Selector::Protein) }
-            "backbone" => { self.next(); Ok(Selector::Backbone) }
-            "sidechain" => { self.next(); Ok(Selector::SideChain) }
+            "all" => {
+                self.next();
+                Ok(Selector::All)
+            }
+            "protein" => {
+                self.next();
+                Ok(Selector::Protein)
+            }
+            "backbone" => {
+                self.next();
+                Ok(Selector::Backbone)
+            }
+            "sidechain" => {
+                self.next();
+                Ok(Selector::SideChain)
+            }
             "name" => {
                 self.next();
                 let vals = self.parse_values()?;
@@ -262,10 +280,23 @@ impl Parser {
         let mut vals = Vec::new();
         while let Some(t) = self.peek() {
             let low = t.to_lowercase();
-            if matches!(low.as_str(), "and" | "or" | "not" | "(" | ")" |
-                "name" | "resname" | "resid" | "chain" | "element" |
-                "all" | "protein" | "backbone" | "sidechain")
-            {
+            if matches!(
+                low.as_str(),
+                "and"
+                    | "or"
+                    | "not"
+                    | "("
+                    | ")"
+                    | "name"
+                    | "resname"
+                    | "resid"
+                    | "chain"
+                    | "element"
+                    | "all"
+                    | "protein"
+                    | "backbone"
+                    | "sidechain"
+            ) {
                 break;
             }
             vals.push(self.next().unwrap());
@@ -280,17 +311,34 @@ impl Parser {
         let mut ranges = Vec::new();
         while let Some(t) = self.peek() {
             let low = t.to_lowercase();
-            if matches!(low.as_str(), "and" | "or" | "not" | "(" | ")" |
-                "name" | "resname" | "resid" | "chain" | "element" |
-                "all" | "protein" | "backbone" | "sidechain")
-            {
+            if matches!(
+                low.as_str(),
+                "and"
+                    | "or"
+                    | "not"
+                    | "("
+                    | ")"
+                    | "name"
+                    | "resname"
+                    | "resid"
+                    | "chain"
+                    | "element"
+                    | "all"
+                    | "protein"
+                    | "backbone"
+                    | "sidechain"
+            ) {
                 break;
             }
             let val = self.next().unwrap();
             // Parse "5" or "1-10" or "1:10"
             if let Some(sep) = val.find('-').or_else(|| val.find(':')) {
-                let start: i32 = val[..sep].parse().map_err(|_| format!("bad resid '{val}'"))?;
-                let end: i32 = val[sep+1..].parse().map_err(|_| format!("bad resid '{val}'"))?;
+                let start: i32 = val[..sep]
+                    .parse()
+                    .map_err(|_| format!("bad resid '{val}'"))?;
+                let end: i32 = val[sep + 1..]
+                    .parse()
+                    .map_err(|_| format!("bad resid '{val}'"))?;
                 ranges.push(ResIdRange { start, end });
             } else {
                 let id: i32 = val.parse().map_err(|_| format!("bad resid '{val}'"))?;
@@ -312,8 +360,10 @@ fn parse_selection(expr: &str) -> Result<Selector, String> {
     let mut parser = Parser::new(tokens);
     let sel = parser.parse_expr()?;
     if parser.pos < parser.tokens.len() {
-        return Err(format!("unexpected token '{}' at position {}",
-            parser.tokens[parser.pos], parser.pos));
+        return Err(format!(
+            "unexpected token '{}' at position {}",
+            parser.tokens[parser.pos], parser.pos
+        ));
     }
     Ok(sel)
 }
@@ -321,13 +371,19 @@ fn parse_selection(expr: &str) -> Result<Selector, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::{make_extended_structure, make_multi_chain_structure, parse_three_letter_sequence, ChainSpec};
+    use crate::builder::{
+        make_extended_structure, make_multi_chain_structure, parse_three_letter_sequence, ChainSpec,
+    };
 
     #[test]
     fn test_select_all() {
         let struc = make_extended_structure("AA").unwrap();
         let atoms = select(&struc, "all").unwrap();
-        let total: usize = struc.chains.iter().map(|c| c.residues.iter().map(|r| r.atoms.len()).sum::<usize>()).sum();
+        let total: usize = struc
+            .chains
+            .iter()
+            .map(|c| c.residues.iter().map(|r| r.atoms.len()).sum::<usize>())
+            .sum();
         assert_eq!(atoms.len(), total);
     }
 
@@ -357,8 +413,16 @@ mod tests {
     #[test]
     fn test_select_chain() {
         let chains = vec![
-            ChainSpec { id: 'A', residues: parse_three_letter_sequence("ALA-ALA").unwrap(), preset: None },
-            ChainSpec { id: 'B', residues: parse_three_letter_sequence("GLY-GLY").unwrap(), preset: None },
+            ChainSpec {
+                id: 'A',
+                residues: parse_three_letter_sequence("ALA-ALA").unwrap(),
+                preset: None,
+            },
+            ChainSpec {
+                id: 'B',
+                residues: parse_three_letter_sequence("GLY-GLY").unwrap(),
+                preset: None,
+            },
         ];
         let struc = make_multi_chain_structure(&chains).unwrap();
         let atoms = select(&struc, "chain B and name CA").unwrap();
@@ -377,7 +441,9 @@ mod tests {
     fn test_select_or() {
         let struc = make_extended_structure("ACDE").unwrap();
         let atoms = select(&struc, "resname ALA or resname CYS").unwrap();
-        assert!(atoms.iter().all(|a| a.resname == "ALA" || a.resname == "CYS"));
+        assert!(atoms
+            .iter()
+            .all(|a| a.resname == "ALA" || a.resname == "CYS"));
     }
 
     #[test]
@@ -391,7 +457,11 @@ mod tests {
     fn test_select_protein() {
         let struc = make_extended_structure("AA").unwrap();
         let atoms = select(&struc, "protein").unwrap();
-        let total: usize = struc.chains.iter().map(|c| c.residues.iter().map(|r| r.atoms.len()).sum::<usize>()).sum();
+        let total: usize = struc
+            .chains
+            .iter()
+            .map(|c| c.residues.iter().map(|r| r.atoms.len()).sum::<usize>())
+            .sum();
         assert_eq!(atoms.len(), total);
     }
 

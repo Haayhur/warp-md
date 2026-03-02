@@ -19,6 +19,7 @@ mod placement;
 mod relax;
 mod restart;
 mod spatial_hash;
+pub mod streaming;
 
 pub use config::{BoxSpec, OutputSpec, PackConfig, StructureSpec};
 pub use constraints::{ConstraintMode, ConstraintSpec, ShapeSpec};

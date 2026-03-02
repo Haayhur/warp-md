@@ -1,4 +1,3 @@
-
 //! warp-pep CLI: peptide builder and mutation tool.
 
 use clap::{Parser, Subcommand};
@@ -8,13 +7,14 @@ use warp_pep::convert;
 use warp_pep::disulfide;
 use warp_pep::json_spec::BuildSpec;
 use warp_pep::mutation;
+use warp_pep::streaming::{PepOperation, StreamEmitter};
 
 #[derive(Parser)]
 #[command(
     name = "warp-pep",
     version,
     about = "Peptide builder & mutation CLI — construct, mutate, and export peptide structures",
-    long_about = "\
+    long_about = "
 warp-pep builds all-atom peptide structures from amino acid sequences using \
 internal-coordinate geometry (bond lengths, angles, dihedrals) for all 20 \
 standard amino acids. Supports Amber force field naming conventions \
@@ -67,6 +67,10 @@ EXAMPLES:
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    #[arg(long, global = true)]
+    /// Enable NDJSON streaming progress events to stderr
+    stream: bool,
 }
 
 #[derive(Subcommand)]
@@ -75,8 +79,7 @@ enum Commands {
     ///
     /// Exactly one input mode required: --sequence, --three-letter, or --json.
     /// JSON mode is self-contained (may include angles, mutations, output path).
-    #[command(
-        after_long_help = "JSON SPEC SCHEMA (single-chain):\n\
+    #[command(after_long_help = "JSON SPEC SCHEMA (single-chain):\n\
   {\n\
     \"residues\": [\"ALA\", \"CYX\", \"HID\", \"GLU\"],\n\
     \"preset\":   \"alpha-helix\",  // optional, overrides phi/psi\n\
@@ -96,8 +99,7 @@ JSON SPEC SCHEMA (multi-chain):\n\
       { \"id\": \"B\", \"residues\": [\"GLY\", \"VAL\"] }\n\
     ],\n\
     \"oxt\": true, \"detect_ss\": true\n\
-  }"
-    )]
+  }")]
     Build {
         /// One-letter amino acid sequence.
         /// Valid codes: G A S C V I L T R K D E N Q M H P F Y W.
@@ -173,12 +175,10 @@ JSON SPEC SCHEMA (multi-chain):\n\
     /// Mutation spec format: <from><position><to> where from/to are one-letter AA codes
     /// and position is the 1-based residue index. Comma-separate multiples.
     /// Example: A5G = Ala→Gly at position 5.  A5G,L10W = two mutations.
-    #[command(
-        after_long_help = "EXAMPLES:\n\
+    #[command(after_long_help = "EXAMPLES:\n\
   warp-pep mutate -i input.pdb -m A5G -o out.pdb\n\
   warp-pep mutate -s ACDEF -m C2G,D3W --oxt -o out.pdb\n\
-  warp-pep mutate -t ALA-CYX-HID -m H3W --detect-ss"
-    )]
+  warp-pep mutate -t ALA-CYX-HID -m H3W --detect-ss")]
     Mutate {
         /// Input structure file to mutate. Supported formats:
         ///   PDB, PDBx/CIF, XYZ, GRO, MOL2, Amber CRD, LAMMPS.
@@ -250,8 +250,24 @@ fn emit(
     }
 }
 
+fn structure_total_atoms(struc: &warp_pep::residue::Structure) -> usize {
+    struc
+        .chains
+        .iter()
+        .map(|chain| {
+            chain
+                .residues
+                .iter()
+                .map(|res| res.atoms.len())
+                .sum::<usize>()
+        })
+        .sum()
+}
+
 fn main() {
     let cli = Cli::parse();
+
+    let emitter = StreamEmitter::new(cli.stream);
 
     let result = match cli.command {
         Commands::Build {
@@ -278,6 +294,7 @@ fn main() {
             phi.as_deref(),
             psi.as_deref(),
             omega.as_deref(),
+            emitter,
         ),
         Commands::Mutate {
             input,
@@ -299,6 +316,7 @@ fn main() {
             oxt,
             detect_ss,
             preset.as_deref(),
+            emitter,
         ),
     };
 
@@ -320,14 +338,53 @@ fn run_build(
     phi: Option<&str>,
     psi: Option<&str>,
     omega: Option<&str>,
+    emitter: StreamEmitter,
 ) -> Result<(), String> {
+    use std::time::Instant;
+
+    let t_start = Instant::now();
+
+    // Emit operation started event
+    if emitter.is_enabled() {
+        // Try to get input path for context
+        let input_path = json.or(sequence).or(three_letter).map(|s| s.to_string());
+        let total_residues = sequence
+            .as_ref()
+            .map(|s| s.len())
+            .or_else(|| three_letter.map(|s| s.split('-').count()))
+            .unwrap_or(0);
+        emitter.emit_operation_started(&warp_pep::streaming::OperationStartedEvent {
+            operation: PepOperation::Build,
+            input_path,
+            total_chains: 1,
+            total_residues,
+            total_mutations: None,
+        });
+    }
+
     // JSON path: self-contained, ignores other flags
     if let Some(json_path) = json {
         let spec = BuildSpec::from_file(json_path)?;
         let struc = spec.execute()?;
-        let out = spec.output.as_ref().or(output.as_ref());
-        let fmt = spec.format.as_ref().or(format.as_ref());
-        return emit(&struc, &out.cloned(), &fmt.cloned());
+        let out = spec.output.as_ref().or(output.as_ref()).cloned();
+        let fmt = spec.format.as_ref().or(format.as_ref()).cloned();
+
+        emit(&struc, &out, &fmt)?;
+
+        if emitter.is_enabled() {
+            let total_atoms = structure_total_atoms(&struc);
+            let total_residues = struc.total_residues();
+            emitter.emit_operation_complete(&warp_pep::streaming::OperationCompleteEvent {
+                operation: PepOperation::Build,
+                total_atoms,
+                total_residues,
+                total_chains: struc.chains.len(),
+                output_path: out,
+                elapsed_ms: warp_pep::streaming::duration_ms(t_start.elapsed()),
+            });
+        }
+
+        return Ok(());
     }
 
     // Resolve preset if given
@@ -355,14 +412,32 @@ fn run_build(
                 _ => return Err("must provide both --phi and --psi or neither".into()),
             }
         };
-        if oxt { builder::add_terminal_oxt(&mut struc); }
-        if detect_ss { disulfide::detect_disulfides(&mut struc); }
-        return emit(&struc, output, format);
+        if oxt {
+            builder::add_terminal_oxt(&mut struc);
+        }
+        if detect_ss {
+            disulfide::detect_disulfides(&mut struc);
+        }
+
+        emit(&struc, output, format)?;
+
+        if emitter.is_enabled() {
+            let total_atoms = structure_total_atoms(&struc);
+            let total_residues = struc.total_residues();
+            emitter.emit_operation_complete(&warp_pep::streaming::OperationCompleteEvent {
+                operation: PepOperation::Build,
+                total_atoms,
+                total_residues,
+                total_chains: struc.chains.len(),
+                output_path: output.clone(),
+                elapsed_ms: warp_pep::streaming::duration_ms(t_start.elapsed()),
+            });
+        }
+        return Ok(());
     }
 
     // One-letter path — preserve case for D-amino support (lowercase = D-form)
-    let seq = sequence
-        .ok_or("provide --sequence, --three-letter, or --json")?;
+    let seq = sequence.ok_or("provide --sequence, --three-letter, or --json")?;
 
     let mut struc = if let Some(preset) = rama {
         builder::make_preset_structure(seq, preset)?
@@ -378,9 +453,28 @@ fn run_build(
         }
     };
 
-    if oxt { builder::add_terminal_oxt(&mut struc); }
-    if detect_ss { disulfide::detect_disulfides(&mut struc); }
-    emit(&struc, output, format)
+    if oxt {
+        builder::add_terminal_oxt(&mut struc);
+    }
+    if detect_ss {
+        disulfide::detect_disulfides(&mut struc);
+    }
+
+    emit(&struc, output, format)?;
+
+    if emitter.is_enabled() {
+        let total_atoms = structure_total_atoms(&struc);
+        let total_residues = struc.total_residues();
+        emitter.emit_operation_complete(&warp_pep::streaming::OperationCompleteEvent {
+            operation: PepOperation::Build,
+            total_atoms,
+            total_residues,
+            total_chains: struc.chains.len(),
+            output_path: output.clone(),
+            elapsed_ms: warp_pep::streaming::duration_ms(t_start.elapsed()),
+        });
+    }
+    Ok(())
 }
 
 fn run_mutate(
@@ -393,7 +487,32 @@ fn run_mutate(
     oxt: bool,
     detect_ss: bool,
     preset: Option<&str>,
+    emitter: StreamEmitter,
 ) -> Result<(), String> {
+    use std::time::Instant;
+
+    let t_start = Instant::now();
+
+    // Count mutations for progress tracking
+    let mutation_specs: Vec<&str> = mutations
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let total_mutations = mutation_specs.len();
+
+    // Emit operation started event
+    if emitter.is_enabled() {
+        let input_path = input.or(sequence).or(three_letter).map(|s| s.to_string());
+        emitter.emit_operation_started(&warp_pep::streaming::OperationStartedEvent {
+            operation: PepOperation::Mutate,
+            input_path,
+            total_chains: 1,
+            total_residues: 0,
+            total_mutations: Some(total_mutations),
+        });
+    }
+
     let rama = match preset {
         Some(p) => Some(RamaPreset::from_str(p).ok_or_else(|| format!("unknown preset '{}'", p))?),
         None => None,
@@ -416,16 +535,46 @@ fn run_mutate(
         return Err("provide --input, --sequence, or --three-letter".into());
     };
 
-    for spec in mutations.split(',') {
-        let spec = spec.trim();
-        if spec.is_empty() {
-            continue;
-        }
+    for (idx, spec) in mutation_specs.iter().enumerate() {
+        let t_mutation = Instant::now();
         let (from, pos, to) = mutation::parse_mutation_spec(spec)?;
-        mutation::mutate_residue_checked(&mut struc, Some(from), pos, to)?;
+        let result = mutation::mutate_residue_checked(&mut struc, Some(from), pos, to);
+
+        if emitter.is_enabled() {
+            let successful = result.is_ok();
+            emitter.emit_mutation_complete(&warp_pep::streaming::MutationCompleteEvent {
+                mutation_index: idx + 1,
+                total_mutations,
+                mutation_spec: spec.to_string(),
+                successful,
+                elapsed_ms: warp_pep::streaming::duration_ms(t_mutation.elapsed()),
+            });
+        }
+
+        result?;
     }
 
-    if oxt { builder::add_terminal_oxt(&mut struc); }
-    if detect_ss { disulfide::detect_disulfides(&mut struc); }
-    emit(&struc, output, format)
+    if oxt {
+        builder::add_terminal_oxt(&mut struc);
+    }
+    if detect_ss {
+        disulfide::detect_disulfides(&mut struc);
+    }
+
+    emit(&struc, output, format)?;
+
+    if emitter.is_enabled() {
+        let total_atoms = structure_total_atoms(&struc);
+        let total_residues = struc.total_residues();
+        emitter.emit_operation_complete(&warp_pep::streaming::OperationCompleteEvent {
+            operation: PepOperation::Mutate,
+            total_atoms,
+            total_residues,
+            total_chains: struc.chains.len(),
+            output_path: output.clone(),
+            elapsed_ms: warp_pep::streaming::duration_ms(t_start.elapsed()),
+        });
+    }
+
+    Ok(())
 }

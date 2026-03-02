@@ -1,0 +1,31 @@
+# Requirements for warp-md Agent Framework Examples
+#
+# Install with: pip install -r requirements.txt
+#
+# Framework-specific installation:
+# - LangChain: pip install langchain langchain-core langchain-openai
+# - CrewAI: pip install crewai crewai-tools
+# - AutoGen: pip install pyautogen
+# - OpenAI Agents: pip install openai-agents
+
+# Core dependencies
+pydantic>=2.0.0
+
+# LangChain (optional)
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-openai>=0.1.0
+
+# CrewAI (optional)
+crewai>=0.1.0
+crewai-tools>=0.1.0
+
+# OpenAI Agents SDK (optional)
+openai>=1.0.0
+openai-agents>=0.1.0
+
+# AutoGen (optional)
+pyautogen>=0.2.0
+
+# Optional: for progress tracking
+python-dotenv>=1.0.0

@@ -186,7 +186,12 @@ impl SpatialHashV2 {
 
     /// Convert position to flat cell index (dense mode only)
     #[inline]
-    fn flat_cell_index(&self, p: Vec3, grid_offset: (i32, i32, i32), grid_dims: (i32, i32, i32)) -> usize {
+    fn flat_cell_index(
+        &self,
+        p: Vec3,
+        grid_offset: (i32, i32, i32),
+        grid_dims: (i32, i32, i32),
+    ) -> usize {
         Self::flat_cell_index_with_cell(self.cell, p, grid_offset, grid_dims)
     }
 
@@ -206,7 +211,16 @@ impl SpatialHashV2 {
     pub fn insert(&mut self, atom_idx: usize, pos: Vec3) {
         let cell = self.cell;
         match &mut self.storage {
-            Storage::Dense { cell_first, grid_dims, grid_offset, atom_next, non_empty_first, cell_next, is_empty, n_atoms } => {
+            Storage::Dense {
+                cell_first,
+                grid_dims,
+                grid_offset,
+                atom_next,
+                non_empty_first,
+                cell_next,
+                is_empty,
+                n_atoms,
+            } => {
                 // Ensure capacity for atom_next
                 if atom_idx >= atom_next.len() {
                     atom_next.resize(atom_idx + 1, END_OF_LIST);
@@ -228,7 +242,11 @@ impl SpatialHashV2 {
 
                 *n_atoms = (*n_atoms).max(atom_idx + 1);
             }
-            Storage::Sparse { cell_map, atom_next, n_atoms } => {
+            Storage::Sparse {
+                cell_map,
+                atom_next,
+                n_atoms,
+            } => {
                 // Ensure capacity for atom_next
                 if atom_idx >= atom_next.len() {
                     atom_next.resize(atom_idx + 1, END_OF_LIST);
@@ -252,7 +270,16 @@ impl SpatialHashV2 {
     pub fn remove(&mut self, atom_idx: usize, pos: Vec3) {
         let cell = self.cell;
         match &mut self.storage {
-            Storage::Dense { cell_first, grid_dims, grid_offset, atom_next, cell_next, non_empty_first, is_empty, .. } => {
+            Storage::Dense {
+                cell_first,
+                grid_dims,
+                grid_offset,
+                atom_next,
+                cell_next,
+                non_empty_first,
+                is_empty,
+                ..
+            } => {
                 let cell_idx = Self::flat_cell_index_with_cell(cell, pos, *grid_offset, *grid_dims);
 
                 let mut prev_idx = END_OF_LIST;
@@ -271,7 +298,12 @@ impl SpatialHashV2 {
 
                         // Check if cell is now empty
                         if cell_first[cell_idx] == END_OF_LIST {
-                            Self::mark_cell_empty_dense(cell_idx, cell_next, non_empty_first, is_empty);
+                            Self::mark_cell_empty_dense(
+                                cell_idx,
+                                cell_next,
+                                non_empty_first,
+                                is_empty,
+                            );
                         }
 
                         return;
@@ -280,7 +312,11 @@ impl SpatialHashV2 {
                     current = atom_next[current];
                 }
             }
-            Storage::Sparse { cell_map, atom_next, .. } => {
+            Storage::Sparse {
+                cell_map,
+                atom_next,
+                ..
+            } => {
                 let cell_key = Self::cell_coords_with_cell(cell, pos);
 
                 if let Some(head) = cell_map.get_mut(&cell_key) {
@@ -359,7 +395,14 @@ impl SpatialHashV2 {
         F: FnMut(usize),
     {
         match &self.storage {
-            Storage::Dense { cell_first, grid_dims, grid_offset, atom_next, is_empty, .. } => {
+            Storage::Dense {
+                cell_first,
+                grid_dims,
+                grid_offset,
+                atom_next,
+                is_empty,
+                ..
+            } => {
                 let (center_ix, center_iy, center_iz) = self.flat_to_3d(
                     self.flat_cell_index(pos, *grid_offset, *grid_dims),
                     *grid_dims,
@@ -373,9 +416,12 @@ impl SpatialHashV2 {
                             let iz = center_iz + dz;
 
                             // Check bounds
-                            if ix < 0 || ix >= grid_dims.0
-                                || iy < 0 || iy >= grid_dims.1
-                                || iz < 0 || iz >= grid_dims.2
+                            if ix < 0
+                                || ix >= grid_dims.0
+                                || iy < 0
+                                || iy >= grid_dims.1
+                                || iz < 0
+                                || iz >= grid_dims.2
                             {
                                 continue;
                             }
@@ -396,7 +442,11 @@ impl SpatialHashV2 {
                     }
                 }
             }
-            Storage::Sparse { cell_map, atom_next, .. } => {
+            Storage::Sparse {
+                cell_map,
+                atom_next,
+                ..
+            } => {
                 let (ix, iy, iz) = self.cell_coords(pos);
                 for dx in -1i32..=1 {
                     for dy in -1i32..=1 {
@@ -432,24 +482,31 @@ impl SpatialHashV2 {
     {
         // Forward neighbor offsets (14 cells total)
         const FORWARD_OFFSETS: [(i32, i32, i32); 14] = [
-            (0, 0, 0),  // Current cell
-            (1, 0, 0),  // +x face
-            (0, 1, 0),  // +y face
-            (0, 0, 1),  // +z face
-            (1, -1, 0), // +x-y edge
-            (1, 0, -1), // +x-z edge
-            (0, 1, -1), // +y-z edge
-            (0, 1, 1),  // +y+z edge
-            (1, 1, 0),  // +x+y edge
-            (1, 0, 1),  // +x+z edge
+            (0, 0, 0),   // Current cell
+            (1, 0, 0),   // +x face
+            (0, 1, 0),   // +y face
+            (0, 0, 1),   // +z face
+            (1, -1, 0),  // +x-y edge
+            (1, 0, -1),  // +x-z edge
+            (0, 1, -1),  // +y-z edge
+            (0, 1, 1),   // +y+z edge
+            (1, 1, 0),   // +x+y edge
+            (1, 0, 1),   // +x+z edge
             (1, -1, -1), // +x-y-z corner
-            (1, -1, 1), // +x-y+z corner
-            (1, 1, -1), // +x+y-z corner
-            (1, 1, 1),  // +x+y+z corner
+            (1, -1, 1),  // +x-y+z corner
+            (1, 1, -1),  // +x+y-z corner
+            (1, 1, 1),   // +x+y+z corner
         ];
 
         match &self.storage {
-            Storage::Dense { cell_first, grid_dims, grid_offset, atom_next, is_empty, .. } => {
+            Storage::Dense {
+                cell_first,
+                grid_dims,
+                grid_offset,
+                atom_next,
+                is_empty,
+                ..
+            } => {
                 let (center_ix, center_iy, center_iz) = self.flat_to_3d(
                     self.flat_cell_index(pos, *grid_offset, *grid_dims),
                     *grid_dims,
@@ -461,9 +518,12 @@ impl SpatialHashV2 {
                     let iz = center_iz + dz;
 
                     // Check bounds
-                    if ix < 0 || ix >= grid_dims.0
-                        || iy < 0 || iy >= grid_dims.1
-                        || iz < 0 || iz >= grid_dims.2
+                    if ix < 0
+                        || ix >= grid_dims.0
+                        || iy < 0
+                        || iy >= grid_dims.1
+                        || iz < 0
+                        || iz >= grid_dims.2
                     {
                         continue;
                     }
@@ -482,7 +542,11 @@ impl SpatialHashV2 {
                     }
                 }
             }
-            Storage::Sparse { cell_map, atom_next, .. } => {
+            Storage::Sparse {
+                cell_map,
+                atom_next,
+                ..
+            } => {
                 let (ix, iy, iz) = self.cell_coords(pos);
                 for (dx, dy, dz) in FORWARD_OFFSETS {
                     let key = (ix + dx, iy + dy, iz + dz);
@@ -511,7 +575,14 @@ impl SpatialHashV2 {
         G: FnMut(usize) -> f32,
     {
         match &self.storage {
-            Storage::Dense { cell_first, grid_dims, grid_offset, atom_next, is_empty, .. } => {
+            Storage::Dense {
+                cell_first,
+                grid_dims,
+                grid_offset,
+                atom_next,
+                is_empty,
+                ..
+            } => {
                 for (i, p) in positions.iter().enumerate() {
                     let r = radius(i);
                     let (center_ix, center_iy, center_iz) = self.flat_to_3d(
@@ -527,14 +598,18 @@ impl SpatialHashV2 {
                                 let iz = center_iz + dz;
 
                                 // Check bounds
-                                if ix < 0 || ix >= grid_dims.0
-                                    || iy < 0 || iy >= grid_dims.1
-                                    || iz < 0 || iz >= grid_dims.2
+                                if ix < 0
+                                    || ix >= grid_dims.0
+                                    || iy < 0
+                                    || iy >= grid_dims.1
+                                    || iz < 0
+                                    || iz >= grid_dims.2
                                 {
                                     continue;
                                 }
 
-                                let cell_idx = ((ix * grid_dims.1 + iy) * grid_dims.2 + iz) as usize;
+                                let cell_idx =
+                                    ((ix * grid_dims.1 + iy) * grid_dims.2 + iz) as usize;
 
                                 // Skip empty cells (Packmol optimization)
                                 if is_empty[cell_idx] {
@@ -558,7 +633,11 @@ impl SpatialHashV2 {
                 }
                 false
             }
-            Storage::Sparse { cell_map, atom_next, .. } => {
+            Storage::Sparse {
+                cell_map,
+                atom_next,
+                ..
+            } => {
                 for (i, p) in positions.iter().enumerate() {
                     let r = radius(i);
                     let (ix, iy, iz) = self.cell_coords(*p);
@@ -606,7 +685,14 @@ impl SpatialHashV2 {
         let mut penalty = 0.0f32;
 
         match &self.storage {
-            Storage::Dense { cell_first, grid_dims, grid_offset, atom_next, is_empty, .. } => {
+            Storage::Dense {
+                cell_first,
+                grid_dims,
+                grid_offset,
+                atom_next,
+                is_empty,
+                ..
+            } => {
                 for p in positions {
                     let (center_ix, center_iy, center_iz) = self.flat_to_3d(
                         self.flat_cell_index(*p, *grid_offset, *grid_dims),
@@ -621,14 +707,18 @@ impl SpatialHashV2 {
                                 let iz = center_iz + dz;
 
                                 // Check bounds
-                                if ix < 0 || ix >= grid_dims.0
-                                    || iy < 0 || iy >= grid_dims.1
-                                    || iz < 0 || iz >= grid_dims.2
+                                if ix < 0
+                                    || ix >= grid_dims.0
+                                    || iy < 0
+                                    || iy >= grid_dims.1
+                                    || iz < 0
+                                    || iz >= grid_dims.2
                                 {
                                     continue;
                                 }
 
-                                let cell_idx = ((ix * grid_dims.1 + iy) * grid_dims.2 + iz) as usize;
+                                let cell_idx =
+                                    ((ix * grid_dims.1 + iy) * grid_dims.2 + iz) as usize;
 
                                 // Skip empty cells (Packmol optimization)
                                 if is_empty[cell_idx] {
@@ -658,7 +748,11 @@ impl SpatialHashV2 {
                 }
                 Some(penalty)
             }
-            Storage::Sparse { cell_map, atom_next, .. } => {
+            Storage::Sparse {
+                cell_map,
+                atom_next,
+                ..
+            } => {
                 for p in positions {
                     let (ix, iy, iz) = self.cell_coords(*p);
                     for dx in -1i32..=1 {
@@ -696,7 +790,15 @@ impl SpatialHashV2 {
     /// Clear all data (equivalent to creating a new instance)
     pub fn clear(&mut self) {
         match &mut self.storage {
-            Storage::Dense { cell_first, atom_next, non_empty_first, cell_next, is_empty, n_atoms, .. } => {
+            Storage::Dense {
+                cell_first,
+                atom_next,
+                non_empty_first,
+                cell_next,
+                is_empty,
+                n_atoms,
+                ..
+            } => {
                 cell_first.fill(END_OF_LIST);
                 atom_next.clear();
                 *non_empty_first = END_OF_LIST;
@@ -704,7 +806,11 @@ impl SpatialHashV2 {
                 is_empty.fill(true);
                 *n_atoms = 0;
             }
-            Storage::Sparse { cell_map, atom_next, n_atoms } => {
+            Storage::Sparse {
+                cell_map,
+                atom_next,
+                n_atoms,
+            } => {
                 cell_map.clear();
                 atom_next.clear();
                 *n_atoms = 0;
@@ -715,7 +821,15 @@ impl SpatialHashV2 {
     /// Get statistics about the spatial hash
     pub fn stats(&self) -> SpatialHashStats {
         match &self.storage {
-            Storage::Dense { cell_first, atom_next, grid_dims, non_empty_first, cell_next, n_atoms, .. } => {
+            Storage::Dense {
+                cell_first,
+                atom_next,
+                grid_dims,
+                non_empty_first,
+                cell_next,
+                n_atoms,
+                ..
+            } => {
                 let mut n_non_empty = 0;
                 let mut atoms_in_non_empty = 0;
                 let mut max_atoms_per_cell = 0;
@@ -749,7 +863,11 @@ impl SpatialHashV2 {
                     max_atoms_per_cell,
                 }
             }
-            Storage::Sparse { cell_map, atom_next, n_atoms } => {
+            Storage::Sparse {
+                cell_map,
+                atom_next,
+                n_atoms,
+            } => {
                 let mut n_non_empty = 0;
                 let mut atoms_in_non_empty = 0;
                 let mut max_atoms_per_cell = 0;
@@ -797,11 +915,8 @@ mod tests {
 
     #[test]
     fn test_basic_insertion() {
-        let mut hash = SpatialHashV2::new(
-            1.0,
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(10.0, 10.0, 10.0),
-        );
+        let mut hash =
+            SpatialHashV2::new(1.0, Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 10.0));
 
         hash.insert(0, Vec3::new(1.5, 1.5, 1.5));
         hash.insert(1, Vec3::new(1.6, 1.6, 1.6));
@@ -813,11 +928,7 @@ mod tests {
 
     #[test]
     fn test_degenerate_extents_clamp_to_valid_dims() {
-        let hash = SpatialHashV2::new(
-            1.0,
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 2.0, -3.0),
-        );
+        let hash = SpatialHashV2::new(1.0, Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 2.0, -3.0));
 
         // With the new implementation, we can't directly check grid_dims
         // but we can check that stats returns the correct cell count
@@ -826,11 +937,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_query_with_zero_extent_box() {
-        let mut hash = SpatialHashV2::new(
-            1.0,
-            Vec3::new(1.0, 1.0, 1.0),
-            Vec3::new(1.0, 1.0, 1.0),
-        );
+        let mut hash = SpatialHashV2::new(1.0, Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, 1.0, 1.0));
         hash.insert(0, Vec3::new(1.0, 1.0, 1.0));
 
         let mut seen = Vec::new();
@@ -897,11 +1004,8 @@ mod tests {
     #[test]
     fn test_clear_works_for_both_modes() {
         // Dense mode
-        let mut dense_hash = SpatialHashV2::new(
-            1.0,
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(10.0, 10.0, 10.0),
-        );
+        let mut dense_hash =
+            SpatialHashV2::new(1.0, Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, 10.0, 10.0));
         dense_hash.insert(0, Vec3::new(1.0, 1.0, 1.0));
         dense_hash.clear();
         assert_eq!(dense_hash.stats().total_atoms, 0);

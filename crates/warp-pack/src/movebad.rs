@@ -215,7 +215,8 @@ pub(crate) fn run_movebad_pass(
             }
 
             // Store old positions for incremental hash updates
-            let mut old_positions: Vec<(usize, Vec3)> = Vec::with_capacity(target_atom_indices.len());
+            let mut old_positions: Vec<(usize, Vec3)> =
+                Vec::with_capacity(target_atom_indices.len());
             for &atom_idx in target_atom_indices {
                 old_positions.push((atom_idx, positions[atom_idx]));
             }
@@ -581,6 +582,7 @@ fn optimize_target_constraints(
         false,
         Some(spec_index),
         Some(target_index),
+        None,
     )?;
     if !molecule_satisfies_constraints(spec, positions, target_atom_indices, pbc) {
         let _ = optimize_gencan(
@@ -597,6 +599,7 @@ fn optimize_target_constraints(
             false,
             Some(spec_index),
             Some(target_index),
+            None,
         )?;
     }
     Ok(())

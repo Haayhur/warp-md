@@ -18,4 +18,5 @@ pub mod mutation;
 pub mod non_standard;
 pub mod residue;
 pub mod selection;
+pub mod streaming;
 pub mod validation;

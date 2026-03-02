@@ -7,6 +7,7 @@ use crate::atom_params::{build_atom_params, max_radius, scale_atom_params, AtomP
 use crate::config::PackConfig;
 use crate::error::{PackError, PackResult};
 use crate::gencan::{evaluate_state, optimize_gencan, GencanResult};
+use crate::gencan_objective::ObjectiveBuffer;
 use crate::geom::{Quaternion, Vec3};
 use crate::io::write_output;
 use crate::movebad::{build_movebad_index, run_movebad_pass};
@@ -21,6 +22,7 @@ use crate::placement::PlacementRecord;
 use crate::relax::relax_overlaps;
 use crate::restart::{read_restart, write_restart, RestartEntry};
 use crate::spatial_hash::{SpatialHash, SpatialHashParamsExt, SpatialHashV2};
+use crate::streaming::{PackingPhase, StreamEmitter};
 
 #[derive(Clone, Debug)]
 pub struct AtomRecord {
@@ -73,14 +75,8 @@ impl PackProfile {
     }
 }
 
-fn rebuild_hash_from_positions(
-    hash: &mut SpatialHashV2,
-    positions: &[Vec3],
-    cell_size: f32,
-    box_min: Vec3,
-    box_max: Vec3,
-) {
-    *hash = SpatialHashV2::new(cell_size, box_min, box_max);
+fn rebuild_hash_from_positions(hash: &mut SpatialHashV2, positions: &[Vec3]) {
+    hash.clear();
     for (idx, pos) in positions.iter().copied().enumerate() {
         hash.insert(idx, pos);
     }
@@ -142,16 +138,25 @@ pub enum AtomRecordKind {
 }
 
 pub fn run(config: &PackConfig) -> PackResult<PackOutput> {
+    run_with_stream(config, StreamEmitter::disabled())
+}
+
+pub fn run_with_stream(config: &PackConfig, emitter: StreamEmitter) -> PackResult<PackOutput> {
     let cfg = config.normalized()?;
     let seed = cfg.seed.unwrap_or(1_234_567);
-    let out = run_once(&cfg, seed, 0)?;
+    let out = run_once(&cfg, seed, 0, emitter)?;
     if cfg.check {
         validate_min_distance(&out.atoms, cfg.min_distance.unwrap_or(2.0))?;
     }
     Ok(out)
 }
 
-fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutput> {
+fn run_once(
+    cfg: &PackConfig,
+    seed: u64,
+    _attempt: usize,
+    emitter: StreamEmitter,
+) -> PackResult<PackOutput> {
     let mut profile = if PackProfile::enabled() {
         Some(PackProfile::default())
     } else {
@@ -171,6 +176,17 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
     };
     let dist_scale = 1.0f32;
     let total_mols: usize = cfg.structures.iter().map(|s| s.count).sum();
+
+    // Emit pack started event
+    if emitter.is_enabled() {
+        emitter.emit_pack_started(&crate::streaming::PackStartedEvent {
+            total_molecules: total_mols,
+            box_size,
+            box_origin: [box_origin.x, box_origin.y, box_origin.z],
+            output_path: cfg.output.as_ref().map(|spec| spec.path.clone()),
+        });
+    }
+
     let restart_all = if let Some(path) = &cfg.restart_from {
         Some(read_restart(Path::new(path))?)
     } else {
@@ -241,6 +257,15 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
     let mut templates = Vec::with_capacity(cfg.structures.len());
     let mut max_atom_radius = 0.0f32;
     let t_templates = Instant::now();
+
+    if emitter.is_enabled() {
+        emitter.emit_phase_started(&crate::streaming::PhaseStartedEvent {
+            phase: PackingPhase::TemplateLoad,
+            total_molecules: Some(total_mols),
+            max_iterations: None,
+        });
+    }
+
     for (idx, spec) in cfg.structures.iter().enumerate() {
         let format = spec.format.as_deref().or(cfg.filetype.as_deref());
         let template = load_template(
@@ -277,6 +302,14 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
     }
     if let Some(ref mut prof) = profile {
         prof.templates += t_templates.elapsed();
+    }
+    if emitter.is_enabled() {
+        emitter.emit_phase_complete(&crate::streaming::PhaseCompleteEvent {
+            phase: PackingPhase::TemplateLoad,
+            elapsed_ms: crate::streaming::duration_ms(t_templates.elapsed()),
+            iterations: None,
+            final_obj_value: None,
+        });
     }
     if !use_short_tol {
         use_short_tol = templates
@@ -360,6 +393,16 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
     if cfg.randominitialpoint {
         order.shuffle(&mut rng);
     }
+
+    if emitter.is_enabled() {
+        emitter.emit_phase_started(&crate::streaming::PhaseStartedEvent {
+            phase: PackingPhase::CorePlacement,
+            total_molecules: Some(total_mols),
+            max_iterations: None,
+        });
+    }
+    let t_placement = Instant::now();
+    let mut molecules_placed = 0usize;
 
     struct Candidate {
         penalty: f32,
@@ -556,6 +599,17 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
         placements[mol_index] = PlacementRecord::new(best.center, best.euler);
         placement_filled[mol_index] = true;
         mol_spec.push(placement.spec_index);
+
+        molecules_placed += 1;
+        if emitter.is_enabled() {
+            emitter.emit_molecule_placed(&crate::streaming::MoleculePlacedEvent {
+                molecule_index: molecules_placed,
+                total_molecules: total_mols,
+                molecule_name: spec.path.clone(),
+                successful: true,
+            });
+        }
+
         if best.penalty > 0.0 {
             // Avoid expensive per-molecule GENCAN during initial placement; a
             // constrained overlap fallback should remain cheap and rely on the
@@ -569,6 +623,15 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
 
         // Packmol does not run movebad after each individual molecule placement.
         // Keep movebad in the later optimization loops only.
+    }
+
+    if emitter.is_enabled() {
+        emitter.emit_phase_complete(&crate::streaming::PhaseCompleteEvent {
+            phase: PackingPhase::CorePlacement,
+            elapsed_ms: crate::streaming::duration_ms(t_placement.elapsed()),
+            iterations: None,
+            final_obj_value: None,
+        });
     }
 
     if placement_filled.iter().any(|filled| !filled) {
@@ -586,6 +649,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
     let precision = cfg.precision.unwrap_or(1.0e-2);
     let use_short_tol = cfg.use_short_tol;
     let trace_outer = std::env::var("WARP_PACK_TRACE_OUTER").is_ok();
+    let mut eval_objective_buffer = ObjectiveBuffer::default();
     let initial_stats = evaluate_state(
         cfg,
         &atoms,
@@ -598,6 +662,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
         true,
         None,
         None,
+        &mut eval_objective_buffer,
     )?;
     let initial_solution =
         initial_stats.max_overlap <= precision && initial_stats.max_constraint <= precision;
@@ -607,6 +672,13 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
 
     if !initial_solution {
         let t_gencan = Instant::now();
+        if emitter.is_enabled() {
+            emitter.emit_phase_started(&crate::streaming::PhaseStartedEvent {
+                phase: PackingPhase::GencanOptimization,
+                total_molecules: Some(total_mols),
+                max_iterations: cfg.maxit,
+            });
+        }
         let nloop0_default = cfg.nloop0.unwrap_or(0);
         let nloop_default = cfg.nloop.unwrap_or(1);
         let snapshot_enabled = cfg.writeout.is_some() || cfg.writebad;
@@ -625,6 +697,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                 continue;
             }
             let mut radscale = radscale_start;
+            eval_objective_buffer = ObjectiveBuffer::default();
             let mut base_stats = evaluate_state(
                 cfg,
                 &atoms,
@@ -637,6 +710,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                 true,
                 Some(spec_index),
                 None,
+                &mut eval_objective_buffer,
             )?;
             if base_stats.max_constraint <= precision {
                 continue;
@@ -657,6 +731,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                     false,
                     Some(spec_index),
                     None,
+                    Some(emitter),
                 )?;
                 base_stats = GencanResult {
                     value: res.value,
@@ -664,8 +739,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                     max_constraint: res.max_constraint,
                 };
                 if !cfg.disable_movebad && base_stats.max_constraint > precision {
-                    let box_max = box_origin.add(Vec3::from_array(box_size));
-                    rebuild_hash_from_positions(&mut hash, &positions, cell_size, box_origin, box_max);
+                    rebuild_hash_from_positions(&mut hash, &positions);
                     let t_movebad = Instant::now();
                     run_movebad_pass(
                         cfg,
@@ -688,6 +762,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                     if let Some(ref mut prof) = profile {
                         prof.movebad += t_movebad.elapsed();
                     }
+                    eval_objective_buffer = ObjectiveBuffer::default();
                     base_stats = evaluate_state(
                         cfg,
                         &atoms,
@@ -700,6 +775,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                         true,
                         Some(spec_index),
                         None,
+                        &mut eval_objective_buffer,
                     )?;
                 }
                 if base_stats.max_constraint <= precision {
@@ -727,6 +803,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
             }
 
             let mut radscale = radscale_start;
+            eval_objective_buffer = ObjectiveBuffer::default();
             let mut stats = evaluate_state(
                 cfg,
                 &atoms,
@@ -739,6 +816,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                 true,
                 active_spec,
                 None,
+                &mut eval_objective_buffer,
             )?;
             let mut bestf = stats.value;
             let mut flast = stats.value;
@@ -753,9 +831,15 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
 
             for loop_idx in 0..stage_nloop {
                 if !cfg.disable_movebad && radscale <= 1.0 + 1.0e-6 && fimp <= 10.0 {
-                    let box_max = box_origin.add(Vec3::from_array(box_size));
-                    rebuild_hash_from_positions(&mut hash, &positions, cell_size, box_origin, box_max);
+                    rebuild_hash_from_positions(&mut hash, &positions);
                     let t_movebad = Instant::now();
+                    if emitter.is_enabled() {
+                        emitter.emit_phase_started(&crate::streaming::PhaseStartedEvent {
+                            phase: PackingPhase::MoveBad,
+                            total_molecules: Some(total_mols),
+                            max_iterations: None,
+                        });
+                    }
                     run_movebad_pass(
                         cfg,
                         &templates,
@@ -777,6 +861,15 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                     if let Some(ref mut prof) = profile {
                         prof.movebad += t_movebad.elapsed();
                     }
+                    if emitter.is_enabled() {
+                        emitter.emit_phase_complete(&crate::streaming::PhaseCompleteEvent {
+                            phase: PackingPhase::MoveBad,
+                            elapsed_ms: crate::streaming::duration_ms(t_movebad.elapsed()),
+                            iterations: None,
+                            final_obj_value: None,
+                        });
+                    }
+                    eval_objective_buffer = ObjectiveBuffer::default();
                     stats = evaluate_state(
                         cfg,
                         &atoms,
@@ -789,6 +882,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                         true,
                         active_spec,
                         None,
+                        &mut eval_objective_buffer,
                     )?;
                     flast = stats.value;
                 }
@@ -808,9 +902,11 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                     true,
                     active_spec,
                     None,
+                    Some(emitter),
                 )?;
 
                 // Packmol computes loop statistics and convergence with user radii (unscaled).
+                eval_objective_buffer = ObjectiveBuffer::default();
                 stats = evaluate_state(
                     cfg,
                     &atoms,
@@ -823,6 +919,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                     true,
                     active_spec,
                     None,
+                    &mut eval_objective_buffer,
                 )?;
                 if flast > 0.0 {
                     fimp = (-100.0 * (stats.value - flast) / flast)
@@ -865,6 +962,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                     let snapshot_value = if active_spec.is_none() {
                         stats.value
                     } else {
+                        eval_objective_buffer = ObjectiveBuffer::default();
                         evaluate_state(
                             cfg,
                             &atoms,
@@ -877,6 +975,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
                             true,
                             None,
                             None,
+                            &mut eval_objective_buffer,
                         )?
                         .value
                     };
@@ -910,10 +1009,25 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
         if let Some(ref mut prof) = profile {
             prof.gencan += t_gencan.elapsed();
         }
+        if emitter.is_enabled() {
+            emitter.emit_phase_complete(&crate::streaming::PhaseCompleteEvent {
+                phase: PackingPhase::GencanOptimization,
+                elapsed_ms: crate::streaming::duration_ms(t_gencan.elapsed()),
+                iterations: None,
+                final_obj_value: None,
+            });
+        }
     }
 
     if cfg.relax_steps.unwrap_or(0) > 0 {
         let t_relax = Instant::now();
+        if emitter.is_enabled() {
+            emitter.emit_phase_started(&crate::streaming::PhaseStartedEvent {
+                phase: PackingPhase::Relax,
+                total_molecules: Some(total_mols),
+                max_iterations: Some(cfg.relax_steps.unwrap_or(0)),
+            });
+        }
         relax_overlaps(
             cfg,
             &mut atoms,
@@ -929,6 +1043,14 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
         if let Some(ref mut prof) = profile {
             prof.relax += t_relax.elapsed();
         }
+        if emitter.is_enabled() {
+            emitter.emit_phase_complete(&crate::streaming::PhaseCompleteEvent {
+                phase: PackingPhase::Relax,
+                elapsed_ms: crate::streaming::duration_ms(t_relax.elapsed()),
+                iterations: Some(cfg.relax_steps.unwrap_or(0)),
+                final_obj_value: None,
+            });
+        }
     }
 
     if cfg.restart_to.is_some() || cfg.structures.iter().any(|spec| spec.restart_to.is_some()) {
@@ -938,7 +1060,7 @@ fn run_once(cfg: &PackConfig, seed: u64, _attempt: usize) -> PackResult<PackOutp
     ter_after.sort_unstable();
     ter_after.dedup();
 
-    if let Some(prof) = profile {
+    if let Some(prof) = profile.as_ref() {
         prof.report();
     }
 

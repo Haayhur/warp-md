@@ -1,7 +1,7 @@
 //! Terminal capping groups: ACE (acetyl, N-terminal) and NME (N-methylamide, C-terminal).
 
 use crate::coord::calculate_coordinates;
-use crate::residue::{Atom, Residue, ResName, Structure};
+use crate::residue::{Atom, ResName, Residue, Structure};
 
 /// Pseudo-ResName tag for caps — ACE and NME have first-class ResName variants.
 

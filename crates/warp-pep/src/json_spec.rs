@@ -31,7 +31,7 @@
 use serde::Deserialize;
 use std::path::Path;
 
-use crate::builder::{self, ChainSpec, ResSpec, RamaPreset, parse_three_letter_sequence};
+use crate::builder::{self, parse_three_letter_sequence, ChainSpec, RamaPreset, ResSpec};
 use crate::disulfide;
 use crate::mutation;
 use crate::residue::Structure;
@@ -102,10 +102,9 @@ impl BuildSpec {
     /// Load from a JSON file.
     pub fn from_file(path: &str) -> Result<Self, String> {
         let p = Path::new(path);
-        let text = std::fs::read_to_string(p)
-            .map_err(|e| format!("failed to read '{}': {}", path, e))?;
-        serde_json::from_str(&text)
-            .map_err(|e| format!("invalid JSON in '{}': {}", path, e))
+        let text =
+            std::fs::read_to_string(p).map_err(|e| format!("failed to read '{}': {}", path, e))?;
+        serde_json::from_str(&text).map_err(|e| format!("invalid JSON in '{}': {}", path, e))
     }
 
     /// Parse the residues list into ResSpecs.
@@ -135,12 +134,7 @@ impl BuildSpec {
         } else {
             match (&self.phi, &self.psi) {
                 (Some(phi), Some(psi)) => {
-                    builder::make_structure_from_specs(
-                        &specs,
-                        phi,
-                        psi,
-                        self.omega.as_deref(),
-                    )?
+                    builder::make_structure_from_specs(&specs, phi, psi, self.omega.as_deref())?
                 }
                 (None, None) => builder::make_extended_structure_from_specs(&specs)?,
                 _ => return Err("must provide both phi and psi or neither".into()),
@@ -173,11 +167,17 @@ impl BuildSpec {
             let joined = cdef.residues.join("-");
             let residues = parse_three_letter_sequence(&joined)?;
             let preset = match &cdef.preset {
-                Some(p) => Some(RamaPreset::from_str(p)
-                    .ok_or_else(|| format!("unknown preset '{}' for chain '{}'", p, id))?),
+                Some(p) => Some(
+                    RamaPreset::from_str(p)
+                        .ok_or_else(|| format!("unknown preset '{}' for chain '{}'", p, id))?,
+                ),
                 None => None,
             };
-            chain_specs.push(ChainSpec { id, residues, preset });
+            chain_specs.push(ChainSpec {
+                id,
+                residues,
+                preset,
+            });
         }
         let mut struc = builder::make_multi_chain_structure(&chain_specs)?;
 

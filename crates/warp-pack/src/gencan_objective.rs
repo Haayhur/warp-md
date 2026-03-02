@@ -7,6 +7,7 @@ use crate::geom::Vec3;
 use crate::pack::AtomRecord;
 use crate::pbc::PbcBox;
 use crate::placement::PlacementRecord;
+use std::collections::HashMap;
 
 #[cfg(feature = "cuda")]
 use std::cell::RefCell;
@@ -365,6 +366,12 @@ pub(crate) struct CpuSparseCellList<'a> {
 }
 
 #[derive(Default)]
+struct SparseCellBucket {
+    cell_id: usize,
+    atoms: Vec<usize>,
+}
+
+#[derive(Default)]
 pub(crate) struct CpuCellBuffer {
     pub(crate) counts: Vec<usize>,
     pub(crate) cell_ids: Vec<usize>,
@@ -373,7 +380,9 @@ pub(crate) struct CpuCellBuffer {
     pub(crate) offsets: Vec<usize>,
     pub(crate) cursor: Vec<usize>,
     pub(crate) sorted_atoms: Vec<usize>,
-    pub(crate) pairs: Vec<(usize, usize)>,
+    sparse_lookup: HashMap<usize, usize>,
+    sparse_order: Vec<usize>,
+    sparse_buckets: Vec<SparseCellBucket>,
 }
 
 #[derive(Default)]
@@ -518,8 +527,10 @@ fn build_cpu_cell_list<'a>(
     let use_sparse = n_cells > MAX_CPU_CELLS || n_cells > dense_target_cells;
 
     if use_sparse {
-        buffer.pairs.clear();
-        let pairs = &mut buffer.pairs;
+        buffer.sparse_lookup.clear();
+        buffer.sparse_order.clear();
+        let mut used_buckets = 0usize;
+
         if let Some(indices) = atom_indices {
             for &atom_idx in indices {
                 let cell_id = position_to_cell_id(
@@ -530,7 +541,22 @@ fn build_cpu_cell_list<'a>(
                     dims,
                     periodic,
                 );
-                pairs.push((cell_id, atom_idx));
+                let bucket_idx = if let Some(&idx) = buffer.sparse_lookup.get(&cell_id) {
+                    idx
+                } else {
+                    let idx = used_buckets;
+                    used_buckets += 1;
+                    if idx == buffer.sparse_buckets.len() {
+                        buffer.sparse_buckets.push(SparseCellBucket::default());
+                    }
+                    let bucket = &mut buffer.sparse_buckets[idx];
+                    bucket.cell_id = cell_id;
+                    bucket.atoms.clear();
+                    buffer.sparse_lookup.insert(cell_id, idx);
+                    buffer.sparse_order.push(idx);
+                    idx
+                };
+                buffer.sparse_buckets[bucket_idx].atoms.push(atom_idx);
             }
         } else {
             for atom_idx in 0..positions.len() {
@@ -542,22 +568,45 @@ fn build_cpu_cell_list<'a>(
                     dims,
                     periodic,
                 );
-                pairs.push((cell_id, atom_idx));
+                let bucket_idx = if let Some(&idx) = buffer.sparse_lookup.get(&cell_id) {
+                    idx
+                } else {
+                    let idx = used_buckets;
+                    used_buckets += 1;
+                    if idx == buffer.sparse_buckets.len() {
+                        buffer.sparse_buckets.push(SparseCellBucket::default());
+                    }
+                    let bucket = &mut buffer.sparse_buckets[idx];
+                    bucket.cell_id = cell_id;
+                    bucket.atoms.clear();
+                    buffer.sparse_lookup.insert(cell_id, idx);
+                    buffer.sparse_order.push(idx);
+                    idx
+                };
+                buffer.sparse_buckets[bucket_idx].atoms.push(atom_idx);
             }
         }
-        pairs.sort_unstable_by_key(|(cell_id, _)| *cell_id);
+
+        buffer
+            .sparse_order
+            .sort_unstable_by_key(|&idx| buffer.sparse_buckets[idx].cell_id);
 
         buffer.cell_ids.clear();
         buffer.offsets.clear();
         buffer.sorted_atoms.clear();
-        let mut last_cell = None;
-        for (idx, &(cell_id, atom_idx)) in pairs.iter().enumerate() {
-            if last_cell != Some(cell_id) {
-                buffer.cell_ids.push(cell_id);
-                buffer.offsets.push(idx);
-                last_cell = Some(cell_id);
+        buffer.sorted_atoms.reserve(atom_count);
+        {
+            let sparse_order = &buffer.sparse_order;
+            let sparse_buckets = &buffer.sparse_buckets;
+            let cell_ids = &mut buffer.cell_ids;
+            let offsets = &mut buffer.offsets;
+            let sorted_atoms = &mut buffer.sorted_atoms;
+            for &bucket_idx in sparse_order {
+                let bucket = &sparse_buckets[bucket_idx];
+                cell_ids.push(bucket.cell_id);
+                offsets.push(sorted_atoms.len());
+                sorted_atoms.extend_from_slice(&bucket.atoms);
             }
-            buffer.sorted_atoms.push(atom_idx);
         }
         buffer.offsets.push(buffer.sorted_atoms.len());
 

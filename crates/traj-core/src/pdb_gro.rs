@@ -372,9 +372,11 @@ ENDMDL\n"
 
     #[test]
     fn parse_pdb_reader_defaults_to_first_model_only() {
-        let parsed =
-            parse_pdb_reader(Cursor::new(multi_model_fixture()), &PdbParseOptions::default())
-                .expect("parse");
+        let parsed = parse_pdb_reader(
+            Cursor::new(multi_model_fixture()),
+            &PdbParseOptions::default(),
+        )
+        .expect("parse");
         assert_eq!(parsed.atoms.len(), 1);
         assert!((parsed.atoms[0].position[0] - 1.0).abs() < 1e-6);
     }

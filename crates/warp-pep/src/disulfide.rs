@@ -103,25 +103,15 @@ mod tests {
         // Manually build two CYS with SG atoms within cutoff
         let mut struc = make_extended_structure("CC").unwrap();
         // Move second CYS SG close to first CYS SG
-        let sg1 = struc.chain_a().residues[0]
-            .atom_coord("SG")
-            .unwrap();
+        let sg1 = struc.chain_a().residues[0].atom_coord("SG").unwrap();
         let close = sg1.add(Vec3::new(2.0, 0.0, 0.0)); // 2.0 Å apart
 
-        let sg2 = struc.chain_a_mut().residues[1]
-            .atom_mut("SG")
-            .unwrap();
+        let sg2 = struc.chain_a_mut().residues[1].atom_mut("SG").unwrap();
         sg2.coord = close;
 
         assert_eq!(detect_disulfides(&mut struc), 1);
         assert_eq!(struc.ssbonds.len(), 1);
-        assert_eq!(
-            struc.chain_a().residues[0].variant,
-            Some(AmberVariant::CYX)
-        );
-        assert_eq!(
-            struc.chain_a().residues[1].variant,
-            Some(AmberVariant::CYX)
-        );
+        assert_eq!(struc.chain_a().residues[0].variant, Some(AmberVariant::CYX));
+        assert_eq!(struc.chain_a().residues[1].variant, Some(AmberVariant::CYX));
     }
 }

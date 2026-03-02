@@ -4,7 +4,7 @@
 //! negating the dihedral angles in the side-chain geometry, producing the mirror
 //! image of the L-form.
 
-use crate::geometry::{Geo, geometry};
+use crate::geometry::{geometry, Geo};
 use crate::residue::ResName;
 
 /// Return geometry for the D-form of an amino acid.
@@ -50,8 +50,12 @@ mod tests {
         // ALA has one side chain atom (CB)
         assert_eq!(l_geo.side_chain.len(), d_geo.side_chain.len());
         for (l, d) in l_geo.side_chain.iter().zip(d_geo.side_chain.iter()) {
-            assert!((l.dihedral + d.dihedral).abs() < 1e-10,
-                "dihedrals should be negated: {} vs {}", l.dihedral, d.dihedral);
+            assert!(
+                (l.dihedral + d.dihedral).abs() < 1e-10,
+                "dihedrals should be negated: {} vs {}",
+                l.dihedral,
+                d.dihedral
+            );
         }
     }
 
@@ -87,8 +91,13 @@ mod tests {
         let l = geometry(ResName::TRP);
         let d = d_geometry(ResName::TRP);
         for (la, da) in l.side_chain.iter().zip(d.side_chain.iter()) {
-            assert!((la.dihedral + da.dihedral).abs() < 1e-10,
-                "{}: {} vs {}", la.name, la.dihedral, da.dihedral);
+            assert!(
+                (la.dihedral + da.dihedral).abs() < 1e-10,
+                "{}: {} vs {}",
+                la.name,
+                la.dihedral,
+                da.dihedral
+            );
         }
     }
 }

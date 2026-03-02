@@ -4,7 +4,7 @@
 //! MSE is methionine with sulfur replaced by selenium.
 //! PCA is a cyclized glutamic acid found at some N-termini.
 
-use crate::geometry::{Geo, SideChainAtom, geometry};
+use crate::geometry::{geometry, Geo, SideChainAtom};
 use crate::residue::ResName;
 
 /// Non-standard residue identifier.
@@ -86,7 +86,10 @@ mod tests {
     #[test]
     fn test_mse_has_selenium() {
         let geo = mse_geometry();
-        assert!(geo.side_chain.iter().any(|sc| sc.name == "SE" && sc.element == "SE"));
+        assert!(geo
+            .side_chain
+            .iter()
+            .any(|sc| sc.name == "SE" && sc.element == "SE"));
         assert!(!geo.side_chain.iter().any(|sc| sc.name == "SD"));
     }
 

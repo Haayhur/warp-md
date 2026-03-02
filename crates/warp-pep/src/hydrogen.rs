@@ -31,8 +31,10 @@ pub fn add_backbone_hydrogens(struc: &mut Structure) {
                     first.atom_coord("CA"),
                     first.atom_coord("C"),
                 ) {
-                    let h1 = calculate_coordinates(c_coord, ca_coord, n_coord, NH_BOND, 109.5, 60.0);
-                    let h2 = calculate_coordinates(c_coord, ca_coord, n_coord, NH_BOND, 109.5, -60.0);
+                    let h1 =
+                        calculate_coordinates(c_coord, ca_coord, n_coord, NH_BOND, 109.5, 60.0);
+                    let h2 =
+                        calculate_coordinates(c_coord, ca_coord, n_coord, NH_BOND, 109.5, -60.0);
                     chain.residues[0].atoms.push(Atom::new("H1", "H", h1));
                     chain.residues[0].atoms.push(Atom::new("H2", "H", h2));
                 }

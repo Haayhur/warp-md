@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_mutate_chain_b() {
-        use crate::builder::{ChainSpec, make_multi_chain_structure, parse_three_letter_sequence};
+        use crate::builder::{make_multi_chain_structure, parse_three_letter_sequence, ChainSpec};
         let chains = vec![
             ChainSpec {
                 id: 'A',
@@ -175,7 +175,10 @@ mod tests {
         let mut struc = make_multi_chain_structure(&chains).unwrap();
         // Position 3 = first residue of chain B (global numbering: 1,2 in A; 3,4 in B)
         mutate_residue(&mut struc, 3, ResName::TRP).unwrap();
-        assert_eq!(struc.chain_by_id('B').unwrap().residues[0].name, ResName::TRP);
+        assert_eq!(
+            struc.chain_by_id('B').unwrap().residues[0].name,
+            ResName::TRP
+        );
         // Chain A untouched
         assert_eq!(struc.chain_a().residues[0].name, ResName::ALA);
     }

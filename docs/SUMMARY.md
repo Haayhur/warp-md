@@ -1,5 +1,10 @@
 # Summary
 
+## For AI Agents
+
+* [For Agents](for-agents.md)
+* [Sample Agent Conversations](guides/agent-transcripts.md)
+
 ## Getting Started
 
 * [Introduction](README.md)
@@ -17,6 +22,8 @@
 
 ## Guides
 
+* [Agent Framework Integrations](guides/agent-frameworks.md)
+* [Streaming Progress API](guides/streaming-progress.md)
 * [Molecule Packing](guides/packing.md)
 * [CUDA & GPU Acceleration](guides/cuda-gpu.md)
 
@@ -39,3 +46,4 @@
 ## Examples
 
 * [Zika VLP Packing Tutorial](tutorial/zika_vlp_packmol_tutorial.md)
+* [Agent Quickstart Notebook](../examples/agents/agent_quickstart.ipynb)

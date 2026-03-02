@@ -89,7 +89,10 @@ fn check_missing_backbone(struc: &Structure, issues: &mut Vec<ValidationIssue>) 
                         kind: IssueKind::MissingAtom,
                         message: format!(
                             "chain {} res {} {}: missing backbone atom {}",
-                            chain.id, res.seq_id, res.name.as_str(), name
+                            chain.id,
+                            res.seq_id,
+                            res.name.as_str(),
+                            name
                         ),
                     });
                 }
@@ -135,7 +138,13 @@ fn check_steric_clashes(struc: &Structure, issues: &mut Vec<ValidationIssue>) {
     for chain in &struc.chains {
         for res in &chain.residues {
             for atom in &res.atoms {
-                let label = format!("{}/{}{}/{}", chain.id, res.name.as_str(), res.seq_id, atom.name);
+                let label = format!(
+                    "{}/{}{}/{}",
+                    chain.id,
+                    res.name.as_str(),
+                    res.seq_id,
+                    atom.name
+                );
                 all_atoms.push(AtomEntry {
                     coord: atom.coord,
                     label,
@@ -191,7 +200,11 @@ pub fn check_atom_counts(struc: &Structure) -> Vec<ValidationIssue> {
                     kind: IssueKind::MissingAtom,
                     message: format!(
                         "chain {} res {} {}: {} heavy atoms, expected {}",
-                        chain.id, res.seq_id, res.name.as_str(), heavy, expected
+                        chain.id,
+                        res.seq_id,
+                        res.name.as_str(),
+                        heavy,
+                        expected
                     ),
                 });
             }
@@ -203,13 +216,18 @@ pub fn check_atom_counts(struc: &Structure) -> Vec<ValidationIssue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builder::{make_extended_structure, make_extended_structure_from_specs, parse_three_letter_sequence};
+    use crate::builder::{
+        make_extended_structure, make_extended_structure_from_specs, parse_three_letter_sequence,
+    };
 
     #[test]
     fn test_valid_structure_no_errors() {
         let struc = make_extended_structure("AAA").unwrap();
         let issues = validate(&struc);
-        let errors: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error).collect();
+        let errors: Vec<_> = issues
+            .iter()
+            .filter(|i| i.severity == Severity::Error)
+            .collect();
         assert!(errors.is_empty(), "no errors expected: {:?}", errors);
     }
 
@@ -217,8 +235,15 @@ mod tests {
     fn test_peptide_bond_ok() {
         let struc = make_extended_structure("AG").unwrap();
         let issues = validate(&struc);
-        let bond_issues: Vec<_> = issues.iter().filter(|i| i.kind == IssueKind::BondLength).collect();
-        assert!(bond_issues.is_empty(), "peptide bonds should be OK: {:?}", bond_issues);
+        let bond_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == IssueKind::BondLength)
+            .collect();
+        assert!(
+            bond_issues.is_empty(),
+            "peptide bonds should be OK: {:?}",
+            bond_issues
+        );
     }
 
     #[test]
@@ -230,18 +255,22 @@ mod tests {
 
     #[test]
     fn test_missing_backbone_detected() {
-        use crate::residue::{Atom, Residue, Structure};
         use crate::coord::Vec3;
+        use crate::residue::{Atom, Residue, Structure};
         let mut struc = Structure::new();
         // Create a residue missing "O"
         let mut res = Residue::new(ResName::ALA, 1);
         res.atoms.push(Atom::new("N", "N", Vec3::zero()));
-        res.atoms.push(Atom::new("CA", "C", Vec3::new(1.0, 0.0, 0.0)));
-        res.atoms.push(Atom::new("C", "C", Vec3::new(2.0, 0.0, 0.0)));
+        res.atoms
+            .push(Atom::new("CA", "C", Vec3::new(1.0, 0.0, 0.0)));
+        res.atoms
+            .push(Atom::new("C", "C", Vec3::new(2.0, 0.0, 0.0)));
         // No "O" atom
         struc.chain_a_mut().residues.push(res);
         let issues = validate(&struc);
-        assert!(issues.iter().any(|i| i.kind == IssueKind::MissingAtom && i.message.contains("O")));
+        assert!(issues
+            .iter()
+            .any(|i| i.kind == IssueKind::MissingAtom && i.message.contains("O")));
     }
 
     #[test]
@@ -249,6 +278,10 @@ mod tests {
         let specs = parse_three_letter_sequence("PCA-ALA").unwrap();
         let struc = make_extended_structure_from_specs(&specs).unwrap();
         let issues = check_atom_counts(&struc);
-        assert!(issues.is_empty(), "PCA atom counts should match: {:?}", issues);
+        assert!(
+            issues.is_empty(),
+            "PCA atom counts should match: {:?}",
+            issues
+        );
     }
 }
