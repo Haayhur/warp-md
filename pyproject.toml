@@ -19,6 +19,7 @@ gist = ["openmm"]
 [project.scripts]
 warp-md = "warp_md.cli:main"
 warp-pack = "warp_md.pack_cli:main"
+warp-pep = "warp_md.pep_cli:main"
 
 [tool.maturin]
 manifest-path = "crates/traj-py/Cargo.toml"

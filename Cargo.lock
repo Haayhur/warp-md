@@ -890,6 +890,7 @@ dependencies = [
  "traj-engine",
  "traj-io",
  "warp-pack",
+ "warp-pep",
 ]
 
 [[package]]

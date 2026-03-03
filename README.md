@@ -20,12 +20,7 @@ pip install "warp-md[cli]"
 Installed CLI entry points:
 - `warp-md` (analysis/config runner)
 - `warp-pack` (packing utility)
-
-`warp-pep` is currently distributed as a Rust crate CLI:
-
-```bash
-cargo install --path crates/warp-pep --force
-```
+- `warp-pep` (peptide build/mutate utility)
 
 ## Build from Source
 

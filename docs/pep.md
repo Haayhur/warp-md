@@ -2,13 +2,13 @@
 
 All-atom peptide structure construction and mutation from amino acid sequences using internal coordinate geometry.
 
-> Note: the `warp-md` wheel currently does not expose a `warp_md.pep` Python module.
-> Python examples below call the `warp-pep` CLI via `subprocess`.
+`warp-pep` is exposed as a pip-installed CLI entry point from `warp-md`.
+Python examples below call the CLI via `subprocess`.
 
-Install `warp-pep` CLI (from repo root):
+Install:
 
 ```bash
-cargo install --path crates/warp-pep --force
+pip install warp-md
 ```
 
 ## CLI

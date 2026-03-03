@@ -642,6 +642,196 @@ fn pack_write_output(
     .map_err(|e| PyRuntimeError::new_err(e.to_string()))
 }
 
+fn pep_emit(
+    struc: &warp_pep::residue::Structure,
+    output: Option<&str>,
+    format: Option<&str>,
+) -> Result<(), String> {
+    match output {
+        Some(path) => warp_pep::convert::write_structure(struc, path, format),
+        None => warp_pep::convert::write_structure_stdout(struc, format.unwrap_or("pdb")),
+    }
+}
+
+fn pep_parse_preset(preset: Option<&str>) -> Result<Option<warp_pep::builder::RamaPreset>, String> {
+    match preset {
+        Some(p) => Ok(Some(
+            warp_pep::builder::RamaPreset::from_str(p)
+                .ok_or_else(|| format!("unknown preset '{p}'"))?,
+        )),
+        None => Ok(None),
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (sequence=None, three_letter=None, json_path=None, output=None, format=None, oxt=false, preset=None, phi=None, psi=None, omega=None, detect_ss=false))]
+fn pep_build(
+    sequence: Option<String>,
+    three_letter: Option<String>,
+    json_path: Option<String>,
+    output: Option<String>,
+    format: Option<String>,
+    oxt: bool,
+    preset: Option<String>,
+    phi: Option<Vec<f64>>,
+    psi: Option<Vec<f64>>,
+    omega: Option<Vec<f64>>,
+    detect_ss: bool,
+) -> PyResult<()> {
+    if let Some(path) = json_path.as_deref() {
+        // JSON mode is self-contained; preserve warp-pep CLI behavior:
+        // spec output/format take precedence over explicit overrides.
+        let spec = warp_pep::json_spec::BuildSpec::from_file(path)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let struc = spec
+            .execute()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let out = spec.output.as_deref().or(output.as_deref());
+        let fmt = spec.format.as_deref().or(format.as_deref());
+        return pep_emit(&struc, out, fmt).map_err(|e| PyRuntimeError::new_err(e.to_string()));
+    }
+
+    let rama = pep_parse_preset(preset.as_deref())
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    if let Some(tl) = three_letter.as_deref() {
+        let specs = warp_pep::builder::parse_three_letter_sequence(&tl.to_uppercase())
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let mut struc = if let Some(p) = rama {
+            warp_pep::builder::make_preset_structure_from_specs(&specs, p)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        } else {
+            match (&phi, &psi) {
+                (Some(phi_v), Some(psi_v)) => {
+                    warp_pep::builder::make_structure_from_specs(
+                        &specs,
+                        phi_v,
+                        psi_v,
+                        omega.as_deref(),
+                    )
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+                }
+                (None, None) => warp_pep::builder::make_extended_structure_from_specs(&specs)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+                _ => {
+                    return Err(PyRuntimeError::new_err(
+                        "must provide both phi and psi or neither",
+                    ))
+                }
+            }
+        };
+        if oxt {
+            warp_pep::builder::add_terminal_oxt(&mut struc);
+        }
+        if detect_ss {
+            warp_pep::disulfide::detect_disulfides(&mut struc);
+        }
+        return pep_emit(&struc, output.as_deref(), format.as_deref())
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()));
+    }
+
+    let seq = sequence
+        .as_deref()
+        .ok_or_else(|| PyRuntimeError::new_err("provide sequence, three_letter, or json_path"))?;
+    let mut struc = if let Some(p) = rama {
+        warp_pep::builder::make_preset_structure(seq, p)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+    } else {
+        match (&phi, &psi) {
+            (Some(phi_v), Some(psi_v)) => warp_pep::builder::make_structure(
+                seq,
+                phi_v,
+                psi_v,
+                omega.as_deref(),
+            )
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            (None, None) => warp_pep::builder::make_extended_structure(seq)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            _ => {
+                return Err(PyRuntimeError::new_err(
+                    "must provide both phi and psi or neither",
+                ))
+            }
+        }
+    };
+
+    if oxt {
+        warp_pep::builder::add_terminal_oxt(&mut struc);
+    }
+    if detect_ss {
+        warp_pep::disulfide::detect_disulfides(&mut struc);
+    }
+
+    pep_emit(&struc, output.as_deref(), format.as_deref())
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
+#[pyfunction]
+#[pyo3(signature = (input_path=None, sequence=None, three_letter=None, mutations=None, output=None, format=None, oxt=false, preset=None, detect_ss=false))]
+fn pep_mutate(
+    input_path: Option<String>,
+    sequence: Option<String>,
+    three_letter: Option<String>,
+    mutations: Option<Vec<String>>,
+    output: Option<String>,
+    format: Option<String>,
+    oxt: bool,
+    preset: Option<String>,
+    detect_ss: bool,
+) -> PyResult<()> {
+    let mutation_specs = mutations.unwrap_or_default();
+    if mutation_specs.is_empty() {
+        return Err(PyRuntimeError::new_err(
+            "must provide at least one mutation spec",
+        ));
+    }
+
+    let rama = pep_parse_preset(preset.as_deref())
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    let mut struc = if let Some(path) = input_path.as_deref() {
+        warp_pep::convert::read_structure(path)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+    } else if let Some(tl) = three_letter.as_deref() {
+        let specs = warp_pep::builder::parse_three_letter_sequence(&tl.to_uppercase())
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        match rama {
+            Some(p) => warp_pep::builder::make_preset_structure_from_specs(&specs, p)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            None => warp_pep::builder::make_extended_structure_from_specs(&specs)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        }
+    } else if let Some(seq) = sequence.as_deref() {
+        match rama {
+            Some(p) => warp_pep::builder::make_preset_structure(seq, p)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            None => warp_pep::builder::make_extended_structure(seq)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+        }
+    } else {
+        return Err(PyRuntimeError::new_err(
+            "provide input_path, sequence, or three_letter",
+        ));
+    };
+
+    for spec in mutation_specs {
+        let (from, pos, to) = warp_pep::mutation::parse_mutation_spec(&spec)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        warp_pep::mutation::mutate_residue_checked(&mut struc, Some(from), pos, to)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    }
+
+    if oxt {
+        warp_pep::builder::add_terminal_oxt(&mut struc);
+    }
+    if detect_ss {
+        warp_pep::disulfide::detect_disulfides(&mut struc);
+    }
+
+    pep_emit(&struc, output.as_deref(), format.as_deref())
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
 #[pymodule]
 fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
@@ -762,6 +952,8 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rotdif_fit, m)?)?;
     m.add_function(wrap_pyfunction!(gist_apply_pme_scaling, m)?)?;
     m.add_function(wrap_pyfunction!(pack_write_output, m)?)?;
+    m.add_function(wrap_pyfunction!(pep_build, m)?)?;
+    m.add_function(wrap_pyfunction!(pep_mutate, m)?)?;
     Ok(())
 }
 

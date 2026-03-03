@@ -12,13 +12,12 @@ warp-pep builds peptides from internal coordinate geometry (bond lengths, angles
 {% endhint %}
 
 {% hint style="warning" %}
-The `warp-md` wheel does not currently expose a `warp_md.pep` Python module.
-Python snippets in this guide drive the `warp-pep` CLI via `subprocess`.
+The `warp-md` wheel exposes `warp-pep` as a CLI entry point.
+Python snippets in this guide drive the CLI via `subprocess`.
 {% endhint %}
 
 ```bash
-# From repo root
-cargo install --path crates/warp-pep --force
+pip install warp-md
 ```
 
 ---
