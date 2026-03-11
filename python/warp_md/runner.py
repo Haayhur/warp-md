@@ -39,6 +39,7 @@ from .agent_schema import (
     classify_error,
     validate_run_request,
 )
+from . import contract
 from .cli_api import _load_system, _load_trajectory
 from .cli_builders import PLAN_BUILDERS
 from .cli_config import _default_out
@@ -64,7 +65,7 @@ def run_analyses(
     output_dir: Optional[str] = None,
     device: Optional[str] = None,
     chunk_frames: Optional[int] = None,
-    fail_fast: bool = True,
+    fail_fast: Optional[bool] = None,
     on_checkpoint: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_analysis_complete: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> RunEnvelope:
@@ -78,7 +79,7 @@ def run_analyses(
         output_dir: Override output directory (default: from request or temp)
         device: Override device (default: from request or "auto")
         chunk_frames: Override chunk size
-        fail_fast: Stop on first failure (default True)
+        fail_fast: Stop on first failure; defaults to request.fail_fast when omitted
         on_checkpoint: Optional callback for progress events
         on_analysis_complete: Optional callback after each analysis
     
@@ -89,8 +90,7 @@ def run_analyses(
     started_at = _now_utc_iso()
     results: List[Dict[str, Any]] = []
     warnings: List[str] = []
-    
-    # Parse request
+
     if isinstance(request, (str, Path)):
         path = Path(request)
         if path.suffix in (".yaml", ".yml"):
@@ -107,8 +107,7 @@ def run_analyses(
         cfg_raw = request.model_dump(mode="python")
     else:
         raise TypeError("request must be path, dict, or RunRequest")
-    
-    # Validate
+
     try:
         cfg = validate_run_request(cfg_raw)
     except ValidationError as exc:
@@ -132,16 +131,16 @@ def run_analyses(
                 "context": {},
             },
         )
-    
-    # Apply overrides
+
     run_id = cfg.run_id
     system_spec = cfg.system_spec
     traj_spec = cfg.trajectory_spec
     out_dir = output_dir or cfg.output_dir or tempfile.mkdtemp(prefix="warp_md_")
     default_device = device or cfg.device or "auto"
     default_chunk = chunk_frames or cfg.chunk_frames
-    
-    # Load system
+    requested_analysis_count = len(cfg.analyses)
+    effective_fail_fast = cfg.fail_fast if fail_fast is None else fail_fast
+
     try:
         system = _load_system(system_spec)
     except Exception as exc:
@@ -153,7 +152,7 @@ def run_analyses(
             output_dir=out_dir,
             system=system_spec,
             trajectory=traj_spec,
-            analysis_count=len(cfg.analyses),
+            analysis_count=requested_analysis_count,
             started_at=started_at,
             finished_at=_now_utc_iso(),
             elapsed_ms=int((time.perf_counter() - run_start) * 1000),
@@ -165,22 +164,20 @@ def run_analyses(
                 "context": {"stage": "system_load"},
             },
         )
-    
-    # Create output dir
+
     Path(out_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Load trajectory
+
     traj = None
     used_names: Dict[str, int] = {}
-    
+
     for index, analysis in enumerate(cfg.analyses):
         item = analysis.model_dump(mode="python")
         requested_name = item["name"]
-        
+
         try:
             name = _resolve_plan_name(requested_name)
         except Exception as exc:
-            if fail_fast:
+            if effective_fail_fast:
                 return RunErrorEnvelope(
                     schema_version=AGENT_RESULT_SCHEMA_VERSION,
                     status="error",
@@ -189,7 +186,7 @@ def run_analyses(
                     output_dir=out_dir,
                     system=system_spec,
                     trajectory=traj_spec,
-                    analysis_count=len(cfg.analyses),
+                    analysis_count=requested_analysis_count,
                     started_at=started_at,
                     finished_at=_now_utc_iso(),
                     elapsed_ms=int((time.perf_counter() - run_start) * 1000),
@@ -201,12 +198,11 @@ def run_analyses(
                         "context": {"analysis": requested_name, "index": index},
                     },
                 )
-            warnings.append(f"skipped unknown analysis: {requested_name}")
+            warnings.append(f"analysis {index} ({requested_name}) skipped: {exc}")
             continue
-        
+
         out_path = item.get("out") or _default_out(name, out_dir, used_names)
-        
-        # Load trajectory on first use
+
         if traj is None:
             try:
                 traj = _load_trajectory(traj_spec, system)
@@ -219,7 +215,7 @@ def run_analyses(
                     output_dir=out_dir,
                     system=system_spec,
                     trajectory=traj_spec,
-                    analysis_count=len(cfg.analyses),
+                    analysis_count=requested_analysis_count,
                     started_at=started_at,
                     finished_at=_now_utc_iso(),
                     elapsed_ms=int((time.perf_counter() - run_start) * 1000),
@@ -231,12 +227,11 @@ def run_analyses(
                         "context": {"analysis": name, "index": index},
                     },
                 )
-        
-        # Build plan
+
         try:
             plan = PLAN_BUILDERS[name](system, item)
         except Exception as exc:
-            if fail_fast:
+            if effective_fail_fast:
                 return RunErrorEnvelope(
                     schema_version=AGENT_RESULT_SCHEMA_VERSION,
                     status="error",
@@ -245,7 +240,7 @@ def run_analyses(
                     output_dir=out_dir,
                     system=system_spec,
                     trajectory=traj_spec,
-                    analysis_count=len(cfg.analyses),
+                    analysis_count=requested_analysis_count,
                     started_at=started_at,
                     finished_at=_now_utc_iso(),
                     elapsed_ms=int((time.perf_counter() - run_start) * 1000),
@@ -257,19 +252,18 @@ def run_analyses(
                         "context": {"analysis": name, "index": index},
                     },
                 )
-            warnings.append(f"skipped {name}: {exc}")
+            warnings.append(f"{name} spec failed: {exc}")
             continue
-        
-        # Run
+
         analysis_start = time.perf_counter()
         dev = item.get("device", default_device)
         chunk = item.get("chunk_frames", default_chunk)
-        
+
         try:
             output = plan.run(traj, system, chunk_frames=chunk, device=dev)
             saved_path = _save_output(out_path, output)
         except Exception as exc:
-            if fail_fast:
+            if effective_fail_fast:
                 return RunErrorEnvelope(
                     schema_version=AGENT_RESULT_SCHEMA_VERSION,
                     status="error",
@@ -278,7 +272,7 @@ def run_analyses(
                     output_dir=out_dir,
                     system=system_spec,
                     trajectory=traj_spec,
-                    analysis_count=len(cfg.analyses),
+                    analysis_count=requested_analysis_count,
                     started_at=started_at,
                     finished_at=_now_utc_iso(),
                     elapsed_ms=int((time.perf_counter() - run_start) * 1000),
@@ -292,7 +286,7 @@ def run_analyses(
                 )
             warnings.append(f"{name} failed: {exc}")
             continue
-        
+
         entry = _summary_from_output(output, name, Path(saved_path))
         entry["analysis"] = name
         entry["out"] = saved_path
@@ -300,12 +294,19 @@ def run_analyses(
         entry["device"] = dev
         entry["chunk_frames"] = chunk
         entry["timing_ms"] = int((time.perf_counter() - analysis_start) * 1000)
-        entry["artifact"] = _artifact_metadata(saved_path)
+
+        # Get contract outputs for semantic metadata
+        contract_outputs = None
+        plan_contract = contract.ANALYSIS_METADATA.get(name)
+        if plan_contract:
+            contract_outputs = plan_contract.outputs
+
+        entry["artifact"] = _artifact_metadata(saved_path, analysis_name=name, contract_outputs=contract_outputs)
         results.append(entry)
-        
+
         if on_analysis_complete:
             on_analysis_complete(entry)
-    
+
     return RunSuccessEnvelope(
         schema_version=AGENT_RESULT_SCHEMA_VERSION,
         status="ok",
@@ -314,7 +315,7 @@ def run_analyses(
         output_dir=out_dir,
         system=system_spec,
         trajectory=traj_spec,
-        analysis_count=len(results),
+        analysis_count=requested_analysis_count,
         started_at=started_at,
         finished_at=_now_utc_iso(),
         elapsed_ms=int((time.perf_counter() - run_start) * 1000),

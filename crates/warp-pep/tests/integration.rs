@@ -164,7 +164,11 @@ fn test_beta_sheet_extended_distances() {
     }
     // End-to-end distance should be much larger than helix (≈ 30 Å for 10 res)
     let e2e = inter_residue_dist(&sheet, 0, 0, "CA", 9, "CA");
-    assert!(e2e > 25.0, "beta e2e = {:.1} Å too short for an extended strand", e2e);
+    assert!(
+        e2e > 25.0,
+        "beta e2e = {:.1} Å too short for an extended strand",
+        e2e
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -378,8 +382,18 @@ fn test_json_spec_multi_chain_with_ss_detection() {
     assert_eq!(struc.chains[0].id, 'H');
     assert_eq!(struc.chains[1].id, 'L');
     // Both chains should have OXT
-    assert!(struc.chains[0].residues.last().unwrap().atom_coord("OXT").is_some());
-    assert!(struc.chains[1].residues.last().unwrap().atom_coord("OXT").is_some());
+    assert!(struc.chains[0]
+        .residues
+        .last()
+        .unwrap()
+        .atom_coord("OXT")
+        .is_some());
+    assert!(struc.chains[1]
+        .residues
+        .last()
+        .unwrap()
+        .atom_coord("OXT")
+        .is_some());
 }
 
 #[test]
@@ -394,7 +408,11 @@ fn test_json_spec_custom_angles() {
     assert_eq!(struc.chain_a().residues.len(), 3);
     // Should build just like make_structure with those angles
     let d = inter_residue_dist(&struc, 0, 0, "CA", 1, "CA");
-    assert!(d > 3.5 && d < 4.1, "CA-CA = {:.2} unexpected for helix angles", d);
+    assert!(
+        d > 3.5 && d < 4.1,
+        "CA-CA = {:.2} unexpected for helix angles",
+        d
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -438,9 +456,21 @@ fn test_amber_variant_build_and_readback() {
 #[test]
 fn test_oxt_single_chain() {
     let mut struc = make_extended_structure("ACDE").unwrap();
-    assert!(struc.chain_a().residues.last().unwrap().atom_coord("OXT").is_none());
+    assert!(struc
+        .chain_a()
+        .residues
+        .last()
+        .unwrap()
+        .atom_coord("OXT")
+        .is_none());
     add_terminal_oxt(&mut struc);
-    assert!(struc.chain_a().residues.last().unwrap().atom_coord("OXT").is_some());
+    assert!(struc
+        .chain_a()
+        .residues
+        .last()
+        .unwrap()
+        .atom_coord("OXT")
+        .is_some());
     // OXT should only be on the last residue
     assert!(struc.chain_a().residues[0].atom_coord("OXT").is_none());
 }
@@ -454,7 +484,13 @@ fn test_oxt_survives_pdb_roundtrip() {
     write_structure(&struc, &ps, None).unwrap();
     let back = read_structure(&ps).unwrap();
     let _ = std::fs::remove_file(&path);
-    assert!(back.chain_a().residues.last().unwrap().atom_coord("OXT").is_some());
+    assert!(back
+        .chain_a()
+        .residues
+        .last()
+        .unwrap()
+        .atom_coord("OXT")
+        .is_some());
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -476,7 +512,12 @@ fn test_crambin_sequence_identity() {
     let expected_seq = "TTCCPSIVARSNFNVCRLPGTPEAICATYTGCIIIPGATCPGDYAN";
     let path = fixture("1crn.pdb");
     let struc = read_structure(&path.to_string_lossy()).unwrap();
-    let seq: String = struc.chain_a().residues.iter().map(|r| r.name.to_one_letter()).collect();
+    let seq: String = struc
+        .chain_a()
+        .residues
+        .iter()
+        .map(|r| r.name.to_one_letter())
+        .collect();
     assert_eq!(seq, expected_seq, "crambin sequence mismatch");
 }
 
@@ -558,7 +599,13 @@ fn test_crambin_add_oxt() {
     let path = fixture("1crn.pdb");
     let mut struc = read_structure(&path.to_string_lossy()).unwrap();
     // 1CRN already has OXT on last residue (ASN 46)
-    assert!(struc.chain_a().residues.last().unwrap().atom_coord("OXT").is_some());
+    assert!(struc
+        .chain_a()
+        .residues
+        .last()
+        .unwrap()
+        .atom_coord("OXT")
+        .is_some());
     // add_terminal_oxt should be idempotent
     let atom_count_before = total_atom_count(&struc);
     add_terminal_oxt(&mut struc);
@@ -584,7 +631,12 @@ fn test_egf_sequence_identity() {
                     GDRCQTRDLRWWELR";
     let path = fixture("1egf_model1.pdb");
     let struc = read_structure(&path.to_string_lossy()).unwrap();
-    let seq: String = struc.chain_a().residues.iter().map(|r| r.name.to_one_letter()).collect();
+    let seq: String = struc
+        .chain_a()
+        .residues
+        .iter()
+        .map(|r| r.name.to_one_letter())
+        .collect();
     assert_eq!(seq, expected, "EGF sequence mismatch");
 }
 
@@ -620,12 +672,16 @@ fn test_egf_mutate_cysteine_bridge() {
 
     // Now detect disulfides — should find only 2 (C14-C31, C33-C42)
     let count = detect_disulfides(&mut struc);
-    assert_eq!(count, 2, "after mutating C6→A, only 2 SS bonds should remain");
+    assert_eq!(
+        count, 2,
+        "after mutating C6→A, only 2 SS bonds should remain"
+    );
 
     // The broken bridge (C6-C20) should not appear
-    let has_6_20 = struc.ssbonds.iter().any(|ss| {
-        (ss.resid1 == 6 && ss.resid2 == 20) || (ss.resid1 == 20 && ss.resid2 == 6)
-    });
+    let has_6_20 = struc
+        .ssbonds
+        .iter()
+        .any(|ss| (ss.resid1 == 6 && ss.resid2 == 20) || (ss.resid1 == 20 && ss.resid2 == 6));
     assert!(!has_6_20, "C6-C20 bridge should be broken after mutation");
 }
 
@@ -667,7 +723,13 @@ fn test_build_hegf_with_oxt_and_write() {
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(back.chain_a().residues.len(), 53);
-    assert!(back.chain_a().residues.last().unwrap().atom_coord("OXT").is_some());
+    assert!(back
+        .chain_a()
+        .residues
+        .last()
+        .unwrap()
+        .atom_coord("OXT")
+        .is_some());
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -863,11 +925,80 @@ fn test_cli_build_basic() {
 }
 
 #[test]
+fn test_cli_stream_build_write_failure_omits_operation_complete() {
+    let bin = env!("CARGO_BIN_EXE_warp-pep");
+    let missing_parent = tmp_path("cli_stream_build_missing_parent");
+    let out = missing_parent.join("out.pdb");
+    let _ = std::fs::remove_file(&missing_parent);
+    let _ = std::fs::remove_dir_all(&missing_parent);
+
+    let output = std::process::Command::new(bin)
+        .args([
+            "--stream",
+            "build",
+            "-s",
+            "AGA",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run warp-pep");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "write to missing parent should fail: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"event\":\"operation_started\""),
+        "expected operation_started event: {stderr}"
+    );
+    assert!(
+        !stderr.contains("\"event\":\"operation_complete\""),
+        "operation_complete must not emit before output write succeeds: {stderr}"
+    );
+}
+
+#[test]
+fn test_cli_stream_build_success_emits_operation_complete() {
+    let bin = env!("CARGO_BIN_EXE_warp-pep");
+    let out = tmp_path("cli_stream_build_success.pdb");
+    let output = std::process::Command::new(bin)
+        .args([
+            "--stream",
+            "build",
+            "-s",
+            "AGA",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run warp-pep");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "build returned non-zero: {stderr}");
+    assert!(
+        stderr.contains("\"event\":\"operation_complete\""),
+        "expected operation_complete event: {stderr}"
+    );
+    assert!(out.exists(), "output file missing");
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
 fn test_cli_build_preset() {
     let bin = env!("CARGO_BIN_EXE_warp-pep");
     let out = tmp_path("cli_preset.pdb");
     let status = std::process::Command::new(bin)
-        .args(["build", "-s", "AAAA", "--preset", "alpha", "-o", out.to_str().unwrap()])
+        .args([
+            "build",
+            "-s",
+            "AAAA",
+            "--preset",
+            "alpha",
+            "-o",
+            out.to_str().unwrap(),
+        ])
         .status()
         .expect("failed to run warp-pep");
     assert!(status.success());
@@ -879,7 +1010,13 @@ fn test_cli_build_three_letter() {
     let bin = env!("CARGO_BIN_EXE_warp-pep");
     let out = tmp_path("cli_three.pdb");
     let status = std::process::Command::new(bin)
-        .args(["build", "--three-letter", "ALA-GLY-PRO", "-o", out.to_str().unwrap()])
+        .args([
+            "build",
+            "--three-letter",
+            "ALA-GLY-PRO",
+            "-o",
+            out.to_str().unwrap(),
+        ])
         .status()
         .expect("failed to run warp-pep");
     assert!(status.success());
@@ -894,9 +1031,12 @@ fn test_cli_mutate() {
     let status = std::process::Command::new(bin)
         .args([
             "mutate",
-            "-i", input.to_str().unwrap(),
-            "-m", "P5V",
-            "-o", out.to_str().unwrap(),
+            "-i",
+            input.to_str().unwrap(),
+            "-m",
+            "P5V",
+            "-o",
+            out.to_str().unwrap(),
         ])
         .status()
         .expect("failed to run warp-pep");
@@ -1024,7 +1164,10 @@ fn test_rmsd_ca_consistent_with_all_atoms_for_polyala() {
     let b = make_preset_structure("AAAA", RamaPreset::BetaSheet).unwrap();
     let rmsd_all = rmsd_all_atoms(&a, &b).unwrap();
     let rmsd_c = rmsd_ca(&a, &b).unwrap();
-    assert!(rmsd_c > 0.0, "different conformations should have nonzero CA-RMSD");
+    assert!(
+        rmsd_c > 0.0,
+        "different conformations should have nonzero CA-RMSD"
+    );
     // CA RMSD doesn't need to be <= all-atom exactly, but both should be > 0
     assert!(rmsd_all > 0.0);
 }
@@ -1060,8 +1203,16 @@ fn test_renumber_consistency() {
 #[test]
 fn test_multichain_renumber_per_chain() {
     let specs = vec![
-        ChainSpec { id: 'A', residues: parse_three_letter_sequence("ALA-ALA").unwrap(), preset: None },
-        ChainSpec { id: 'B', residues: parse_three_letter_sequence("GLY-GLY-GLY").unwrap(), preset: None },
+        ChainSpec {
+            id: 'A',
+            residues: parse_three_letter_sequence("ALA-ALA").unwrap(),
+            preset: None,
+        },
+        ChainSpec {
+            id: 'B',
+            residues: parse_three_letter_sequence("GLY-GLY-GLY").unwrap(),
+            preset: None,
+        },
     ];
     let mut struc = make_multi_chain_structure(&specs).unwrap();
     struc.renumber_per_chain(1);
@@ -1094,8 +1245,7 @@ fn test_selection_resid_range() {
     let struc = make_extended_structure("ACDEFGH").unwrap();
     let hits = select(&struc, "resid 2-4").unwrap();
     // residues 2,3,4
-    let res_ids: std::collections::HashSet<i32> =
-        hits.iter().map(|a| a.resid).collect();
+    let res_ids: std::collections::HashSet<i32> = hits.iter().map(|a| a.resid).collect();
     assert!(res_ids.contains(&2));
     assert!(res_ids.contains(&3));
     assert!(res_ids.contains(&4));
@@ -1145,7 +1295,10 @@ fn test_backbone_hydrogens_adds_atoms() {
     let before = total_atom_count(&struc);
     add_backbone_hydrogens(&mut struc);
     let after = total_atom_count(&struc);
-    assert!(after > before, "hydrogen addition should increase atom count");
+    assert!(
+        after > before,
+        "hydrogen addition should increase atom count"
+    );
 }
 
 #[test]
@@ -1165,7 +1318,11 @@ fn test_validation_clean_structure_no_errors() {
         .iter()
         .filter(|i| matches!(i.severity, warp_pep::validation::Severity::Error))
         .collect();
-    assert!(errors.is_empty(), "clean build should have no errors: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "clean build should have no errors: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -1174,14 +1331,20 @@ fn test_validation_detects_missing_backbone() {
     // Remove N from first residue to trigger missing-backbone warning
     struc.chains[0].residues[0].atoms.retain(|a| a.name != "N");
     let issues = validate(&struc);
-    assert!(!issues.is_empty(), "missing N should produce validation issue");
+    assert!(
+        !issues.is_empty(),
+        "missing N should produce validation issue"
+    );
 }
 
 #[test]
 fn test_rg_positive() {
     let struc = make_extended_structure("ACDEFGHIK").unwrap();
     let rg = radius_of_gyration(&struc);
-    assert!(rg > 0.0, "Rg should be positive for a multi-residue peptide");
+    assert!(
+        rg > 0.0,
+        "Rg should be positive for a multi-residue peptide"
+    );
 }
 
 #[test]
@@ -1190,7 +1353,7 @@ fn test_phi_psi_residue_count() {
     let pp = measure_all_phi_psi(&struc);
     assert_eq!(pp.len(), 1); // one chain
     assert_eq!(pp[0].1.len(), 4); // 4 residues
-    // first residue: phi = None (no preceding C)
+                                  // first residue: phi = None (no preceding C)
     assert!(pp[0].1[0].phi.is_none());
     // last residue: psi = None (no following N)
     assert!(pp[0].1[3].psi.is_none());

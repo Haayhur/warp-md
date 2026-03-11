@@ -66,7 +66,8 @@ def test_subprocess_run_validation_error_ndjson(tmp_path) -> None:
 
     result = _run_cli("run", str(cfg_path), "--stream", "ndjson")
     assert result.returncode == 2
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert result.stdout.strip() == ""
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
     assert lines
     event = json.loads(lines[-1])
     assert event["event"] == "run_failed"

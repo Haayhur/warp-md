@@ -112,6 +112,8 @@ Every batch run starts with a `RunRequest` — a Pydantic-validated JSON documen
 | `stream` | `str` | `"none"` | `"none"` or `"ndjson"` |
 | `chunk_frames` | `int?` | `null` | Override chunk size |
 | `output_dir` | `str` | `"."` | Base directory for outputs |
+| `checkpoint` | `object?` | `null` | Optional checkpoint stream config |
+| `fail_fast` | `bool` | `true` | Stop on first analysis failure when `true` |
 | `analyses` | `list` | required | At least one analysis |
 
 \* Specify either `system` or `topology` (not both). Same for `trajectory`/`traj`.
@@ -222,6 +224,8 @@ Every run produces a JSON envelope — success or failure. Your agent always kno
 | `4` | Runtime error (IO/compute) | Check file paths, system compatibility |
 | `5` | Internal error | Report bug |
 
+The `analysis_count` field always reports the requested batch size. Use `len(results)` for successful analyses actually produced.
+
 ### Artifact Metadata
 
 Every successfully saved result includes:
@@ -243,7 +247,7 @@ For long-running batches, enable real-time progress with `"stream": "ndjson"`:
 warp-md run config.json --stream ndjson
 ```
 
-Each line is a self-contained JSON event:
+Each line is a self-contained JSON event written to `stderr`:
 
 ### Event Types
 
@@ -252,15 +256,18 @@ Each line is a self-contained JSON event:
 | `run_started` | Batch begins | `analysis_count`, `progress_pct` |
 | `analysis_started` | Analysis N begins | `index`, `analysis`, `out` |
 | `analysis_completed` | Analysis N succeeds | `timing_ms`, `progress_pct`, `eta_ms` |
+| `checkpoint` | Mid-analysis progress tick | `frames_processed`, `frames_total`, `progress_pct` |
 | `analysis_failed` | Analysis N fails | `error.code`, `error.message` |
 | `run_completed` | All done (success) | `final_envelope` (full success envelope) |
 | `run_failed` | Fatal failure | `final_envelope` (full error envelope) |
+
+`checkpoint` is optional and only appears for analyses that implement mid-run progress hooks.
 
 ### Progress Fields (all events)
 
 | Field | Description |
 |-------|-------------|
-| `completed` | Analyses finished so far |
+| `completed` | Analyses finished so far, including failed analyses |
 | `total` | Total analyses in batch |
 | `progress_pct` | Completion percentage (0–100) |
 | `eta_ms` | Estimated time remaining (milliseconds) |

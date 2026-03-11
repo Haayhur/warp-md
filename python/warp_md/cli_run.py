@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 import time
 import traceback
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from .agent_schema import (
     render_agent_schema,
     validate_run_request,
 )
+from . import contract
 from .cli_api import _load_system, _load_trajectory
 from .cli_args import REGISTRY, add_shared_args
 from .cli_builders import CLI_TO_PLAN, PLAN_BUILDERS
@@ -73,7 +75,7 @@ def _emit_event(stream_mode: str, event: str, **payload: Any) -> None:
         return
     record = {"event": event}
     record.update(payload)
-    print(json.dumps(record, default=str), flush=True)
+    print(json.dumps(record, default=str), file=sys.stderr, flush=True)
 
 
 def _json_safe(value: Any) -> Any:
@@ -147,6 +149,7 @@ def _build_success_envelope(
     output_dir: str,
     system_spec: Dict[str, Any],
     traj_spec: Dict[str, Any],
+    analysis_count: int,
     started_at: str,
     finished_at: str,
     elapsed_ms: int,
@@ -161,7 +164,7 @@ def _build_success_envelope(
         "output_dir": output_dir,
         "system": system_spec,
         "trajectory": traj_spec,
-        "analysis_count": len(results),
+        "analysis_count": analysis_count,
         "started_at": started_at,
         "finished_at": finished_at,
         "elapsed_ms": elapsed_ms,
@@ -182,6 +185,7 @@ def _build_error_envelope(
     output_dir: Optional[str],
     system_spec: Optional[Dict[str, Any]],
     traj_spec: Optional[Dict[str, Any]],
+    analysis_count: int,
     results: list[Dict[str, Any]],
     warnings: list[str],
     context: Optional[Dict[str, Any]] = None,
@@ -209,7 +213,7 @@ def _build_error_envelope(
         "output_dir": output_dir,
         "system": system_spec,
         "trajectory": traj_spec,
-        "analysis_count": len(results),
+        "analysis_count": analysis_count,
         "started_at": started_at,
         "finished_at": finished_at,
         "elapsed_ms": elapsed_ms,
@@ -243,6 +247,8 @@ def run_config(
     output_dir: Optional[str] = None
     system_spec: Optional[Dict[str, Any]] = None
     traj_spec: Optional[Dict[str, Any]] = None
+    total_analyses = 0
+    completed_analyses = 0
 
     try:
         cfg_raw = _load_config(config_path)
@@ -258,6 +264,7 @@ def run_config(
             output_dir=output_dir,
             system_spec=system_spec,
             traj_spec=traj_spec,
+            analysis_count=total_analyses,
             results=results,
             warnings=warnings,
             context={"config_path": config_path},
@@ -290,6 +297,7 @@ def run_config(
             output_dir=output_dir,
             system_spec=system_spec,
             traj_spec=traj_spec,
+            analysis_count=total_analyses,
             results=results,
             warnings=warnings,
             context={"config_path": config_path},
@@ -308,6 +316,7 @@ def run_config(
     default_device = cfg.device
     default_chunk = cfg.chunk_frames
     total_analyses = len(cfg.analyses)
+    fail_fast = cfg.fail_fast
 
     _emit_event(
         stream_mode,
@@ -348,19 +357,39 @@ def run_config(
             try:
                 name = _resolve_plan_name(requested_name)
             except Exception as exc:
-                raise RunContractError(
-                    _EXIT_ANALYSIS_SPEC,
-                    "E_ANALYSIS_UNKNOWN",
-                    str(exc),
-                    context={"analysis": requested_name, "index": index},
-                    details=[
-                        {
-                            "type": "value_error",
-                            "field": f"analyses.{index}.name",
-                            "message": str(exc),
-                        }
-                    ],
-                ) from exc
+                if fail_fast:
+                    raise RunContractError(
+                        _EXIT_ANALYSIS_SPEC,
+                        "E_ANALYSIS_UNKNOWN",
+                        str(exc),
+                        context={"analysis": requested_name, "index": index},
+                        details=[
+                            {
+                                "type": "value_error",
+                                "field": f"analyses.{index}.name",
+                                "message": str(exc),
+                            }
+                        ],
+                    ) from exc
+                completed_analyses += 1
+                warnings.append(f"analysis {index} ({requested_name}) skipped: {exc}")
+                _emit_event(
+                    stream_mode,
+                    "analysis_failed",
+                    index=index,
+                    analysis=requested_name,
+                    error={
+                        "code": "E_ANALYSIS_UNKNOWN",
+                        "message": str(exc),
+                        "context": {"analysis": requested_name, "index": index},
+                    },
+                    **_progress_snapshot(
+                        completed_analyses,
+                        total_analyses,
+                        int((time.perf_counter() - run_start) * 1000),
+                    ),
+                )
+                continue
 
             out_path = item.get("out") or _default_out(name, output_dir, used_names)
             _emit_event(
@@ -369,7 +398,11 @@ def run_config(
                 index=index,
                 analysis=name,
                 out=out_path,
-                **_progress_snapshot(len(results), total_analyses, int((time.perf_counter() - run_start) * 1000)),
+                **_progress_snapshot(
+                    completed_analyses,
+                    total_analyses,
+                    int((time.perf_counter() - run_start) * 1000),
+                ),
             )
             entry: Dict[str, Any] = {
                 "analysis": name,
@@ -379,6 +412,7 @@ def run_config(
             if dry_run:
                 entry["status"] = "dry_run"
                 results.append(entry)
+                completed_analyses += 1
                 _emit_event(
                     stream_mode,
                     "analysis_completed",
@@ -387,7 +421,7 @@ def run_config(
                     status="dry_run",
                     out=out_path,
                     **_progress_snapshot(
-                        len(results),
+                        completed_analyses,
                         total_analyses,
                         int((time.perf_counter() - run_start) * 1000),
                     ),
@@ -408,13 +442,33 @@ def run_config(
             try:
                 plan = PLAN_BUILDERS[name](system, item)
             except Exception as exc:
-                raise RunContractError(
-                    _EXIT_ANALYSIS_SPEC,
-                    "E_ANALYSIS_SPEC",
-                    str(exc),
-                    context={"analysis": name, "index": index},
-                    details=_analysis_error_details(index, name, str(exc)),
-                ) from exc
+                if fail_fast:
+                    raise RunContractError(
+                        _EXIT_ANALYSIS_SPEC,
+                        "E_ANALYSIS_SPEC",
+                        str(exc),
+                        context={"analysis": name, "index": index},
+                        details=_analysis_error_details(index, name, str(exc)),
+                    ) from exc
+                completed_analyses += 1
+                warnings.append(f"{name} spec failed: {exc}")
+                _emit_event(
+                    stream_mode,
+                    "analysis_failed",
+                    index=index,
+                    analysis=name,
+                    error={
+                        "code": "E_ANALYSIS_SPEC",
+                        "message": str(exc),
+                        "context": {"analysis": name, "index": index},
+                    },
+                    **_progress_snapshot(
+                        completed_analyses,
+                        total_analyses,
+                        int((time.perf_counter() - run_start) * 1000),
+                    ),
+                )
+                continue
 
             analysis_start = time.perf_counter()
             device = item.get("device", default_device)
@@ -423,12 +477,32 @@ def run_config(
                 output = plan.run(traj, system, chunk_frames=chunk, device=device)
                 saved_path = _save_output(out_path, output)
             except Exception as exc:
-                raise RunContractError(
-                    _EXIT_RUNTIME_EXEC,
-                    "E_RUNTIME_EXEC",
-                    str(exc),
-                    context={"analysis": name, "index": index},
-                ) from exc
+                if fail_fast:
+                    raise RunContractError(
+                        _EXIT_RUNTIME_EXEC,
+                        "E_RUNTIME_EXEC",
+                        str(exc),
+                        context={"analysis": name, "index": index},
+                    ) from exc
+                completed_analyses += 1
+                warnings.append(f"{name} failed: {exc}")
+                _emit_event(
+                    stream_mode,
+                    "analysis_failed",
+                    index=index,
+                    analysis=name,
+                    error={
+                        "code": "E_RUNTIME_EXEC",
+                        "message": str(exc),
+                        "context": {"analysis": name, "index": index},
+                    },
+                    **_progress_snapshot(
+                        completed_analyses,
+                        total_analyses,
+                        int((time.perf_counter() - run_start) * 1000),
+                    ),
+                )
+                continue
 
             entry.update(_summary_from_output(output, name, Path(saved_path)))
             entry["status"] = "ok"
@@ -438,6 +512,7 @@ def run_config(
             entry["artifact"] = _artifact_metadata(saved_path)
             entry["out"] = saved_path
             results.append(entry)
+            completed_analyses += 1
             _emit_event(
                 stream_mode,
                 "analysis_completed",
@@ -447,7 +522,7 @@ def run_config(
                 out=saved_path,
                 timing_ms=entry["timing_ms"],
                 **_progress_snapshot(
-                    len(results),
+                    completed_analyses,
                     total_analyses,
                     int((time.perf_counter() - run_start) * 1000),
                 ),
@@ -465,7 +540,7 @@ def run_config(
                     "context": exc.context,
                 },
                 **_progress_snapshot(
-                    len(results),
+                    min(total_analyses, completed_analyses + 1),
                     total_analyses,
                     int((time.perf_counter() - run_start) * 1000),
                 ),
@@ -481,6 +556,7 @@ def run_config(
             output_dir=output_dir,
             system_spec=system_spec,
             traj_spec=traj_spec,
+            analysis_count=total_analyses,
             results=results,
             warnings=warnings,
             context=exc.context,
@@ -502,6 +578,7 @@ def run_config(
             output_dir=output_dir,
             system_spec=system_spec,
             traj_spec=traj_spec,
+            analysis_count=total_analyses,
             results=results,
             warnings=warnings,
             context={"config_path": config_path},
@@ -518,6 +595,7 @@ def run_config(
         output_dir=output_dir,
         system_spec=system_spec,
         traj_spec=traj_spec,
+        analysis_count=total_analyses,
         started_at=started_at,
         finished_at=_now_utc_iso(),
         elapsed_ms=int((time.perf_counter() - run_start) * 1000),
@@ -572,6 +650,13 @@ def _plan_argument_metadata(command_name: str) -> list[Dict[str, Any]]:
     return metadata
 
 
+def _preferred_cli_command(analysis_name: str) -> str:
+    for command_name, canonical_name in contract.CLI_TO_ANALYSIS.items():
+        if canonical_name == analysis_name and command_name in REGISTRY:
+            return command_name
+    return analysis_name
+
+
 def list_water_models(fmt: str = "text") -> None:
     names = available_water_models()
     if fmt == "json":
@@ -623,24 +708,29 @@ def run_atlas_fetch(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
 
 
 def list_plans_with_details(fmt: str = "text", details: bool = False) -> None:
-    names = sorted(CLI_TO_PLAN.keys())
+    """List available analysis plans with optional detailed metadata."""
+    result = contract.list_all_plans(details=details)
+
+    if details:
+        enriched_plans = []
+        for plan in result["plans"]:
+            command_name = _preferred_cli_command(plan["name"])
+            enriched_plan = dict(plan)
+            enriched_plan["plan"] = command_name
+            enriched_plan["arguments"] = (
+                _plan_argument_metadata(command_name)
+                if command_name in REGISTRY
+                else []
+            )
+            enriched_plans.append(enriched_plan)
+        result = {"plans": enriched_plans}
+
     if fmt == "json":
-        if not details:
-            print(json.dumps({"plans": names}, indent=2))
-            return
-        payload = {
-            "plans": [
-                {
-                    "name": name,
-                    "plan": CLI_TO_PLAN[name],
-                    "arguments": _plan_argument_metadata(name),
-                }
-                for name in names
-            ]
-        }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(result, indent=2))
         return
-    for name in names:
+
+    # Text format - just list names
+    for name in sorted(contract.ANALYSIS_METADATA.keys()):
         print(name)
 
 
@@ -730,7 +820,14 @@ def run_single_analysis(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
         entry["device"] = args.device
         entry["chunk_frames"] = args.chunk_frames
         entry["timing_ms"] = int((time.perf_counter() - analysis_start) * 1000)
-        entry["artifact"] = _artifact_metadata(saved_path)
+
+        # Get contract outputs for semantic metadata
+        contract_outputs = None
+        plan_contract = contract.ANALYSIS_METADATA.get(plan_name)
+        if plan_contract:
+            contract_outputs = plan_contract.outputs
+
+        entry["artifact"] = _artifact_metadata(saved_path, analysis_name=plan_name, contract_outputs=contract_outputs)
         entry["out"] = saved_path
         results.append(entry)
         output_dir = str(Path(saved_path).parent)
@@ -746,6 +843,7 @@ def run_single_analysis(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
             output_dir=output_dir,
             system_spec=system_spec,
             traj_spec=traj_spec,
+            analysis_count=1,
             results=results,
             warnings=warnings,
             context=exc.context,
@@ -766,6 +864,7 @@ def run_single_analysis(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
             output_dir=output_dir,
             system_spec=system_spec,
             traj_spec=traj_spec,
+            analysis_count=1,
             results=results,
             warnings=warnings,
             context={"analysis": plan_name},
@@ -781,6 +880,7 @@ def run_single_analysis(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
         output_dir=output_dir or ".",
         system_spec=system_spec,
         traj_spec=traj_spec,
+        analysis_count=1,
         started_at=started_at,
         finished_at=_now_utc_iso(),
         elapsed_ms=int((time.perf_counter() - run_start) * 1000),
@@ -788,6 +888,156 @@ def run_single_analysis(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
         warnings=warnings,
     )
     return _EXIT_OK, envelope
+
+
+def _read_request(request_path: Optional[str], use_stdin: bool) -> Dict[str, Any]:
+    """Read request from file or stdin."""
+    if use_stdin:
+        import sys
+        return json.loads(sys.stdin.read())
+    if not request_path:
+        raise ValueError("must provide request path or use --stdin")
+    path = Path(request_path)
+    if not path.exists():
+        raise FileNotFoundError(f"request not found: {request_path}")
+    if path.suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+        except ImportError:
+            raise ValueError("YAML config requires PyYAML installed")
+        return yaml.safe_load(path.read_text())
+    return json.loads(path.read_text())
+
+
+def _format_output(data: Any, fmt: str) -> None:
+    """Format and print output."""
+    if fmt == "yaml":
+        try:
+            import yaml
+            print(yaml.safe_dump(data, sort_keys=False, default_flow_style=False))
+        except ImportError:
+            raise ValueError("YAML output requires PyYAML installed")
+    else:
+        print(json.dumps(data, indent=2))
+
+
+def _validate_command(args) -> int:
+    """Handle validate command."""
+    try:
+        payload = _read_request(args.request, args.stdin)
+    except Exception as exc:
+        result = contract.ValidationResult(
+            status="error",
+            valid=False,
+            errors=[
+                contract.ValidationErrorDetail(
+                    code="E_CONFIG_LOAD",
+                    path="root",
+                    message=str(exc),
+                )
+            ],
+        )
+        _format_output(result.model_dump(mode="python"), "json" if args.json else args.format)
+        return 2
+
+    result = contract.validate_request(payload, strict=False)
+
+    fmt = "json" if args.json else args.format
+    _format_output(result.model_dump(mode="python"), fmt)
+
+    return 0 if result.valid else 2
+
+
+def _plan_schema_command(args) -> int:
+    """Handle plan-schema command."""
+    try:
+        schema = contract.get_plan_schema(args.name)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+
+    fmt = "json" if args.json else args.format
+    _format_output(schema, fmt)
+    return 0
+
+
+def _template_command(args) -> int:
+    """Handle contract-template command."""
+    try:
+        template = contract.generate_template(args.analysis, fill_defaults=args.fill_defaults)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+
+    fmt = "json" if args.json else args.format
+    _format_output(template, fmt)
+    return 0
+
+
+def _normalize_command(args) -> int:
+    """Handle normalize command."""
+    try:
+        payload = _read_request(args.request, args.stdin)
+    except Exception as exc:
+        print(json.dumps({"error": f"Failed to load request: {exc}"}), file=sys.stderr)
+        return 2
+
+    try:
+        normalized = contract.normalize_request(payload, strip_unknown=args.strip_unknown)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 2
+
+    fmt = "json" if args.json else args.format
+    _format_output(normalized, fmt)
+    return 0
+
+
+def _capabilities_command(args) -> int:
+    """Handle capabilities command."""
+    caps = contract.capabilities()
+    fmt = "json" if args.json else args.format
+    _format_output(caps, fmt)
+    return 0
+
+
+def _lint_selection_command(args) -> int:
+    """Handle lint-selection command."""
+    result = contract.lint_selection(
+        expr=args.expr,
+        field_type=args.field_type,
+        system_path=args.topology,
+    )
+    fmt = "json" if args.json else args.format
+    _format_output(result.model_dump(mode="python"), fmt)
+    return 0 if result.valid else 1
+
+
+def _suggest_command(args) -> int:
+    """Handle suggest command."""
+    provided = args.provided.split(",") if args.provided else []
+    result = contract.suggest_analyses(
+        goal=args.goal,
+        provided_fields=provided,
+        top_n=args.top_n,
+    )
+    # Convert to dict for JSON output
+    output = {
+        "goal": result.goal,
+        "total_analyses": result.total_analyses,
+        "candidates": [
+            {
+                "name": c.name,
+                "reason": c.reason,
+                "missing_fields": c.missing_fields,
+                "score": c.score,
+            }
+            for c in result.candidates
+        ],
+    }
+    fmt = "json" if args.json else args.format
+    _format_output(output, fmt)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -925,6 +1175,135 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional output file path for schema",
     )
 
+    # Contract validation commands
+    validate_cmd = sub.add_parser("validate", help="validate run config")
+    validate_cmd.add_argument("request", nargs="?", help="path to request.json")
+    validate_cmd.add_argument("--stdin", action="store_true", help="read from stdin")
+    validate_cmd.add_argument(
+        "--format",
+        choices=["json", "yaml"],
+        default="json",
+        help="output format",
+    )
+    validate_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="alias for --format json",
+    )
+
+    plan_schema = sub.add_parser("plan-schema", help="get analysis contract schema")
+    plan_schema.add_argument("name", help="analysis name")
+    plan_schema.add_argument(
+        "--format",
+        choices=["json", "yaml"],
+        default="json",
+        help="output format",
+    )
+    plan_schema.add_argument(
+        "--json",
+        action="store_true",
+        help="alias for --format json",
+    )
+
+    template = sub.add_parser("contract-template", help="generate request template")
+    template.add_argument("analysis", help="analysis name")
+    template.add_argument(
+        "--fill-defaults",
+        action="store_true",
+        help="include default values",
+    )
+    template.add_argument(
+        "--format",
+        choices=["json", "yaml"],
+        default="json",
+        help="output format",
+    )
+    template.add_argument(
+        "--json",
+        action="store_true",
+        help="alias for --format json",
+    )
+
+    normalize = sub.add_parser("normalize", help="canonicalize request")
+    normalize.add_argument("request", nargs="?", help="path to request.json")
+    normalize.add_argument("--stdin", action="store_true", help="read from stdin")
+    normalize.add_argument(
+        "--strip-unknown",
+        action="store_true",
+        help="remove unknown fields",
+    )
+    normalize.add_argument(
+        "--format",
+        choices=["json", "yaml"],
+        default="json",
+        help="output format",
+    )
+    normalize.add_argument(
+        "--json",
+        action="store_true",
+        help="alias for --format json",
+    )
+
+    capabilities = sub.add_parser("capabilities", help="print capabilities fingerprint")
+    capabilities.add_argument(
+        "--format",
+        choices=["json", "yaml"],
+        default="json",
+        help="output format",
+    )
+    capabilities.add_argument(
+        "--json",
+        action="store_true",
+        help="alias for --format json",
+    )
+
+    # Selection linting
+    lint_selection = sub.add_parser("lint-selection", help="validate selection expression")
+    lint_selection.add_argument("--topology", help="path to topology for atom count")
+    lint_selection.add_argument(
+        "--field-type",
+        choices=["selection", "mask"],
+        default="selection",
+        help="type of field",
+    )
+    lint_selection.add_argument("expr", help="selection expression")
+    lint_selection.add_argument(
+        "--format",
+        choices=["json", "yaml"],
+        default="json",
+        help="output format",
+    )
+    lint_selection.add_argument(
+        "--json",
+        action="store_true",
+        help="alias for --format json",
+    )
+
+    # Agent helper mode
+    suggest = sub.add_parser("suggest", help="suggest analyses based on goal description")
+    suggest.add_argument("goal", help="natural language description of what to compute")
+    suggest.add_argument(
+        "--provided",
+        help="comma-separated list of fields already provided",
+    )
+    suggest.add_argument(
+        "--top-n",
+        type=int,
+        default=5,
+        help="maximum number of suggestions (default: 5)",
+    )
+    suggest.add_argument(
+        "--format",
+        choices=["json", "yaml"],
+        default="json",
+        help="output format",
+    )
+    suggest.add_argument(
+        "--json",
+        action="store_true",
+        help="alias for --format json",
+    )
+
     # MCP (Model Context Protocol) server for agent integration
     mcp_cmd = sub.add_parser(
         "mcp",
@@ -984,6 +1363,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             print(text)
         return 0
+    if args.cmd == "validate":
+        return _validate_command(args)
+    if args.cmd == "plan-schema":
+        return _plan_schema_command(args)
+    if args.cmd == "contract-template":
+        return _template_command(args)
+    if args.cmd == "normalize":
+        return _normalize_command(args)
+    if args.cmd == "capabilities":
+        return _capabilities_command(args)
+    if args.cmd == "lint-selection":
+        return _lint_selection_command(args)
+    if args.cmd == "suggest":
+        return _suggest_command(args)
     if args.cmd == "mcp":
         from .mcp_server import main as mcp_main
         mcp_main()

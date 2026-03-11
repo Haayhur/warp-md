@@ -48,6 +48,9 @@ architect.md
 *xtc
 *json
 *csv
-
+*pdb
+*log
+*_FORCED
+*inp
 # Local release notes (private workflow docs)
 LOCAL_PUBLIC_RELEASE_PATHWAY.md

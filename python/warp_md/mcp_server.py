@@ -135,6 +135,7 @@ def register_tools():
             },
             output_dir=output_dir,
             device=device,
+            fail_fast=fail_fast,
         )
         return result.model_dump(mode="json")
 

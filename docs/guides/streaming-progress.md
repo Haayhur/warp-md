@@ -5,7 +5,7 @@ icon: activity
 
 # Streaming Progress API
 
-warp-md tools support NDJSON (Newline-Delimited JSON) streaming for real-time progress monitoring. Agents can parse events from stderr to track operation status, report progress to users, and estimate completion times.
+warp-md, warp-pack, and warp-pep support NDJSON (Newline-Delimited JSON) streaming for real-time progress monitoring. Agents can parse events from stderr to track operation status, report progress to users, and estimate completion times.
 
 {% hint style="info" %}
 **Why streaming?**
@@ -23,15 +23,30 @@ warp-md tools support NDJSON (Newline-Delimited JSON) streaming for real-time pr
 Add the `--stream` flag to any warp-md CLI command:
 
 ```bash
+warp-md run config.json --stream ndjson
 warp-pack --config pack.yaml --stream
 warp-pep build -s ACDEFG --stream
 ```
 
-Events are emitted to **stderr** (one JSON object per line), leaving stdout clean for the actual output.
+Events are emitted to **stderr** (one JSON object per line), leaving stdout clean for structured results or artifacts. In `warp-md` stream mode, the final envelope is carried by `run_completed` or `run_failed` on stderr.
 
 ---
 
 ## Event Reference
+
+### warp-md Events
+
+| Event | Fields | Description |
+|-------|--------|-------------|
+| `run_started` | `analysis_count`, `completed`, `total`, `progress_pct` | Batch accepted |
+| `analysis_started` | `index`, `analysis`, `out` | Analysis begins |
+| `checkpoint` | `analysis_index`, `analysis_name`, `frames_processed`, `progress_pct` | Optional mid-analysis progress |
+| `analysis_completed` | `index`, `analysis`, `status`, `timing_ms` | Analysis finished successfully |
+| `analysis_failed` | `index`, `analysis`, `error.code`, `error.message` | Analysis failed; emitted even when batch continues |
+| `run_completed` | `final_envelope` | Batch finished; final envelope included |
+| `run_failed` | `final_envelope` | Fatal batch failure; final envelope included |
+
+`checkpoint` is optional in `warp-md` and only appears when an analysis backend exposes mid-run progress hooks.
 
 ### warp-pack Events
 

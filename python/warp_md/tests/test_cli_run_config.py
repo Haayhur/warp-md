@@ -14,6 +14,11 @@ class _DummyPlan:
         return self._output
 
 
+class _FailingPlan:
+    def run(self, traj, system, chunk_frames=None, device="auto"):
+        raise RuntimeError("plan runtime failure")
+
+
 def _write_config(tmp_path: Path, payload: dict) -> Path:
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(json.dumps(payload))
@@ -157,3 +162,40 @@ def test_run_config_docking_defaults_to_json_artifact(monkeypatch, tmp_path, cap
     assert envelope["exit_code"] == 0
     assert envelope["results"][0]["analysis"] == "docking"
     assert envelope["results"][0]["out"].endswith(".json")
+
+
+def test_run_config_preserves_requested_analysis_count_on_partial_success(monkeypatch, tmp_path, capsys) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        {
+            "system": "topology.pdb",
+            "trajectory": "traj.xtc",
+            "output_dir": str(tmp_path / "outputs"),
+            "fail_fast": False,
+            "analyses": [
+                {"name": "rg", "selection": "protein"},
+                {"name": "rmsd", "selection": "backbone"},
+            ],
+        },
+    )
+
+    monkeypatch.setattr(cli_run, "_load_system", lambda spec: object())
+    monkeypatch.setattr(cli_run, "_load_trajectory", lambda spec, system: object())
+
+    def _builder(_system, spec):
+        if spec["name"] == "rg":
+            return _FailingPlan()
+        return _DummyPlan(np.array([2.0]))
+
+    monkeypatch.setattr(cli_run, "PLAN_BUILDERS", {"rg": _builder, "rmsd": _builder})
+
+    code = cli_run.main(["run", str(cfg_path)])
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+
+    assert code == 0
+    assert envelope["status"] == "ok"
+    assert envelope["analysis_count"] == 2
+    assert len(envelope["results"]) == 1
+    assert envelope["results"][0]["analysis"] == "rmsd"
+    assert any("rg failed" in warning for warning in envelope["warnings"])

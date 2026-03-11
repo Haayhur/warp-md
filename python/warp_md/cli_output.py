@@ -39,7 +39,22 @@ def _save_output(path: str, output: Any) -> str:
     raise ValueError("output extension must be .npz, .npy, .csv, or .json")
 
 
-def _artifact_metadata(path: str) -> Dict[str, Any]:
+def _artifact_metadata(
+    path: str,
+    *,
+    analysis_name: str = None,
+    contract_outputs=None,
+) -> Dict[str, Any]:
+    """Generate artifact metadata with optional semantic information.
+
+    Args:
+        path: Path to the artifact file
+        analysis_name: Name of the analysis that produced this artifact
+        contract_outputs: Optional list of ArtifactSpec from the contract
+
+    Returns:
+        Dictionary with artifact metadata
+    """
     out_path = Path(path)
     if not out_path.exists():
         raise FileNotFoundError(f"output artifact not found: {path}")
@@ -55,12 +70,42 @@ def _artifact_metadata(path: str) -> Dict[str, Any]:
     fmt = out_path.suffix.lower().lstrip(".")
     if not fmt:
         fmt = "npz"
-    return {
+
+    metadata = {
         "path": str(out_path),
         "format": fmt,
         "bytes": out_path.stat().st_size,
         "sha256": digest.hexdigest(),
     }
+
+    # Add semantic metadata if contract info provided
+    if contract_outputs and len(contract_outputs) > 0:
+        output_spec = contract_outputs[0]  # Most analyses have single output
+        metadata["kind"] = output_spec.kind
+        if output_spec.fields:
+            metadata["fields"] = output_spec.fields
+        if output_spec.description:
+            metadata["description"] = output_spec.description
+
+    # Extract preview stats from NPZ files if possible
+    if fmt == "npz":
+        try:
+            with np.load(out_path, mmap_mode="r") as data:
+                preview_stats = {}
+                for key in data.keys():
+                    arr = data[key]
+                    if arr.ndim == 1 and arr.size > 0:
+                        preview_stats[f"{key}_min"] = float(arr.min())
+                        preview_stats[f"{key}_max"] = float(arr.max())
+                        preview_stats[f"{key}_size"] = int(arr.size)
+                    elif arr.ndim == 2 and arr.size > 0:
+                        preview_stats[f"{key}_shape"] = list(arr.shape)
+                if preview_stats:
+                    metadata["preview_stats"] = preview_stats
+        except Exception:
+            pass  # Preview stats are optional
+
+    return metadata
 
 
 def _to_npz_dict(output: Any) -> Dict[str, np.ndarray]:

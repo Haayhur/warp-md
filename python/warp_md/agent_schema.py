@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
@@ -12,6 +12,7 @@ AGENT_RESULT_SCHEMA_VERSION = AGENT_REQUEST_SCHEMA_VERSION
 # Structured error codes for agent consumption
 ErrorCode = Literal[
     # Validation errors (exit code 2)
+    "E_CONFIG_LOAD",            # Failed to load config file
     "E_CONFIG_VALIDATION",      # Schema validation failed
     "E_CONFIG_VERSION",         # Unsupported schema version
     "E_CONFIG_MISSING_FIELD",   # Required field missing
@@ -27,8 +28,10 @@ ErrorCode = Literal[
     "E_TRAJECTORY_LOAD",        # Failed to load trajectory
     "E_TRAJECTORY_EOF",         # Unexpected end of trajectory
     "E_RUNTIME_EXEC",           # Analysis execution failed
+    "E_OUTPUT_DIR",             # Failed to create output directory
     "E_OUTPUT_WRITE",           # Failed to write output file
     "E_DEVICE_UNAVAILABLE",     # Requested device not available
+    "E_ATLAS_FETCH",            # Failed to fetch ATLAS asset
     
     # Internal errors (exit code 5)
     "E_INTERNAL",               # Unexpected internal error
@@ -326,6 +329,10 @@ class ArtifactMetadata(BaseModel):
     format: str
     bytes: int = Field(ge=0)
     sha256: str = Field(min_length=64, max_length=64)
+    kind: Optional[str] = None  # timeseries, histogram, grid, profile, table, artifact
+    fields: Optional[List[str]] = None  # Named arrays/columns
+    units: Optional[Dict[str, str]] = None  # Units for each field
+    preview_stats: Optional[Dict[str, Any]] = None  # n_frames, n_bins, min, max, etc.
 
 
 class RunResultEntry(BaseModel):
@@ -338,7 +345,7 @@ class RunResultEntry(BaseModel):
 
 
 class RunErrorPayload(BaseModel):
-    code: str
+    code: ErrorCode
     message: str
     context: Dict[str, Any]
     details: Optional[Any] = None
@@ -441,6 +448,7 @@ class RunFailedEvent(BaseModel):
 RunEvent = Union[
     RunStartedEvent,
     AnalysisStartedEvent,
+    CheckpointEvent,
     AnalysisCompletedEvent,
     AnalysisFailedEvent,
     RunCompletedEvent,
@@ -449,11 +457,15 @@ RunEvent = Union[
 
 
 def run_result_json_schema() -> Dict[str, Any]:
-    return TypeAdapter(RunEnvelope).json_schema()
+    adapter = TypeAdapter(RunEnvelope)
+    adapter.rebuild(force=True)
+    return adapter.json_schema()
 
 
 def run_event_json_schema() -> Dict[str, Any]:
-    return TypeAdapter(RunEvent).json_schema()
+    adapter = TypeAdapter(RunEvent)
+    adapter.rebuild(force=True)
+    return adapter.json_schema()
 
 
 def render_agent_schema(target: str = "request", fmt: str = "json") -> str:

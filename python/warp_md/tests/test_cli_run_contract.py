@@ -139,7 +139,7 @@ def test_run_ndjson_stream_events(monkeypatch, tmp_path, capsys) -> None:
 
     code = cli_run.main(["run", str(cfg_path), "--dry-run", "--stream", "ndjson"])
     captured = capsys.readouterr()
-    events = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+    events = [json.loads(line) for line in captured.err.splitlines() if line.strip()]
 
     assert code == 0
     assert [item["event"] for item in events] == [
@@ -170,7 +170,7 @@ def test_run_ndjson_stream_failure_event(tmp_path, capsys) -> None:
 
     code = cli_run.main(["run", str(cfg_path), "--stream", "ndjson"])
     captured = capsys.readouterr()
-    events = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+    events = [json.loads(line) for line in captured.err.splitlines() if line.strip()]
 
     assert code == 2
     assert events[-1]["event"] == "run_failed"
@@ -197,11 +197,57 @@ def test_run_ndjson_analysis_failed_event(monkeypatch, tmp_path, capsys) -> None
 
     code = cli_run.main(["run", str(cfg_path), "--stream", "ndjson"])
     captured = capsys.readouterr()
-    events = [json.loads(line) for line in captured.out.splitlines() if line.strip()]
+    events = [json.loads(line) for line in captured.err.splitlines() if line.strip()]
 
     assert code == 3
     assert any(event["event"] == "analysis_failed" for event in events)
     assert events[-1]["event"] == "run_failed"
+
+
+def test_run_fail_fast_false_continues_after_analysis_failure(monkeypatch, tmp_path, capsys) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        {
+            "system": "topology.pdb",
+            "trajectory": "traj.xtc",
+            "fail_fast": False,
+            "analyses": [
+                {"name": "rg", "selection": "protein"},
+                {"name": "rmsd", "selection": "backbone"},
+            ],
+        },
+    )
+
+    monkeypatch.setattr(cli_run, "_load_system", lambda spec: object())
+    monkeypatch.setattr(cli_run, "_load_trajectory", lambda spec, system: object())
+
+    def _builder(_system, spec):
+        if spec["name"] == "rg":
+            return _FailingPlan()
+        return _SuccessPlan(np.array([1.0]))
+
+    monkeypatch.setattr(cli_run, "PLAN_BUILDERS", {"rg": _builder, "rmsd": _builder})
+
+    code = cli_run.main(["run", str(cfg_path), "--stream", "ndjson"])
+    captured = capsys.readouterr()
+    events = [json.loads(line) for line in captured.err.splitlines() if line.strip()]
+    final_event = events[-1]
+
+    assert code == 0
+    assert [event["event"] for event in events] == [
+        "run_started",
+        "analysis_started",
+        "analysis_failed",
+        "analysis_started",
+        "analysis_completed",
+        "run_completed",
+    ]
+    assert events[2]["completed"] == 1
+    assert events[4]["completed"] == 2
+    assert final_event["final_envelope"]["status"] == "ok"
+    assert final_event["final_envelope"]["analysis_count"] == 2
+    assert len(final_event["final_envelope"]["results"]) == 1
+    assert any("rg failed" in warning for warning in final_event["final_envelope"]["warnings"])
 
 
 def test_single_analysis_emits_envelope(monkeypatch, tmp_path, capsys) -> None:
