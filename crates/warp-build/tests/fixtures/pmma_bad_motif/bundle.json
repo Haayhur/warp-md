@@ -1,0 +1,103 @@
+{
+  "schema_version": "polymer-param-source.bundle.v1",
+  "bundle_id": "pmma_bad_motif_bundle_v1",
+  "training_context": {
+    "mode": "oligomer_training",
+    "training_oligomer_n": 3,
+    "notes": "fixture"
+  },
+  "provenance": {},
+  "unit_library": {
+    "A": {
+      "display_name": "repeat",
+      "junctions": {
+        "head": "pmma_head",
+        "tail": "pmma_tail"
+      },
+      "template_resname": "RPT"
+    }
+  },
+  "motif_library": {
+    "BROKEN": {
+      "display_name": "broken_motif",
+      "root_node_id": "m1",
+      "nodes": [
+        {
+          "id": "m1",
+          "token": "A"
+        }
+      ],
+      "edges": [],
+      "exposed_ports": {
+        "head": {
+          "node_id": "missing",
+          "junction": "ghost"
+        }
+      }
+    }
+  },
+  "junction_library": {
+    "pmma_head": {
+      "attach_atom": {
+        "scope": "unit",
+        "selector": "name C2"
+      },
+      "leaving_atoms": [],
+      "bond_order": 1,
+      "anchor_atoms": [
+        {
+          "scope": "unit",
+          "selector": "name C2"
+        }
+      ]
+    },
+    "pmma_tail": {
+      "attach_atom": {
+        "scope": "unit",
+        "selector": "name C2"
+      },
+      "leaving_atoms": [],
+      "bond_order": 1,
+      "anchor_atoms": [
+        {
+          "scope": "unit",
+          "selector": "name C2"
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "supported_target_modes": [
+      "linear_homopolymer",
+      "polymer_graph"
+    ],
+    "supported_conformation_modes": [
+      "extended",
+      "random_walk"
+    ],
+    "supported_tacticity_modes": [
+      "inherit"
+    ],
+    "supported_termini_policies": [
+      "default",
+      "source_default"
+    ],
+    "sequence_token_support": {
+      "tokens": [
+        "A",
+        "BROKEN"
+      ],
+      "allowed_adjacencies": [
+        ["A", "A"]
+      ]
+    },
+    "charge_transfer_supported": true
+  },
+  "artifacts": {
+    "source_coordinates": "training.pdb",
+    "source_topology_ref": "training.prmtop",
+    "forcefield_ref": "training.ffxml",
+    "source_charge_manifest": "training_charge.json"
+  },
+  "charge_model": {}
+}

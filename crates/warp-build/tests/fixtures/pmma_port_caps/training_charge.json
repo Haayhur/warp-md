@@ -1,0 +1,6 @@
+{
+  "version": "warp-pack.charge-manifest.v1",
+  "head_charge_e": 0.5,
+  "repeat_charge_e": 1.0,
+  "tail_charge_e": 0.5
+}
