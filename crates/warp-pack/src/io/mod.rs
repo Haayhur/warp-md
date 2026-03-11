@@ -15,6 +15,12 @@ mod tinker;
 mod xyz;
 
 pub use amber::read_amber_inpcrd;
+pub use amber::read_prmtop_atom_charges;
+pub use amber::read_prmtop_topology;
+pub use amber::read_prmtop_total_charge;
+pub use amber::write_amber_inpcrd;
+pub use amber::write_minimal_prmtop;
+pub use amber::AmberTopology;
 pub use crd::read_crd;
 pub use crd::write_crd;
 pub use gro::read_gro;
@@ -89,6 +95,7 @@ pub fn write_output(
         "lammps" | "lammps-data" | "lmp" => write_lammps(out, &spec.path, scale, box_fix),
         "mol2" => write_mol2(out, &spec.path, scale),
         "crd" => write_crd(out, &spec.path, scale, box_fix),
+        "inpcrd" | "rst" | "rst7" => write_amber_inpcrd(out, &spec.path, scale),
         _ => Err(PackError::Invalid(format!(
             "unsupported output format: {format}"
         ))),

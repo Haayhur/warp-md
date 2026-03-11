@@ -1,6 +1,6 @@
 # warp-md
 
-Rust/CUDA/Python toolkit for molecular trajectory IO, analysis, packing, and peptide workflows.
+Rust/CUDA/Python toolkit for molecular trajectory IO, analysis, polymer building, world building, and peptide workflows.
 
 ## Installation
 
@@ -19,8 +19,12 @@ pip install "warp-md[cli]"
 
 Installed CLI entry points:
 - `warp-md` (analysis/config runner)
+- `warp-build` (polymer construction stage)
 - `warp-pack` (packing utility)
 - `warp-pep` (peptide build/mutate utility)
+
+Native source builds also include:
+- `warp-build` (polymer construction stage CLI wrapper)
 
 ## Build from Source
 
@@ -30,6 +34,9 @@ cd warp-md
 pip install maturin
 maturin develop
 python -c "import warp_md; print(warp_md.System)"
+
+# Native polymer builder CLI
+warp-build schema --kind request
 ```
 
 ## Quickstart
@@ -73,6 +80,19 @@ result = run(cfg)
 export(result, "pdb", "packed.pdb")
 ```
 
+### Polymer Build + World Build
+
+```bash
+# 1. Build a polymer chain
+warp-build example-bundle > source.bundle.json
+warp-build example --mode random_walk > build_request.json
+warp-build run build_request.json
+
+# 2. Hand the build manifest to warp-pack
+warp-pack example --mode polymer_build_handoff > pack_request.json
+warp-pack run pack_request.json
+```
+
 ## Build and Test
 
 ```bash
@@ -95,5 +115,6 @@ python -m pytest python/warp_md/tests
 - GitBook: [https://warp-md.gitbook.io](https://warp-md.gitbook.io)
 - Local docs index: `docs/README.md`
 - CLI reference: `docs/reference/cli.md`
+- Polymer builder guide: `docs/guides/polymer-builder.md`
 - Packing guide: `docs/guides/packing.md`
 - Peptide builder guide: `docs/guides/peptide-builder.md`

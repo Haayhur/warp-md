@@ -11,7 +11,8 @@ All units are Angstrom unless noted.
 - `traj-gpu`: CUDA context + buffers (optional feature)
 - `traj-kernels`: CUDA kernels (compiled with nvrtc)
 - `traj-py`: Python bindings (PyO3)
-- `warp-pack`: CPU packing engine + IO for initial coordinates
+- `warp-build`: native polymer construction stage
+- `warp-pack`: world-build engine for solvent, ions, box, and morphology
 
 ## Core concepts
 
@@ -168,6 +169,10 @@ GPU-accelerated paths include:
 - H-bond counts (distance + angle)
 
 ## Python API reference
+
+### Packing and Build Stages
+
+Use `warp-build` for polymer construction and `warp-pack` for world assembly.
 
 ### Packing (warp-pack)
 

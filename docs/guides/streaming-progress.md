@@ -5,7 +5,7 @@ icon: activity
 
 # Streaming Progress API
 
-warp-md, warp-pack, and warp-pep support NDJSON (Newline-Delimited JSON) streaming for real-time progress monitoring. Agents can parse events from stderr to track operation status, report progress to users, and estimate completion times.
+warp-md, warp-build, warp-pack, and warp-pep support NDJSON (Newline-Delimited JSON) streaming for real-time progress monitoring. Agents can parse events from stderr to track operation status, report progress to users, and estimate completion times.
 
 {% hint style="info" %}
 **Why streaming?**
@@ -24,6 +24,7 @@ Add the `--stream` flag to any warp-md CLI command:
 
 ```bash
 warp-md run config.json --stream ndjson
+warp-build run build_request.json --stream
 warp-pack --config pack.yaml --stream
 warp-pep build -s ACDEFG --stream
 ```
@@ -67,6 +68,26 @@ Events are emitted to **stderr** (one JSON object per line), leaving stdout clea
 - `movebad` - Stochastic refinement passes
 - `gencan` - Gradient-based optimization
 - `relax` - Final overlap relaxation
+
+### warp-build Events
+
+| Event | Fields | Description |
+|-------|--------|-------------|
+| `run_started` | `run_id`, `elapsed_ms` | Build accepted |
+| `phase_started` | `phase`, `elapsed_ms` | Build phase begins |
+| `phase_progress` | `phase`, `progress_pct`, `elapsed_ms`, `eta_ms` | In-phase progress |
+| `phase_completed` | `phase`, `elapsed_ms` | Phase finished |
+| `run_completed` | `final_envelope` | Build finished; final envelope included |
+| `run_failed` | `final_envelope` | Fatal build failure; final envelope included |
+
+Common phases:
+
+- `validation`
+- `compile`
+- `coordinate_build`
+- `relax`
+- `topology`
+- `manifest`
 
 ### warp-pep Events
 

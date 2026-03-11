@@ -4,6 +4,6 @@ include pyproject.toml
 include README.md
 include LICENSE
 recursive-include crates *
-recursive-include python *
+recursive-include python *.py *.pdb *.toml
 recursive-include scripts *
 recursive-include docs *

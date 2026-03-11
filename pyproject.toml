@@ -18,6 +18,7 @@ gist = ["openmm"]
 
 [project.scripts]
 warp-md = "warp_md.cli:main"
+warp-build = "warp_md.build_cli:main"
 warp-pack = "warp_md.pack_cli:main"
 warp-pep = "warp_md.pep_cli:main"
 

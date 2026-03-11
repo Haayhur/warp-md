@@ -7,8 +7,10 @@ members = [
   "crates/traj-gpu",
   "crates/traj-kernels",
   "crates/traj-py",
+  "crates/warp-build",
   "crates/warp-pack",
   "crates/warp-pep",
+  "crates/warp-topology-graph",
 ]
 
 [workspace.package]

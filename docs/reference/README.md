@@ -60,6 +60,10 @@ Everything your agent needs to know about warp-md — every class, every paramet
             <td><a href="advanced-plans.md">Advanced Plans</a></td>
         </tr>
         <tr>
+            <td><strong>Polymer Builder</strong><br>Source bundles, build manifests, topology graphs, and handoff into world-build</td>
+            <td><a href="../guides/polymer-builder.md">Polymer Builder</a></td>
+        </tr>
+        <tr>
             <td><strong>Builder Helpers</strong><br>Charges, group types, selection utilities</td>
             <td><a href="builder-helpers.md">Builder Helpers</a></td>
         </tr>
@@ -108,7 +112,8 @@ Under the hood, warp-md is a family of Rust crates:
 | `traj-gpu` | CUDA context + buffers (optional feature) |
 | `traj-kernels` | CUDA kernels (compiled with nvrtc) |
 | `traj-py` | Python bindings (PyO3, 96 Plan classes) |
-| `warp-pack` | CPU packing engine + IO for initial coordinates |
+| `warp-build` | Native polymer construction stage, build manifests, topology graphs |
+| `warp-pack` | World-build engine for solvent, ions, box, and morphology |
 | `warp-pep` | Peptide builder + mutation engine (internal coordinate geometry) |
 
 ---

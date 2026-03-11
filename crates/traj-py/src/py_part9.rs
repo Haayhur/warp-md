@@ -337,6 +337,57 @@ fn pack_config_from_inp<'py>(py: Python<'py>, path: &str) -> PyResult<PyObject> 
     Ok(dict.into_py(py))
 }
 
+fn json_string_to_py<'py>(py: Python<'py>, text: String) -> PyResult<PyObject> {
+    let json_mod = PyModule::import_bound(py, "json")?;
+    let value = json_mod.call_method1("loads", (text,))?;
+    Ok(value.into_py(py))
+}
+
+fn json_value_to_py<'py>(py: Python<'py>, value: &serde_json::Value) -> PyResult<PyObject> {
+    let text = serde_json::to_string(value)
+        .map_err(|e| PyRuntimeError::new_err(format!("json serialize error: {e}")))?;
+    json_string_to_py(py, text)
+}
+
+#[pyfunction]
+#[pyo3(signature = (kind="request"))]
+fn pack_agent_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
+    let text = warp_pack::agent::schema_json(kind)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_string_to_py(py, text)
+}
+
+#[pyfunction]
+#[pyo3(signature = (mode="solute_solvate"))]
+fn pack_agent_example<'py>(py: Python<'py>, mode: &str) -> PyResult<PyObject> {
+    let value = warp_pack::agent::example_request(mode)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn pack_agent_capabilities<'py>(py: Python<'py>) -> PyResult<PyObject> {
+    let value = warp_pack::agent::capabilities();
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn pack_agent_validate<'py>(py: Python<'py>, json: &str) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_pack::agent::validate_request_json(json);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
+#[pyo3(signature = (json, stream_ndjson=false))]
+fn pack_agent_run<'py>(
+    py: Python<'py>,
+    json: &str,
+    stream_ndjson: bool,
+) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_pack::agent::run_request_json(json, stream_ndjson);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
 #[pyfunction]
 #[pyo3(signature = (data0, data1, mode="distance"))]
 fn crank_delta<'py>(
@@ -948,6 +999,11 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pack_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(pack_from_inp, m)?)?;
     m.add_function(wrap_pyfunction!(pack_config_from_inp, m)?)?;
+    m.add_function(wrap_pyfunction!(pack_agent_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(pack_agent_example, m)?)?;
+    m.add_function(wrap_pyfunction!(pack_agent_capabilities, m)?)?;
+    m.add_function(wrap_pyfunction!(pack_agent_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(pack_agent_run, m)?)?;
     m.add_function(wrap_pyfunction!(crank_delta, m)?)?;
     m.add_function(wrap_pyfunction!(rotdif_fit, m)?)?;
     m.add_function(wrap_pyfunction!(gist_apply_pme_scaling, m)?)?;

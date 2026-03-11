@@ -24,6 +24,7 @@ warp-md rg --topology protein.pdb --traj traj.xtc --selection "protein"
 | Capability | Tool | Example |
 |------------|------|---------|
 | **Trajectory Analysis** | `warp-md` | Calculate Rg, RMSD, RDF, conductivity (96+ analyses) |
+| **Polymer Construction** | `warp-build` | Build chains, sequence polymers, and emit manifests for world-build |
 | **Molecular Packing** | `warp-pack` | Solvate proteins, build simulation boxes |
 | **Peptide Building** | `warp-pep` | Construct peptides, introduce mutations |
 
@@ -36,6 +37,9 @@ warp-md rg --topology protein.pdb --traj traj.xtc --selection "protein"
 ```bash
 # Analysis
 warp-md run config.json --stream ndjson
+
+# Polymer build
+warp-build run build_request.json --stream
 
 # Packing
 warp-pack --config pack.yaml --stream --output packed.pdb
@@ -157,13 +161,16 @@ All tools follow the same contract:
 }
 ```
 
-### Pattern 2: Pipeline (Pack → Analyze)
+### Pattern 2: Pipeline (Build → Pack → Analyze)
 
 ```bash
-# 1. Pack the system
-warp-pack --config pack.yaml --output packed.pdb --stream
+# 1. Build the polymer
+warp-build run build_request.json --stream
 
-# 2. Analyze the trajectory
+# 2. Assemble the world
+warp-pack run pack_request.json --stream ndjson
+
+# 3. Analyze the trajectory
 warp-md run analysis.json --stream ndjson
 ```
 

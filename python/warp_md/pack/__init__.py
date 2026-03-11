@@ -12,7 +12,7 @@ from .config import (
     Structure,
     ValidationError,
 )
-from .data import available_water_models, water_pdb
+from .data import available_ion_species, available_water_models, ion_pdb, water_pdb
 from .runner import parse_inp, run, run_inp
 from .export import export
 
@@ -54,4 +54,6 @@ __all__ = [
     # Utilities
     "water_pdb",
     "available_water_models",
+    "ion_pdb",
+    "available_ion_species",
 ]

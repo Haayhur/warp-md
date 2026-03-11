@@ -8,7 +8,11 @@ icon: cube
 Before you can simulate anything, you need atoms arranged in a box. warp-pack is your agent's world-building tool.
 
 {% hint style="info" %}
-warp-pack is a CPU-first packing engine that speaks Packmol's language but runs in pure Rust.
+warp-pack is a CPU-first world-building engine that speaks Packmol's language but runs in pure Rust.
+{% endhint %}
+
+{% hint style="warning" %}
+For polymer systems, build the chain with `warp-build` first. `warp-pack` no longer owns inline polymer construction.
 {% endhint %}
 
 ---
@@ -46,7 +50,48 @@ result = run(cfg)
 export(result, "pdb", "packed.pdb")
 ```
 {% endtab %}
+{% tab title="Polymer Handoff" %}
+```bash
+# Build the chain first
+warp-build run polymer_build_request.json
+
+# Then assemble the world around the build manifest
+warp-pack example --mode polymer_build_handoff > pack_request.json
+warp-pack run pack_request.json
+```
+{% endtab %}
 {% endtabs %}
+
+---
+
+## Polymer Workflow
+
+The agent-safe flow for polymer systems is:
+
+1. `warp-build` compiles the source bundle into a target chain
+2. `warp-build` emits coordinates, topology, charge handoff, and build manifest
+3. `warp-pack` consumes the build manifest and assembles solvent, ions, box, and morphology
+
+Minimal `warp-pack` handoff:
+
+```json
+{
+  "version": "warp-pack.agent.v1",
+  "polymer_build": {
+    "build_manifest": "outputs/pmma_50mer.build.json"
+  },
+  "environment": {
+    "box": {"mode": "padding", "padding_angstrom": 12.0, "shape": "cubic"},
+    "solvent": {"mode": "explicit", "model": "tip3p"},
+    "ions": {"neutralize": true, "salt_molar": 0.15, "cation": "Na+", "anion": "Cl-"},
+    "morphology": {"mode": "single_chain_solution"}
+  },
+  "outputs": {
+    "coordinates": "outputs/system.pdb",
+    "manifest": "outputs/system_manifest.json"
+  }
+}
+```
 
 ---
 
