@@ -35,6 +35,7 @@ use warp_topology_graph::{
 pub const SOURCE_BUNDLE_SCHEMA_VERSION: &str = "polymer-param-source.bundle.v1";
 pub const BUILD_SCHEMA_VERSION: &str = "polymer-build.agent.v1";
 pub const BUILD_MANIFEST_VERSION: &str = "polymer-build.manifest.v1";
+const ENSEMBLE_MANIFEST_VERSION: &str = "polymer-build.ensemble-manifest.v1";
 
 const SUPPORTED_TARGET_MODES: &[&str] = &[
     "linear_homopolymer",
@@ -430,6 +431,7 @@ pub struct ErrorDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub message: String,
+    pub severity: String,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -439,7 +441,7 @@ pub struct SuccessEnvelope {
     pub request_id: String,
     pub artifacts: ArtifactRequest,
     pub summary: Value,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<ErrorDetail>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -448,7 +450,34 @@ pub struct ErrorEnvelope {
     pub status: String,
     pub request_id: String,
     pub errors: Vec<ErrorDetail>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<ErrorDetail>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct BuildManifestSchema {
+    pub schema_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub request_id: String,
+    pub normalized_request: Value,
+    pub source_bundle: Value,
+    pub target: Value,
+    pub realization: Value,
+    pub artifacts: Value,
+    pub artifact_digests: Value,
+    pub summary: Value,
+    pub provenance: Value,
+    pub warnings: Vec<ErrorDetail>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ValidateEnvelope {
+    pub schema_version: String,
+    pub status: String,
+    pub valid: bool,
+    pub normalized_request: Value,
+    pub resolved_inputs: Value,
+    pub warnings: Vec<ErrorDetail>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -544,6 +573,71 @@ fn default_relax_mode() -> String {
     "graph_spring".to_string()
 }
 
+fn error_severity() -> String {
+    "error".to_string()
+}
+
+fn warning_severity() -> String {
+    "warning".to_string()
+}
+
+fn json_pointer_token(token: &str) -> String {
+    token.replace('~', "~0").replace('/', "~1")
+}
+
+fn json_pointer(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('/') {
+        return Some(trimmed.to_string());
+    }
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut chars = trimmed.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '.' => {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+            }
+            '[' => {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+                let mut index = String::new();
+                while let Some(next) = chars.next() {
+                    if next == ']' {
+                        break;
+                    }
+                    index.push(next);
+                }
+                if !index.is_empty() {
+                    segments.push(index);
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    if segments.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "/{}",
+            segments
+                .iter()
+                .map(|segment| json_pointer_token(segment))
+                .collect::<Vec<_>>()
+                .join("/")
+        ))
+    }
+}
+
 fn to_error(
     code: &str,
     path: impl Into<Option<String>>,
@@ -551,8 +645,22 @@ fn to_error(
 ) -> ErrorDetail {
     ErrorDetail {
         code: code.to_string(),
-        path: path.into(),
+        path: path.into().and_then(|value| json_pointer(&value)),
         message: message.into(),
+        severity: error_severity(),
+    }
+}
+
+fn to_warning(
+    code: &str,
+    path: impl Into<Option<String>>,
+    message: impl Into<String>,
+) -> ErrorDetail {
+    ErrorDetail {
+        code: code.to_string(),
+        path: path.into().and_then(|value| json_pointer(&value)),
+        message: message.into(),
+        severity: warning_severity(),
     }
 }
 
@@ -569,8 +677,10 @@ fn sha256_text(text: &str) -> String {
 }
 
 fn sha256_file(path: &Path) -> PackResult<String> {
-    let text = fs::read_to_string(path)?;
-    Ok(sha256_text(&text))
+    let bytes = fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 fn resolve_relative(base_path: &Path, value: &str) -> String {
@@ -679,6 +789,220 @@ fn default_ensemble_manifest_path(coordinates_path: &str) -> String {
         .join(format!("{stem}.ensemble.json"))
         .to_string_lossy()
         .to_string()
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedArtifacts {
+    coordinates: String,
+    raw_coordinates: Option<String>,
+    build_manifest: String,
+    charge_manifest: String,
+    inpcrd: String,
+    topology: Option<String>,
+    topology_graph: String,
+    ensemble_manifest: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedBuildRequest {
+    bundle_digest: Option<String>,
+    seed: u64,
+    seed_policy: String,
+    warnings: Vec<ErrorDetail>,
+    source_coordinates: String,
+    source_charge_manifest: Option<String>,
+    source_topology_ref: Option<String>,
+    artifacts: ResolvedArtifacts,
+    normalized_request: Value,
+    resolved_inputs: Value,
+}
+
+fn deterministic_seed(req: &BuildRequest) -> u64 {
+    let text = serde_json::to_string(req).unwrap_or_default();
+    let digest = sha256_text(&text);
+    u64::from_str_radix(
+        digest
+            .trim_start_matches("sha256:")
+            .get(..16)
+            .unwrap_or("1"),
+        16,
+    )
+    .unwrap_or(1_234_567)
+}
+
+fn requires_explicit_seed(mode: &str) -> bool {
+    matches!(mode, "random_walk" | "ensemble")
+}
+
+fn resolve_seed(req: &BuildRequest) -> Result<(u64, String), ErrorDetail> {
+    match req.realization.seed {
+        Some(seed) => Ok((seed, "explicit".to_string())),
+        None if requires_explicit_seed(&req.realization.conformation_mode) => Err(to_error(
+            "E_MISSING_SEED",
+            Some("realization.seed".into()),
+            format!(
+                "{} realization requires explicit seed",
+                req.realization.conformation_mode
+            ),
+        )),
+        None => Ok((deterministic_seed(req), "deterministic_default".to_string())),
+    }
+}
+
+fn collect_warnings(req: &BuildRequest) -> Vec<ErrorDetail> {
+    let mut warnings = Vec::new();
+    for (path, policy) in [
+        ("target.termini.head", req.target.termini.head.as_str()),
+        ("target.termini.tail", req.target.termini.tail.as_str()),
+    ] {
+        if policy == "default" {
+            warnings.push(to_warning(
+                "W_DEFAULT_TERMINI_RESOLVED",
+                Some(path.to_string()),
+                "default resolved to source_default",
+            ));
+        }
+    }
+    warnings
+}
+
+fn resolve_request_state(
+    req: &BuildRequest,
+    bundle: &SourceBundle,
+) -> Result<ResolvedBuildRequest, Vec<ErrorDetail>> {
+    let errors = validate_request(req, bundle);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let (seed, seed_policy) = resolve_seed(req).map_err(|err| vec![err])?;
+    let source_coordinates = resolve_relative(
+        Path::new(&req.source_ref.bundle_path),
+        &bundle.artifacts.source_coordinates,
+    );
+    let source_charge_manifest = bundle
+        .artifacts
+        .source_charge_manifest
+        .as_ref()
+        .map(|path| resolve_relative(Path::new(&req.source_ref.bundle_path), path));
+    let source_topology_ref = bundle
+        .artifacts
+        .source_topology_ref
+        .as_ref()
+        .map(|path| resolve_relative(Path::new(&req.source_ref.bundle_path), path));
+    let artifacts = ResolvedArtifacts {
+        coordinates: req.artifacts.coordinates.clone(),
+        raw_coordinates: req.realization.relax.as_ref().map(|_| {
+            req.artifacts
+                .raw_coordinates
+                .clone()
+                .unwrap_or_else(|| default_raw_coordinates_path(&req.artifacts.coordinates))
+        }),
+        build_manifest: req.artifacts.build_manifest.clone(),
+        charge_manifest: req.artifacts.charge_manifest.clone(),
+        inpcrd: req
+            .artifacts
+            .inpcrd
+            .clone()
+            .unwrap_or_else(|| default_inpcrd_path(&req.artifacts.coordinates)),
+        topology: if topology_transfer_supported(bundle) {
+            Some(
+                req.artifacts
+                    .topology
+                    .clone()
+                    .unwrap_or_else(|| default_topology_path(&req.artifacts.coordinates)),
+            )
+        } else {
+            req.artifacts.topology.clone()
+        },
+        topology_graph: req
+            .artifacts
+            .topology_graph
+            .clone()
+            .unwrap_or_else(|| default_topology_graph_path(&req.artifacts.coordinates)),
+        ensemble_manifest: if req.realization.conformation_mode == "ensemble" {
+            Some(
+                req.artifacts
+                    .ensemble_manifest
+                    .clone()
+                    .unwrap_or_else(|| default_ensemble_manifest_path(&req.artifacts.coordinates)),
+            )
+        } else {
+            req.artifacts.ensemble_manifest.clone()
+        },
+    };
+    let warnings = collect_warnings(req);
+    let bundle_digest = sha256_file(Path::new(&req.source_ref.bundle_path)).ok();
+    let normalized_request = json!({
+        "schema_version": BUILD_SCHEMA_VERSION,
+        "request_id": req.request_id,
+        "source_ref": {
+            "bundle_id": req.source_ref.bundle_id,
+            "bundle_path": req.source_ref.bundle_path,
+            "bundle_digest": req.source_ref.bundle_digest.clone().or_else(|| bundle_digest.clone()),
+        },
+        "target": req.target,
+        "realization": {
+            "conformation_mode": req.realization.conformation_mode,
+            "seed": seed,
+            "seed_policy": seed_policy,
+            "alignment_axis": req.realization.alignment_axis,
+            "ensemble_size": req.realization.ensemble_size,
+            "relax": req.realization.relax,
+        },
+        "conformer_policy": req.conformer_policy,
+        "port_cap_overrides": req.port_cap_overrides,
+        "artifacts": {
+            "coordinates": artifacts.coordinates,
+            "raw_coordinates": artifacts.raw_coordinates,
+            "build_manifest": artifacts.build_manifest,
+            "charge_manifest": artifacts.charge_manifest,
+            "inpcrd": artifacts.inpcrd,
+            "topology": artifacts.topology,
+            "topology_graph": artifacts.topology_graph,
+            "ensemble_manifest": artifacts.ensemble_manifest,
+        },
+    });
+    let resolved_inputs = json!({
+        "source_bundle_id": bundle.bundle_id,
+        "source_bundle_path": req.source_ref.bundle_path,
+        "source_bundle_digest": bundle_digest,
+        "target_mode": req.target.mode,
+        "realization_mode": req.realization.conformation_mode,
+        "resolved_termini_policy": {
+            "head": if req.target.termini.head == "default" { "source_default" } else { req.target.termini.head.as_str() },
+            "tail": if req.target.termini.tail == "default" { "source_default" } else { req.target.termini.tail.as_str() },
+        },
+        "resolved_seed": seed,
+        "seed_policy": seed_policy,
+        "resolved_artifacts": {
+            "coordinates": artifacts.coordinates,
+            "raw_coordinates": artifacts.raw_coordinates,
+            "build_manifest": artifacts.build_manifest,
+            "charge_manifest": artifacts.charge_manifest,
+            "inpcrd": artifacts.inpcrd,
+            "topology": artifacts.topology,
+            "topology_graph": artifacts.topology_graph,
+            "ensemble_manifest": artifacts.ensemble_manifest,
+        },
+        "resolved_source_artifacts": {
+            "coordinates": source_coordinates,
+            "charge_manifest": source_charge_manifest,
+            "topology": source_topology_ref,
+            "forcefield_ref": bundle.artifacts.forcefield_ref,
+        },
+    });
+    Ok(ResolvedBuildRequest {
+        bundle_digest,
+        seed,
+        seed_policy,
+        warnings,
+        source_coordinates,
+        source_charge_manifest,
+        source_topology_ref,
+        artifacts,
+        normalized_request,
+        resolved_inputs,
+    })
 }
 
 fn topology_transfer_supported(bundle: &SourceBundle) -> bool {
@@ -3398,7 +3722,13 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
         }
         _ => {}
     }
-    let seed = req.realization.seed.unwrap_or(1_234_567);
+    let seed = match resolve_seed(req) {
+        Ok((seed, _)) => seed,
+        Err(error) => {
+            errors.push(error);
+            1_234_567
+        }
+    };
     let expanded_sequence = match expand_sequence(&req.target, seed) {
         Ok(sequence) => sequence,
         Err(error) => {
@@ -4704,7 +5034,7 @@ fn topology_graph_value(
         })
         .unwrap_or_default();
     serde_json::to_value(TopologyGraph {
-        version: TOPOLOGY_GRAPH_VERSION.into(),
+        schema_version: TOPOLOGY_GRAPH_VERSION.into(),
         request_id: request_id.into(),
         bundle_id: source_bundle.bundle_id.clone(),
         build_plan: TopologyGraphBuildPlan {
@@ -4854,7 +5184,7 @@ fn topology_graph_value(
 
 pub fn schema_json(kind: &str) -> PackResult<String> {
     let value = match kind {
-        "source" => serde_json::to_value(&schema_for!(SourceBundle))
+        "source" | "source_bundle" => serde_json::to_value(&schema_for!(SourceBundle))
             .map_err(|err| PackError::Parse(err.to_string()))?,
         "request" => serde_json::to_value(&schema_for!(BuildRequest))
             .map_err(|err| PackError::Parse(err.to_string()))?,
@@ -4862,11 +5192,15 @@ pub fn schema_json(kind: &str) -> PackResult<String> {
             .map_err(|err| PackError::Parse(err.to_string()))?,
         "event" => serde_json::to_value(&schema_for!(RunEvent))
             .map_err(|err| PackError::Parse(err.to_string()))?,
+        "build_manifest" => serde_json::to_value(&schema_for!(BuildManifestSchema))
+            .map_err(|err| PackError::Parse(err.to_string()))?,
+        "charge_manifest" => serde_json::to_value(&schema_for!(crate::polymer::ChargeManifest))
+            .map_err(|err| PackError::Parse(err.to_string()))?,
         "topology_graph" => serde_json::to_value(&schema_for!(TopologyGraph))
             .map_err(|err| PackError::Parse(err.to_string()))?,
         _ => {
             return Err(PackError::Invalid(
-                "schema target must be source, request, result, event, or topology_graph".into(),
+                "schema target must be source_bundle, request, result, event, build_manifest, charge_manifest, or topology_graph".into(),
             ))
         }
     };
@@ -5201,6 +5535,8 @@ pub fn capabilities() -> Value {
         "schema_versions": {
             "source_bundle": SOURCE_BUNDLE_SCHEMA_VERSION,
             "build_request": BUILD_SCHEMA_VERSION,
+            "build_manifest": BUILD_MANIFEST_VERSION,
+            "charge_manifest": CHARGE_MANIFEST_VERSION,
             "topology_graph": TOPOLOGY_GRAPH_VERSION,
         },
         "builder_version": env!("CARGO_PKG_VERSION"),
@@ -5235,7 +5571,7 @@ pub fn capabilities() -> Value {
             "streaming_events": true,
             "preferred_handoff": ["build_manifest", "charge_manifest", "topology", "topology_graph"]
         },
-        "schema_targets": ["source", "request", "result", "event", "topology_graph"],
+        "schema_targets": ["source_bundle", "request", "result", "event", "build_manifest", "charge_manifest", "topology_graph"],
         "supports_named_termini_tokens": true,
         "supports_motif_tokens": true,
         "supports_conformer_policy": true,
@@ -5296,7 +5632,13 @@ pub fn validate_request_json(text: &str) -> (i32, Value) {
         Err(err) => {
             return (
                 2,
-                json!({"status": "error", "valid": false, "errors": [err]}),
+                json!({
+                    "schema_version": BUILD_SCHEMA_VERSION,
+                    "status": "error",
+                    "valid": false,
+                    "errors": [err],
+                    "warnings": [],
+                }),
             )
         }
     };
@@ -5305,25 +5647,38 @@ pub fn validate_request_json(text: &str) -> (i32, Value) {
         Err(err) => {
             return (
                 2,
-                json!({"status": "error", "valid": false, "errors": [err]}),
+                json!({
+                    "schema_version": BUILD_SCHEMA_VERSION,
+                    "status": "error",
+                    "valid": false,
+                    "errors": [err],
+                    "warnings": [],
+                }),
             )
         }
     };
-    let errors = validate_request(&req, &bundle);
-    if errors.is_empty() {
-        (
+    match resolve_request_state(&req, &bundle) {
+        Ok(resolved) => (
             0,
-            json!({
-                "status": "ok",
-                "valid": true,
-                "normalized_request": req,
+            json!(ValidateEnvelope {
+                schema_version: BUILD_SCHEMA_VERSION.into(),
+                status: "ok".into(),
+                valid: true,
+                normalized_request: resolved.normalized_request,
+                resolved_inputs: resolved.resolved_inputs,
+                warnings: resolved.warnings,
             }),
-        )
-    } else {
-        (
+        ),
+        Err(errors) => (
             2,
-            json!({"status": "error", "valid": false, "errors": errors}),
-        )
+            json!({
+                "schema_version": BUILD_SCHEMA_VERSION,
+                "status": "error",
+                "valid": false,
+                "errors": errors,
+                "warnings": [],
+            }),
+        ),
     }
 }
 
@@ -5372,26 +5727,28 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             );
         }
     };
-    let errors = validate_request(&req, &bundle);
-    if !errors.is_empty() {
-        emit(
-            &RunEvent::RunFailed {
-                request_id: req.request_id.clone(),
-                error: errors[0].clone(),
-            },
-            stream_ndjson,
-        );
-        return (
-            2,
-            json!(ErrorEnvelope {
-                schema_version: BUILD_SCHEMA_VERSION.into(),
-                status: "error".into(),
-                request_id: req.request_id,
-                errors,
-                warnings: vec![],
-            }),
-        );
-    }
+    let resolved = match resolve_request_state(&req, &bundle) {
+        Ok(resolved) => resolved,
+        Err(errors) => {
+            emit(
+                &RunEvent::RunFailed {
+                    request_id: req.request_id.clone(),
+                    error: errors[0].clone(),
+                },
+                stream_ndjson,
+            );
+            return (
+                2,
+                json!(ErrorEnvelope {
+                    schema_version: BUILD_SCHEMA_VERSION.into(),
+                    status: "error".into(),
+                    request_id: req.request_id,
+                    errors,
+                    warnings: vec![],
+                }),
+            );
+        }
+    };
 
     emit(
         &RunEvent::SourceLoaded {
@@ -5409,18 +5766,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         stream_ndjson,
     );
 
-    let seed = req.realization.seed.unwrap_or_else(|| {
-        let text = serde_json::to_string(&req).unwrap_or_default();
-        let digest = sha256_text(&text);
-        u64::from_str_radix(
-            digest
-                .trim_start_matches("sha256:")
-                .get(..16)
-                .unwrap_or("1"),
-            16,
-        )
-        .unwrap_or(1_234_567)
-    });
+    let seed = resolved.seed;
     let _expanded_sequence = match expand_sequence(&req.target, seed) {
         Ok(sequence) => sequence,
         Err(err) => {
@@ -5493,56 +5839,14 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         "inherit" => "training",
         other => other,
     };
-    let source_coordinates = resolve_relative(
-        Path::new(&req.source_ref.bundle_path),
-        &bundle.artifacts.source_coordinates,
-    );
-    let source_charge_manifest = bundle
-        .artifacts
-        .source_charge_manifest
-        .as_ref()
-        .map(|path| resolve_relative(Path::new(&req.source_ref.bundle_path), path));
-    let source_topology_ref = bundle
-        .artifacts
-        .source_topology_ref
-        .as_ref()
-        .map(|path| resolve_relative(Path::new(&req.source_ref.bundle_path), path));
-    let inpcrd_path = req
-        .artifacts
-        .inpcrd
-        .clone()
-        .unwrap_or_else(|| default_inpcrd_path(&req.artifacts.coordinates));
-    let topology_graph_path = req
-        .artifacts
-        .topology_graph
-        .clone()
-        .unwrap_or_else(|| default_topology_graph_path(&req.artifacts.coordinates));
-    let raw_coordinates_path = req.realization.relax.as_ref().map(|_| {
-        req.artifacts
-            .raw_coordinates
-            .clone()
-            .unwrap_or_else(|| default_raw_coordinates_path(&req.artifacts.coordinates))
-    });
-    let ensemble_manifest_path = if req.realization.conformation_mode == "ensemble" {
-        Some(
-            req.artifacts
-                .ensemble_manifest
-                .clone()
-                .unwrap_or_else(|| default_ensemble_manifest_path(&req.artifacts.coordinates)),
-        )
-    } else {
-        req.artifacts.ensemble_manifest.clone()
-    };
-    let topology_path = if topology_transfer_supported(&bundle) {
-        Some(
-            req.artifacts
-                .topology
-                .clone()
-                .unwrap_or_else(|| default_topology_path(&req.artifacts.coordinates)),
-        )
-    } else {
-        req.artifacts.topology.clone()
-    };
+    let source_coordinates = resolved.source_coordinates.clone();
+    let source_charge_manifest = resolved.source_charge_manifest.clone();
+    let source_topology_ref = resolved.source_topology_ref.clone();
+    let inpcrd_path = resolved.artifacts.inpcrd.clone();
+    let topology_graph_path = resolved.artifacts.topology_graph.clone();
+    let raw_coordinates_path = resolved.artifacts.raw_coordinates.clone();
+    let ensemble_manifest_path = resolved.artifacts.ensemble_manifest.clone();
+    let topology_path = resolved.artifacts.topology.clone();
     let token_junctions = match token_junction_specs(&bundle, &compiled_sequence) {
         Ok(specs) => specs,
         Err(err) => {
@@ -5590,9 +5894,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     for member_idx in 0..ensemble_size {
         let member_seed = seed.wrapping_add((member_idx as u64).wrapping_mul(7_919));
         let member_target_path = if ensemble_size == 1 {
-            req.artifacts.coordinates.clone()
+            resolved.artifacts.coordinates.clone()
         } else {
-            derived_member_path(&req.artifacts.coordinates, member_idx)
+            derived_member_path(&resolved.artifacts.coordinates, member_idx)
         };
         let member_raw_path = raw_coordinates_path.as_ref().map(|path| {
             if ensemble_size == 1 {
@@ -5744,9 +6048,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     let built = built_members[0].1.clone();
     let primary_coordinates = built_members[0].0.clone();
     let primary_relax_report = built_members[0].3.clone();
-    ensure_parent(&req.artifacts.coordinates).ok();
-    if primary_coordinates != req.artifacts.coordinates {
-        if let Err(err) = fs::copy(&primary_coordinates, &req.artifacts.coordinates) {
+    ensure_parent(&resolved.artifacts.coordinates).ok();
+    if primary_coordinates != resolved.artifacts.coordinates {
+        if let Err(err) = fs::copy(&primary_coordinates, &resolved.artifacts.coordinates) {
             return (
                 4,
                 json!(ErrorEnvelope {
@@ -5807,10 +6111,10 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     if ensemble_size > 1 {
         let ensemble_manifest_path = ensemble_manifest_path
             .clone()
-            .unwrap_or_else(|| default_ensemble_manifest_path(&req.artifacts.coordinates));
+            .unwrap_or_else(|| default_ensemble_manifest_path(&resolved.artifacts.coordinates));
         ensure_parent(&ensemble_manifest_path).ok();
         let ensemble_manifest = json!({
-            "version": "polymer-build.ensemble-manifest.v1",
+            "schema_version": ENSEMBLE_MANIFEST_VERSION,
             "request_id": req.request_id,
             "member_count": ensemble_size,
             "member_paths": built_members
@@ -5821,7 +6125,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             "shared_artifacts": {
                 "topology_graph": topology_graph_path,
                 "topology": topology_path,
-                "charge_manifest": req.artifacts.charge_manifest,
+                "charge_manifest": resolved.artifacts.charge_manifest,
             },
         });
         if let Err(err) = fs::write(
@@ -5983,10 +6287,10 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         (None, "unavailable".to_string())
     };
 
-    ensure_parent(&req.artifacts.charge_manifest).ok();
+    ensure_parent(&resolved.artifacts.charge_manifest).ok();
     let charge_manifest = json!({
-        "version": CHARGE_MANIFEST_VERSION,
-        "solute_path": req.artifacts.coordinates,
+        "schema_version": CHARGE_MANIFEST_VERSION,
+        "solute_path": resolved.artifacts.coordinates,
         "source_topology_ref": bundle.artifacts.source_topology_ref,
         "target_topology_ref": topology_path,
         "forcefield_ref": bundle.artifacts.forcefield_ref,
@@ -5995,7 +6299,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         "atom_count": built.output.atoms.len(),
     });
     if let Err(err) = fs::write(
-        &req.artifacts.charge_manifest,
+        &resolved.artifacts.charge_manifest,
         format!(
             "{}\n",
             serde_json::to_string_pretty(&charge_manifest).unwrap_or_else(|_| "{}".into())
@@ -6013,8 +6317,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         );
     }
 
-    ensure_parent(&req.artifacts.build_manifest).ok();
-    let bundle_digest = sha256_file(Path::new(&req.source_ref.bundle_path)).ok();
+    ensure_parent(&resolved.artifacts.build_manifest).ok();
     let applied_head_terminus = json!({
         "requested_policy": req.target.termini.head.clone(),
         "resolved_token": built.sequence_labels.first().cloned(),
@@ -6027,53 +6330,50 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         "template_resname": built.template_sequence_resnames.last().cloned(),
         "applied_resname": built.residue_resnames.last().cloned(),
     });
-    let normalized_request = json!({
-        "schema_version": BUILD_SCHEMA_VERSION,
-        "request_id": req.request_id,
-        "source_ref": req.source_ref,
-        "target": req.target,
-        "realization": {
-            "conformation_mode": req.realization.conformation_mode,
-            "seed": seed,
-            "relax": req.realization.relax,
-        },
-        "port_cap_overrides": req.port_cap_overrides,
-        "artifacts": {
-            "coordinates": req.artifacts.coordinates,
-            "raw_coordinates": raw_coordinates_path,
-            "build_manifest": req.artifacts.build_manifest,
-            "charge_manifest": req.artifacts.charge_manifest,
-            "inpcrd": inpcrd_path,
-            "topology": topology_path,
-            "topology_graph": topology_graph_path,
-            "ensemble_manifest": ensemble_manifest_path,
-        },
+    let artifact_digests = json!({
+        "coordinates": sha256_file(Path::new(&resolved.artifacts.coordinates)).ok(),
+        "raw_coordinates": raw_coordinates_path
+            .as_ref()
+            .and_then(|path| sha256_file(Path::new(path)).ok()),
+        "charge_manifest": sha256_file(Path::new(&resolved.artifacts.charge_manifest)).ok(),
+        "inpcrd": sha256_file(Path::new(&inpcrd_path)).ok(),
+        "topology": topology_path
+            .as_ref()
+            .and_then(|path| sha256_file(Path::new(path)).ok()),
+        "topology_graph": sha256_file(Path::new(&topology_graph_path)).ok(),
+        "ensemble_manifest": ensemble_manifest_path
+            .as_ref()
+            .and_then(|path| sha256_file(Path::new(path)).ok()),
     });
     let manifest = json!({
-        "version": BUILD_MANIFEST_VERSION,
+        "schema_version": BUILD_MANIFEST_VERSION,
         "request_id": req.request_id,
-        "normalized_request": normalized_request,
+        "normalized_request": resolved.normalized_request,
+        "resolved_inputs": resolved.resolved_inputs,
         "source_bundle": {
             "bundle_id": bundle.bundle_id,
-            "bundle_digest": bundle_digest,
+            "bundle_path": req.source_ref.bundle_path,
+            "bundle_digest": resolved.bundle_digest,
             "training_context": bundle.training_context,
         },
         "target": req.target,
         "realization": {
             "conformation_mode": req.realization.conformation_mode,
             "seed": seed,
+            "seed_policy": resolved.seed_policy,
             "relax": req.realization.relax,
         },
         "artifacts": {
-            "coordinates": req.artifacts.coordinates,
+            "coordinates": resolved.artifacts.coordinates,
             "raw_coordinates": raw_coordinates_path,
-            "charge_manifest": req.artifacts.charge_manifest,
+            "charge_manifest": resolved.artifacts.charge_manifest,
             "inpcrd": inpcrd_path,
             "topology": topology_path,
             "topology_graph": topology_graph_path,
             "ensemble_manifest": ensemble_manifest_path,
             "forcefield_ref": bundle.artifacts.forcefield_ref,
         },
+        "artifact_digests": artifact_digests,
         "summary": {
             "atom_count": built.output.atoms.len(),
             "total_repeat_units": n_repeat,
@@ -6126,19 +6426,27 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 .collect::<BTreeMap<_, _>>(),
         },
         "provenance": {
-            "schema_version": BUILD_SCHEMA_VERSION,
+            "schema_version": BUILD_MANIFEST_VERSION,
             "builder_version": env!("CARGO_PKG_VERSION"),
+            "binary_version": env!("CARGO_PKG_VERSION"),
             "algorithm_version": format!("{}.v1", req.realization.conformation_mode),
             "topology_transfer_mode": if topology_path.is_some() {
                 "residue_filtered_with_bonds"
             } else {
                 "none"
             },
+            "source_bundle_path": req.source_ref.bundle_path,
+            "source_bundle_digest": resolved.bundle_digest,
+            "build_metadata": {
+                "git_commit": option_env!("VERGEN_GIT_SHA"),
+                "build_timestamp": option_env!("VERGEN_BUILD_TIMESTAMP"),
+                "target_triple": option_env!("TARGET"),
+            },
         },
-        "warnings": [],
+        "warnings": resolved.warnings,
     });
     if let Err(err) = fs::write(
-        &req.artifacts.build_manifest,
+        &resolved.artifacts.build_manifest,
         format!(
             "{}\n",
             serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| "{}".into())
@@ -6159,7 +6467,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     emit(
         &RunEvent::ManifestWritten {
             request_id: req.request_id.clone(),
-            path: req.artifacts.build_manifest.clone(),
+            path: resolved.artifacts.build_manifest.clone(),
         },
         stream_ndjson,
     );
@@ -6174,10 +6482,10 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         &RunEvent::RunCompleted {
             request_id: req.request_id.clone(),
             artifacts: ArtifactRequest {
-                coordinates: req.artifacts.coordinates.clone(),
-                raw_coordinates: req.artifacts.raw_coordinates.clone(),
-                build_manifest: req.artifacts.build_manifest.clone(),
-                charge_manifest: req.artifacts.charge_manifest.clone(),
+                coordinates: resolved.artifacts.coordinates.clone(),
+                raw_coordinates: raw_coordinates_path.clone(),
+                build_manifest: resolved.artifacts.build_manifest.clone(),
+                charge_manifest: resolved.artifacts.charge_manifest.clone(),
                 inpcrd: Some(inpcrd_path.clone()),
                 topology: topology_path.clone(),
                 topology_graph: Some(topology_graph_path.clone()),
@@ -6194,10 +6502,10 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             status: "ok".into(),
             request_id: req.request_id,
             artifacts: ArtifactRequest {
-                coordinates: req.artifacts.coordinates,
-                raw_coordinates: req.artifacts.raw_coordinates,
-                build_manifest: req.artifacts.build_manifest,
-                charge_manifest: req.artifacts.charge_manifest,
+                coordinates: resolved.artifacts.coordinates,
+                raw_coordinates: raw_coordinates_path,
+                build_manifest: resolved.artifacts.build_manifest,
+                charge_manifest: resolved.artifacts.charge_manifest,
                 inpcrd: Some(inpcrd_path),
                 topology: topology_path,
                 topology_graph: Some(topology_graph_path),
@@ -6222,7 +6530,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     "raw_coordinates": report.raw_coordinates,
                 })),
             }),
-            warnings: vec![],
+            warnings: resolved.warnings,
         }),
     )
 }

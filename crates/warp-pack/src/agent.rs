@@ -180,9 +180,13 @@ pub struct OutputRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BuildRequest {
-    #[serde(default = "default_schema_version")]
-    #[schemars(default = "default_schema_version")]
-    pub version: String,
+    #[serde(
+        default = "default_schema_version",
+        alias = "version",
+        rename = "schema_version"
+    )]
+    #[schemars(default = "default_schema_version", rename = "schema_version")]
+    pub schema_version: String,
     #[serde(default)]
     pub run_id: Option<String>,
     #[serde(default)]
@@ -201,6 +205,7 @@ pub struct ErrorDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub message: String,
+    pub severity: String,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -227,6 +232,7 @@ pub struct RunSuccessEnvelope {
     pub artifacts: ArtifactEnvelope,
     pub summary: RunSummary,
     pub manifest_path: String,
+    pub warnings: Vec<ErrorDetail>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -238,6 +244,17 @@ pub struct RunErrorEnvelope {
     pub exit_code: i32,
     pub error: ErrorDetail,
     pub errors: Vec<ErrorDetail>,
+    pub warnings: Vec<ErrorDetail>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ValidateSuccessEnvelope {
+    pub schema_version: String,
+    pub status: String,
+    pub valid: bool,
+    pub normalized_request: Value,
+    pub resolved_inputs: Value,
+    pub warnings: Vec<ErrorDetail>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -321,6 +338,7 @@ struct TranslationMetadata {
     charge_source_kinds: Vec<String>,
     net_charge_before_neutralization: Option<f32>,
     neutralization_policy: String,
+    warnings: Vec<ErrorDetail>,
     engine_decisions: Value,
 }
 
@@ -383,6 +401,165 @@ fn default_schema_version() -> String {
     AGENT_SCHEMA_VERSION.to_string()
 }
 
+fn error_severity() -> String {
+    "error".to_string()
+}
+
+fn warning_severity() -> String {
+    "warning".to_string()
+}
+
+fn json_pointer_token(token: &str) -> String {
+    token.replace('~', "~0").replace('/', "~1")
+}
+
+fn json_pointer(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with('/') {
+        return Some(trimmed.to_string());
+    }
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut chars = trimmed.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '.' => {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+            }
+            '[' => {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+                let mut index = String::new();
+                while let Some(next) = chars.next() {
+                    if next == ']' {
+                        break;
+                    }
+                    index.push(next);
+                }
+                if !index.is_empty() {
+                    segments.push(index);
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    if segments.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "/{}",
+            segments
+                .iter()
+                .map(|segment| json_pointer_token(segment))
+                .collect::<Vec<_>>()
+                .join("/")
+        ))
+    }
+}
+
+fn error_detail(
+    code: impl Into<String>,
+    path: impl Into<Option<String>>,
+    message: impl Into<String>,
+) -> ErrorDetail {
+    ErrorDetail {
+        code: code.into(),
+        path: path.into().and_then(|value| json_pointer(&value)),
+        message: message.into(),
+        severity: error_severity(),
+    }
+}
+
+fn warning_detail(
+    code: impl Into<String>,
+    path: impl Into<Option<String>>,
+    message: impl Into<String>,
+) -> ErrorDetail {
+    ErrorDetail {
+        code: code.into(),
+        path: path.into().and_then(|value| json_pointer(&value)),
+        message: message.into(),
+        severity: warning_severity(),
+    }
+}
+
+fn component_warning_path(
+    req: &BuildRequest,
+    index: usize,
+    suffix: &str,
+) -> Option<String> {
+    let trimmed = suffix.trim_matches('/');
+    if req.components.is_some() {
+        if trimmed.is_empty() {
+            Some(format!("components[{index}]"))
+        } else {
+            Some(format!("components[{index}].{trimmed}"))
+        }
+    } else if req.polymer_build.is_some() {
+        if trimmed.is_empty() {
+            Some("polymer_build".into())
+        } else {
+            Some(format!("polymer_build.{trimmed}"))
+        }
+    } else if req.solute.is_some() {
+        if trimmed.is_empty() {
+            Some("solute".into())
+        } else {
+            Some(format!("solute.{trimmed}"))
+        }
+    } else {
+        None
+    }
+}
+
+fn collect_warnings(req: &BuildRequest, components: &[ResolvedComponent]) -> Vec<ErrorDetail> {
+    let mut warnings = Vec::new();
+    for (index, component) in components.iter().enumerate() {
+        if component.charge_manifest_path.is_none()
+            && component
+                .charge_source_kinds
+                .iter()
+                .any(|kind| kind == "prmtop.total_charge")
+        {
+            warnings.push(warning_detail(
+                "W_CHARGE_SOURCE_PRMTOP_FALLBACK",
+                component_warning_path(req, index, "source"),
+                format!(
+                    "component '{}' is using prmtop.total_charge fallback; charge_manifest would provide a stronger charge handoff",
+                    component.name
+                ),
+            ));
+        }
+        if component.source_kind == "polymer_build" && component.topology_graph.is_none() {
+            warnings.push(warning_detail(
+                "W_TOPOLOGY_GRAPH_MISSING",
+                component_warning_path(req, index, "topology_graph"),
+                format!(
+                    "component '{}' has no topology_graph handoff; warp-pack will fall back to coordinate-derived packing hints",
+                    component.name
+                ),
+            ));
+        }
+    }
+    warnings
+}
+
+fn sha256_file(path: &Path) -> PackResult<String> {
+    let bytes = fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
 fn canonical_json_string(value: &Value) -> PackResult<String> {
     serde_json::to_string(value).map_err(|err| PackError::Parse(err.to_string()))
 }
@@ -431,35 +608,40 @@ fn load_polymer_build_handoff(
     handoff: &PolymerBuildArtifactRef,
 ) -> Result<LoadedPolymerBuildHandoff, ErrorDetail> {
     if handoff.build_manifest.trim().is_empty() {
-        return Err(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("polymer_build.build_manifest".into()),
-            message: "polymer_build.build_manifest cannot be empty".into(),
-        });
+        return Err(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("polymer_build.build_manifest".into()),
+            "polymer_build.build_manifest cannot be empty",
+        ));
     }
 
-    let text = fs::read_to_string(&handoff.build_manifest).map_err(|err| ErrorDetail {
-        code: "E_CONFIG_VALIDATION".into(),
-        path: Some("polymer_build.build_manifest".into()),
-        message: format!("failed to read build manifest: {err}"),
+    let text = fs::read_to_string(&handoff.build_manifest).map_err(|err| {
+        error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("polymer_build.build_manifest".into()),
+            format!("failed to read build manifest: {err}"),
+        )
     })?;
-    let manifest: Value = serde_json::from_str(&text).map_err(|err| ErrorDetail {
-        code: "E_CONFIG_VALIDATION".into(),
-        path: Some("polymer_build.build_manifest".into()),
-        message: format!("failed to parse build manifest: {err}"),
+    let manifest: Value = serde_json::from_str(&text).map_err(|err| {
+        error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("polymer_build.build_manifest".into()),
+            format!("failed to parse build manifest: {err}"),
+        )
     })?;
     let version = manifest
-        .get("version")
+        .get("schema_version")
+        .or_else(|| manifest.get("version"))
         .and_then(Value::as_str)
         .unwrap_or_default();
     if version != POLYMER_BUILD_MANIFEST_VERSION {
-        return Err(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("polymer_build.build_manifest".into()),
-            message: format!(
+        return Err(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("polymer_build.build_manifest".into()),
+            format!(
                 "unsupported polymer build manifest version '{version}'; expected {POLYMER_BUILD_MANIFEST_VERSION}"
             ),
-        });
+        ));
     }
 
     let coordinates = handoff.coordinates.clone().or_else(|| {
@@ -468,12 +650,12 @@ fn load_polymer_build_handoff(
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
     });
-    let coordinates = coordinates.ok_or_else(|| ErrorDetail {
-        code: "E_CONFIG_VALIDATION".into(),
-        path: Some("polymer_build.coordinates".into()),
-        message:
-            "polymer_build handoff requires coordinates or artifacts.coordinates in build manifest"
-                .into(),
+    let coordinates = coordinates.ok_or_else(|| {
+        error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("polymer_build.coordinates".into()),
+            "polymer_build handoff requires coordinates or artifacts.coordinates in build manifest",
+        )
     })?;
     let charge_manifest_path = handoff.charge_manifest.clone().or_else(|| {
         manifest
@@ -501,30 +683,35 @@ fn load_polymer_build_handoff(
         .as_deref()
         .map(|path| resolve_relative(&handoff.build_manifest, path));
     let topology_graph = if let Some(path) = topology_graph_path.as_deref() {
-        let text = fs::read_to_string(path).map_err(|err| ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("polymer_build.topology_graph".into()),
-            message: format!("failed to read topology_graph: {err}"),
+        let text = fs::read_to_string(path).map_err(|err| {
+            error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("polymer_build.topology_graph".into()),
+                format!("failed to read topology_graph: {err}"),
+            )
         })?;
-        let graph: TopologyGraph = serde_json::from_str(&text).map_err(|err| ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("polymer_build.topology_graph".into()),
-            message: format!("failed to parse topology_graph: {err}"),
+        let graph: TopologyGraph = serde_json::from_str(&text).map_err(|err| {
+            error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("polymer_build.topology_graph".into()),
+                format!("failed to parse topology_graph: {err}"),
+            )
         })?;
-        if !supported_topology_graph_version(&graph.version) {
-            return Err(ErrorDetail {
-                code: "E_CONFIG_VALIDATION".into(),
-                path: Some("polymer_build.topology_graph".into()),
-                message: format!("unsupported topology_graph version '{}'", graph.version),
-            });
+        let graph_version = graph.schema_version.as_str();
+        if !supported_topology_graph_version(graph_version) {
+            return Err(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("polymer_build.topology_graph".into()),
+                format!("unsupported topology_graph version '{}'", graph_version),
+            ));
         }
         if let Some(request_id) = manifest.get("request_id").and_then(Value::as_str) {
             if graph.request_id != request_id {
-                return Err(ErrorDetail {
-                    code: "E_CONFIG_VALIDATION".into(),
-                    path: Some("polymer_build.topology_graph".into()),
-                    message: "topology_graph request_id does not match build manifest".into(),
-                });
+                return Err(error_detail(
+                    "E_CONFIG_VALIDATION",
+                    Some("polymer_build.topology_graph".into()),
+                    "topology_graph request_id does not match build manifest",
+                ));
             }
         }
         if let Some(bundle_id) = manifest
@@ -532,11 +719,11 @@ fn load_polymer_build_handoff(
             .and_then(Value::as_str)
         {
             if graph.bundle_id != bundle_id {
-                return Err(ErrorDetail {
-                    code: "E_CONFIG_VALIDATION".into(),
-                    path: Some("polymer_build.topology_graph".into()),
-                    message: "topology_graph bundle_id does not match build manifest".into(),
-                });
+                return Err(error_detail(
+                    "E_CONFIG_VALIDATION",
+                    Some("polymer_build.topology_graph".into()),
+                    "topology_graph bundle_id does not match build manifest",
+                ));
             }
         }
         Some(graph)
@@ -609,233 +796,229 @@ fn ion_template_path(species: &str) -> String {
 }
 
 fn parse_request_text(text: &str) -> Result<BuildRequest, ErrorDetail> {
-    let payload: Value = serde_json::from_str(text).map_err(|err| ErrorDetail {
-        code: "E_CONFIG_VALIDATION".into(),
-        path: None,
-        message: err.to_string(),
-    })?;
+    let payload: Value =
+        serde_json::from_str(text).map_err(|err| error_detail("E_CONFIG_VALIDATION", None, err.to_string()))?;
     if payload.get("polymer").is_some() {
-        return Err(ErrorDetail {
-            code: "E_UNSUPPORTED_FEATURE".into(),
-            path: Some("polymer".into()),
-            message: "inline polymer build was removed from warp-pack; build polymers with warp-build and pass polymer_build or components".into(),
-        });
+        return Err(error_detail(
+            "E_UNSUPPORTED_FEATURE",
+            Some("polymer".into()),
+            "inline polymer build was removed from warp-pack; build polymers with warp-build and pass polymer_build or components",
+        ));
     }
     let deserializer = payload.into_deserializer();
     serde_path_to_error::deserialize::<_, BuildRequest>(deserializer).map_err(|err| {
         let path = err.path().to_string();
-        ErrorDetail {
-            code: if path == "version" {
-                "E_CONFIG_VERSION".into()
+        error_detail(
+            if path == "version" || path == "schema_version" {
+                "E_CONFIG_VERSION"
             } else {
-                "E_CONFIG_VALIDATION".into()
+                "E_CONFIG_VALIDATION"
             },
-            path: if path.is_empty() { None } else { Some(path) },
-            message: err.inner().to_string(),
-        }
+            if path.is_empty() { None } else { Some(path) },
+            err.inner().to_string(),
+        )
     })
 }
 
 fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
     let mut errors = Vec::new();
 
-    if req.version != AGENT_SCHEMA_VERSION {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VERSION".into(),
-            path: Some("version".into()),
-            message: format!(
-                "unsupported version '{}'; expected {AGENT_SCHEMA_VERSION}",
-                req.version
+    if req.schema_version != AGENT_SCHEMA_VERSION {
+        errors.push(error_detail(
+            "E_CONFIG_VERSION",
+            Some("schema_version".into()),
+            format!(
+                "unsupported schema_version '{}'; expected {AGENT_SCHEMA_VERSION}",
+                req.schema_version
             ),
-        });
+        ));
     }
 
     let input_count = usize::from(req.components.is_some())
         + usize::from(req.solute.is_some())
         + usize::from(req.polymer_build.is_some());
     if input_count == 0 {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("components".into()),
-            message: "provide one of components, solute, or polymer_build".into(),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("components".into()),
+            "provide one of components, solute, or polymer_build",
+        ));
     } else if input_count > 1 {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("components".into()),
-            message: "provide exactly one of components, solute, or polymer_build".into(),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("components".into()),
+            "provide exactly one of components, solute, or polymer_build",
+        ));
     }
 
     if req.outputs.coordinates.trim().is_empty() {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("outputs.coordinates".into()),
-            message: "outputs.coordinates cannot be empty".into(),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("outputs.coordinates".into()),
+            "outputs.coordinates cannot be empty",
+        ));
     }
     if req.outputs.manifest.trim().is_empty() {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("outputs.manifest".into()),
-            message: "outputs.manifest cannot be empty".into(),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("outputs.manifest".into()),
+            "outputs.manifest cannot be empty",
+        ));
     }
     if req.outputs.coordinates == req.outputs.manifest {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("outputs.manifest".into()),
-            message: "outputs.coordinates and outputs.manifest must differ".into(),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("outputs.manifest".into()),
+            "outputs.coordinates and outputs.manifest must differ",
+        ));
     }
 
     match req.environment.box_spec.mode.as_str() {
         "padding" => {
             if req.environment.box_spec.padding_angstrom.unwrap_or(0.0) <= 0.0 {
-                errors.push(ErrorDetail {
-                    code: "E_CONFIG_VALIDATION".into(),
-                    path: Some("environment.box.padding_angstrom".into()),
-                    message: "padding mode requires positive padding_angstrom".into(),
-                });
+                errors.push(error_detail(
+                    "E_CONFIG_VALIDATION",
+                    Some("environment.box.padding_angstrom".into()),
+                    "padding mode requires positive padding_angstrom",
+                ));
             }
         }
         "fixed_size" => {
             if req.environment.box_spec.size_angstrom.is_none()
                 && req.environment.morphology.target_density_g_cm3.is_none()
             {
-                errors.push(ErrorDetail {
-                    code: "E_CONFIG_VALIDATION".into(),
-                    path: Some("environment.box.size_angstrom".into()),
-                    message: "fixed_size mode requires size_angstrom or target_density_g_cm3"
-                        .into(),
-                });
+                errors.push(error_detail(
+                    "E_CONFIG_VALIDATION",
+                    Some("environment.box.size_angstrom".into()),
+                    "fixed_size mode requires size_angstrom or target_density_g_cm3",
+                ));
             }
         }
-        other => errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("environment.box.mode".into()),
-            message: format!("unsupported box mode '{other}'"),
-        }),
+        other => errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("environment.box.mode".into()),
+            format!("unsupported box mode '{other}'"),
+        )),
     }
 
     match req.environment.box_spec.shape.as_str() {
         "cubic" | "orthorhombic" => {}
-        other => errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("environment.box.shape".into()),
-            message: format!("unsupported box shape '{other}'"),
-        }),
+        other => errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("environment.box.shape".into()),
+            format!("unsupported box shape '{other}'"),
+        )),
     }
 
     match req.environment.solvent.mode.as_str() {
         "none" => {}
         "explicit" => match req.environment.solvent.model.as_deref() {
             Some(model) if SUPPORTED_SOLVENT_MODELS.contains(&model) => {}
-            Some(model) => errors.push(ErrorDetail {
-                code: "E_CONFIG_VALIDATION".into(),
-                path: Some("environment.solvent.model".into()),
-                message: format!("unsupported solvent model '{model}'"),
-            }),
-            None => errors.push(ErrorDetail {
-                code: "E_CONFIG_VALIDATION".into(),
-                path: Some("environment.solvent.model".into()),
-                message: "explicit solvent mode requires solvent.model".into(),
-            }),
+            Some(model) => errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("environment.solvent.model".into()),
+                format!("unsupported solvent model '{model}'"),
+            )),
+            None => errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("environment.solvent.model".into()),
+                "explicit solvent mode requires solvent.model",
+            )),
         },
-        other => errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("environment.solvent.mode".into()),
-            message: format!("unsupported solvent mode '{other}'"),
-        }),
+        other => errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("environment.solvent.mode".into()),
+            format!("unsupported solvent mode '{other}'"),
+        )),
     }
 
     if !SUPPORTED_ION_SPECIES.contains(&req.environment.ions.cation.as_str()) {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("environment.ions.cation".into()),
-            message: format!("unsupported cation '{}'", req.environment.ions.cation),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("environment.ions.cation".into()),
+            format!("unsupported cation '{}'", req.environment.ions.cation),
+        ));
     }
     if !SUPPORTED_ION_SPECIES.contains(&req.environment.ions.anion.as_str()) {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("environment.ions.anion".into()),
-            message: format!("unsupported anion '{}'", req.environment.ions.anion),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("environment.ions.anion".into()),
+            format!("unsupported anion '{}'", req.environment.ions.anion),
+        ));
     }
     if req.environment.ions.cation == req.environment.ions.anion {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("environment.ions.anion".into()),
-            message: "cation and anion must differ".into(),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("environment.ions.anion".into()),
+            "cation and anion must differ",
+        ));
     }
     if req.environment.ions.salt_molar.unwrap_or(0.0) < 0.0 {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("environment.ions.salt_molar".into()),
-            message: "salt_molar must be >= 0".into(),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("environment.ions.salt_molar".into()),
+            "salt_molar must be >= 0",
+        ));
     }
 
     if !SUPPORTED_MORPHOLOGY_MODES.contains(&req.environment.morphology.mode.as_str()) {
-        errors.push(ErrorDetail {
-            code: "E_UNSUPPORTED_FEATURE".into(),
-            path: Some("environment.morphology.mode".into()),
-            message: format!(
+        errors.push(error_detail(
+            "E_UNSUPPORTED_FEATURE",
+            Some("environment.morphology.mode".into()),
+            format!(
                 "morphology mode '{}' is not executable; supported: {}",
                 req.environment.morphology.mode,
                 SUPPORTED_MORPHOLOGY_MODES.join(", ")
             ),
-        });
+        ));
     }
     if let Some(target_density) = req.environment.morphology.target_density_g_cm3 {
         if target_density <= 0.0 {
-            errors.push(ErrorDetail {
-                code: "E_CONFIG_VALIDATION".into(),
-                path: Some("environment.morphology.target_density_g_cm3".into()),
-                message: "target_density_g_cm3 must be > 0".into(),
-            });
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("environment.morphology.target_density_g_cm3".into()),
+                "target_density_g_cm3 must be > 0",
+            ));
         }
         if req.environment.morphology.mode == "single_chain_solution" {
-            errors.push(ErrorDetail {
-                code: "E_UNSUPPORTED_FEATURE".into(),
-                path: Some("environment.morphology.target_density_g_cm3".into()),
-                message: "target_density_g_cm3 is only executable for bulk morphologies".into(),
-            });
+            errors.push(error_detail(
+                "E_UNSUPPORTED_FEATURE",
+                Some("environment.morphology.target_density_g_cm3".into()),
+                "target_density_g_cm3 is only executable for bulk morphologies",
+            ));
         }
         if req.environment.solvent.mode != "none" {
-            errors.push(ErrorDetail {
-                code: "E_UNSUPPORTED_FEATURE".into(),
-                path: Some("environment.solvent.mode".into()),
-                message: "target_density_g_cm3 currently requires solvent.mode = none".into(),
-            });
+            errors.push(error_detail(
+                "E_UNSUPPORTED_FEATURE",
+                Some("environment.solvent.mode".into()),
+                "target_density_g_cm3 currently requires solvent.mode = none",
+            ));
         }
     }
     match req.environment.morphology.mode.as_str() {
         "single_chain_solution" => {}
         "amorphous_bulk" | "backbone_aligned_bulk" => {
             if req.environment.box_spec.mode != "fixed_size" {
-                errors.push(ErrorDetail {
-                    code: "E_CONFIG_VALIDATION".into(),
-                    path: Some("environment.box.mode".into()),
-                    message: format!(
+                errors.push(error_detail(
+                    "E_CONFIG_VALIDATION",
+                    Some("environment.box.mode".into()),
+                    format!(
                         "{} requires fixed_size box mode",
                         req.environment.morphology.mode
                     ),
-                });
+                ));
             }
             if req.environment.box_spec.size_angstrom.is_none()
                 && req.environment.morphology.target_density_g_cm3.is_none()
             {
-                errors.push(ErrorDetail {
-                    code: "E_CONFIG_VALIDATION".into(),
-                    path: Some("environment.box.size_angstrom".into()),
-                    message: format!(
+                errors.push(error_detail(
+                    "E_CONFIG_VALIDATION",
+                    Some("environment.box.size_angstrom".into()),
+                    format!(
                         "{} requires size_angstrom or target_density_g_cm3",
                         req.environment.morphology.mode
                     ),
-                });
+                ));
             }
         }
         _ => {}
@@ -848,11 +1031,11 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
             .as_deref()
             .is_none()
     {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("environment.morphology.alignment_axis".into()),
-            message: "backbone_aligned_bulk requires alignment_axis".into(),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("environment.morphology.alignment_axis".into()),
+            "backbone_aligned_bulk requires alignment_axis",
+        ));
     }
     if let Some(axis) = req.environment.morphology.alignment_axis.as_deref() {
         if let Err(error) = parse_alignment_axis(axis) {
@@ -864,69 +1047,64 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
 
     if let Some(components) = &req.components {
         if components.is_empty() {
-            errors.push(ErrorDetail {
-                code: "E_CONFIG_VALIDATION".into(),
-                path: Some("components".into()),
-                message: "components cannot be empty".into(),
-            });
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("components".into()),
+                "components cannot be empty",
+            ));
         }
         for (idx, component) in components.iter().enumerate() {
             total_component_instances += component.count;
             if component.name.trim().is_empty() {
-                errors.push(ErrorDetail {
-                    code: "E_CONFIG_VALIDATION".into(),
-                    path: Some(format!("components[{idx}].name")),
-                    message: "component name cannot be empty".into(),
-                });
+                errors.push(error_detail(
+                    "E_CONFIG_VALIDATION",
+                    Some(format!("components[{idx}].name")),
+                    "component name cannot be empty",
+                ));
             }
             if component.count == 0 {
-                errors.push(ErrorDetail {
-                    code: "E_CONFIG_VALIDATION".into(),
-                    path: Some(format!("components[{idx}].count")),
-                    message: "component count must be >= 1".into(),
-                });
+                errors.push(error_detail(
+                    "E_CONFIG_VALIDATION",
+                    Some(format!("components[{idx}].count")),
+                    "component count must be >= 1",
+                ));
             }
             match &component.source {
                 ComponentSource::Artifact { artifact } => {
                     if artifact.path.trim().is_empty() {
-                        errors.push(ErrorDetail {
-                            code: "E_CONFIG_VALIDATION".into(),
-                            path: Some(format!("components[{idx}].source.artifact.path")),
-                            message: "artifact path cannot be empty".into(),
-                        });
+                        errors.push(error_detail(
+                            "E_CONFIG_VALIDATION",
+                            Some(format!("components[{idx}].source.artifact.path")),
+                            "artifact path cannot be empty",
+                        ));
                     }
                     if let Some(kind) = &artifact.kind {
                         if !SUPPORTED_COMPONENT_KINDS.contains(&kind.as_str()) {
-                            errors.push(ErrorDetail {
-                                code: "E_CONFIG_VALIDATION".into(),
-                                path: Some(format!("components[{idx}].source.artifact.kind")),
-                                message: format!("unsupported component kind '{kind}'"),
-                            });
+                            errors.push(error_detail(
+                                "E_CONFIG_VALIDATION",
+                                Some(format!("components[{idx}].source.artifact.kind")),
+                                format!("unsupported component kind '{kind}'"),
+                            ));
                         }
                     }
                     if req.environment.ions.neutralize
                         && artifact.charge_manifest.is_none()
                         && artifact.topology.is_none()
                     {
-                        errors.push(ErrorDetail {
-                            code: "E_CONFIG_VALIDATION".into(),
-                            path: Some(format!(
-                                "components[{idx}].source.artifact.charge_manifest"
-                            )),
-                            message:
-                                "neutralize=true requires component charge_manifest or topology"
-                                    .into(),
-                        });
+                        errors.push(error_detail(
+                            "E_CONFIG_VALIDATION",
+                            Some(format!("components[{idx}].source.artifact.charge_manifest")),
+                            "neutralize=true requires component charge_manifest or topology",
+                        ));
                     }
                     if req.environment.morphology.mode == "backbone_aligned_bulk"
                         && artifact.kind.as_deref() != Some("polymer_chain")
                     {
-                        errors.push(ErrorDetail {
-                            code: "E_CONFIG_VALIDATION".into(),
-                            path: Some(format!("components[{idx}].source.artifact.kind")),
-                            message: "backbone_aligned_bulk requires polymer_chain components"
-                                .into(),
-                        });
+                        errors.push(error_detail(
+                            "E_CONFIG_VALIDATION",
+                            Some(format!("components[{idx}].source.artifact.kind")),
+                            "backbone_aligned_bulk requires polymer_chain components",
+                        ));
                     }
                 }
                 ComponentSource::PolymerBuild { polymer_build } => {
@@ -936,27 +1114,26 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
                                 && loaded.charge_manifest_path.is_none()
                                 && loaded.topology.is_none()
                             {
-                                errors.push(ErrorDetail {
-                                    code: "E_CONFIG_VALIDATION".into(),
-                                    path: Some(format!(
+                                errors.push(error_detail(
+                                    "E_CONFIG_VALIDATION",
+                                    Some(format!(
                                         "components[{idx}].source.polymer_build.charge_manifest"
                                     )),
-                                    message:
-                                        "neutralize=true requires polymer_build charge_manifest or topology"
-                                            .into(),
-                                });
+                                    "neutralize=true requires polymer_build charge_manifest or topology",
+                                ));
                             }
                         }
                         Err(error) => {
-                            errors.push(ErrorDetail {
-                                path: error.path.map(|path| {
+                            errors.push(error_detail(
+                                error.code,
+                                error.path.map(|path| {
                                     path.replace(
-                                        "polymer_build",
-                                        &format!("components[{idx}].source.polymer_build"),
+                                        "/polymer_build",
+                                        &format!("/components/{idx}/source/polymer_build"),
                                     )
                                 }),
-                                ..error
-                            });
+                                error.message,
+                            ));
                         }
                     }
                 }
@@ -967,40 +1144,39 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
     if let Some(solute) = &req.solute {
         total_component_instances += 1;
         if solute.path.trim().is_empty() {
-            errors.push(ErrorDetail {
-                code: "E_CONFIG_VALIDATION".into(),
-                path: Some("solute.path".into()),
-                message: "solute.path cannot be empty".into(),
-            });
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("solute.path".into()),
+                "solute.path cannot be empty",
+            ));
         }
         if let Some(kind) = &solute.kind {
             if !SUPPORTED_COMPONENT_KINDS.contains(&kind.as_str()) {
-                errors.push(ErrorDetail {
-                    code: "E_CONFIG_VALIDATION".into(),
-                    path: Some("solute.kind".into()),
-                    message: format!("unsupported solute kind '{kind}'"),
-                });
+                errors.push(error_detail(
+                    "E_CONFIG_VALIDATION",
+                    Some("solute.kind".into()),
+                    format!("unsupported solute kind '{kind}'"),
+                ));
             }
         }
         if req.environment.ions.neutralize
             && solute.charge_manifest.is_none()
             && solute.topology.is_none()
         {
-            errors.push(ErrorDetail {
-                code: "E_CONFIG_VALIDATION".into(),
-                path: Some("solute.charge_manifest".into()),
-                message: "neutralize=true requires solute.charge_manifest or solute.topology"
-                    .into(),
-            });
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("solute.charge_manifest".into()),
+                "neutralize=true requires solute.charge_manifest or solute.topology",
+            ));
         }
         if req.environment.morphology.mode == "backbone_aligned_bulk"
             && solute.kind.as_deref() != Some("polymer_chain")
         {
-            errors.push(ErrorDetail {
-                code: "E_CONFIG_VALIDATION".into(),
-                path: Some("solute.kind".into()),
-                message: "backbone_aligned_bulk requires polymer_chain inputs".into(),
-            });
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("solute.kind".into()),
+                "backbone_aligned_bulk requires polymer_chain inputs",
+            ));
         }
     }
 
@@ -1012,13 +1188,11 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
                     && loaded.charge_manifest_path.is_none()
                     && loaded.topology.is_none()
                 {
-                    errors.push(ErrorDetail {
-                        code: "E_CONFIG_VALIDATION".into(),
-                        path: Some("polymer_build.charge_manifest".into()),
-                        message:
-                            "neutralize=true requires polymer_build charge_manifest or topology"
-                                .into(),
-                    });
+                    errors.push(error_detail(
+                        "E_CONFIG_VALIDATION",
+                        Some("polymer_build.charge_manifest".into()),
+                        "neutralize=true requires polymer_build charge_manifest or topology",
+                    ));
                 }
             }
             Err(error) => errors.push(error),
@@ -1027,11 +1201,11 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
 
     if req.environment.morphology.mode == "single_chain_solution" && total_component_instances != 1
     {
-        errors.push(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("components".into()),
-            message: "single_chain_solution requires exactly one total component instance".into(),
-        });
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("components".into()),
+            "single_chain_solution requires exactly one total component instance",
+        ));
     }
 
     errors
@@ -1052,6 +1226,7 @@ fn load_agent_request(text: &str) -> Result<BuildRequest, RunErrorEnvelope> {
                     exit_code: 2,
                     error: first,
                     errors,
+                    warnings: Vec::new(),
                 })
             }
         }
@@ -1062,6 +1237,7 @@ fn load_agent_request(text: &str) -> Result<BuildRequest, RunErrorEnvelope> {
             exit_code: 2,
             error: error.clone(),
             errors: vec![error],
+            warnings: Vec::new(),
         }),
     }
 }
@@ -1257,11 +1433,11 @@ fn parse_alignment_axis(value: &str) -> Result<Vec3, ErrorDetail> {
         "-y" => Ok(Vec3::new(0.0, -1.0, 0.0)),
         "z" | "+z" => Ok(Vec3::new(0.0, 0.0, 1.0)),
         "-z" => Ok(Vec3::new(0.0, 0.0, -1.0)),
-        _ => Err(ErrorDetail {
-            code: "E_CONFIG_VALIDATION".into(),
-            path: Some("environment.morphology.alignment_axis".into()),
-            message: "alignment_axis must be one of x, y, z, -x, -y, -z".into(),
-        }),
+        _ => Err(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("environment.morphology.alignment_axis".into()),
+            "alignment_axis must be one of x, y, z, -x, -y, -z",
+        )),
     }
 }
 
@@ -2303,7 +2479,12 @@ fn resolve_polymer_build_component(
         })),
         polymer_build_handoff: Some(json!({
             "build_manifest": loaded.manifest_path.clone(),
-            "manifest_version": loaded.manifest.get("version").cloned().unwrap_or(Value::Null),
+            "manifest_version": loaded
+                .manifest
+                .get("schema_version")
+                .cloned()
+                .or_else(|| loaded.manifest.get("version").cloned())
+                .unwrap_or(Value::Null),
             "coordinates": loaded.coordinates_path.clone(),
             "charge_manifest": loaded.charge_manifest_path.clone(),
             "topology": loaded.topology.clone(),
@@ -2768,7 +2949,7 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
                 "topology": component.topology,
                 "topology_graph": component.topology_graph_path,
                 "topology_graph_summary": component.topology_graph.as_ref().map(|graph| json!({
-                    "version": graph.version,
+                    "schema_version": graph.schema_version,
                     "build_mode": graph.build_plan.target_mode,
                     "architecture": graph_architecture_label(graph),
                     "motif_count": graph.motif_instances.len(),
@@ -2789,6 +2970,7 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
         .collect::<Vec<_>>();
     let charge_source_kinds = charge_source_kind_set.into_iter().collect::<Vec<_>>();
     let charge_manifest_path = charge_manifest_paths.first().cloned();
+    let warnings = collect_warnings(req, &components);
 
     Ok((
         cfg,
@@ -2810,6 +2992,7 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
             charge_source_kinds: charge_source_kinds.clone(),
             net_charge_before_neutralization,
             neutralization_policy: neutralization_policy.clone(),
+            warnings,
             engine_decisions: json!({
                 "box_resolution": box_decisions,
                 "morphology_policy": {
@@ -2867,6 +3050,42 @@ fn build_manifest(
     let request_value =
         serde_json::to_value(req).map_err(|err| PackError::Parse(err.to_string()))?;
     let cfg_value = serde_json::to_value(cfg).map_err(|err| PackError::Parse(err.to_string()))?;
+    let component_input_digests = metadata
+        .component_inventory
+        .iter()
+        .map(|item| {
+            json!({
+                "name": item.get("name").cloned().unwrap_or(Value::Null),
+                "coordinates": item.get("path").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
+                "topology": item.get("topology").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
+                "topology_graph": item.get("topology_graph").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
+                "charge_manifest": item.get("charge_manifest").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
+                "build_manifest": item.get("build_manifest").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
+            })
+        })
+        .collect::<Vec<_>>();
+    let build_metadata = json!({
+        "git_commit": option_env!("VERGEN_GIT_SHA"),
+        "build_timestamp": option_env!("VERGEN_BUILD_TIMESTAMP"),
+        "target_triple": option_env!("TARGET"),
+    });
+    let provenance = json!({
+        "cli_version": env!("CARGO_PKG_VERSION"),
+        "binary_version": env!("CARGO_PKG_VERSION"),
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "request_hash": hash_value(&request_value)?,
+        "engine_config_hash": hash_value(&cfg_value)?,
+        "build_metadata": build_metadata,
+    });
+    let artifact_digests = json!({
+        "coordinates": sha256_file(Path::new(&req.outputs.coordinates)).ok(),
+        "component_inputs": component_input_digests,
+    });
+    let engine_decisions = json!({
+        "normalized_pack_config_hash": hash_value(&cfg_value)?,
+        "request_charge_sources": metadata.charge_manifest_paths,
+        "details": metadata.engine_decisions,
+    });
 
     let mut inventory = metadata.component_inventory.clone();
     let mut primary = metadata.source_solute_artifact.clone();
@@ -2923,6 +3142,7 @@ fn build_manifest(
             "lz": metadata.resolved_box_size[2],
         },
         "component_inventory": inventory,
+        "warnings": metadata.warnings,
         "polymer_chain_count": metadata.solute_context.chain_count,
         "residue_counts": metadata.solute_context.residue_counts,
         "water_count": metadata.water_count,
@@ -2948,23 +3168,84 @@ fn build_manifest(
                 "format": "json",
             }
         },
-        "engine_decisions": {
-            "normalized_pack_config_hash": hash_value(&cfg_value)?,
-            "request_charge_sources": metadata.charge_manifest_paths,
-            "details": metadata.engine_decisions,
-        },
+        "artifact_digests": artifact_digests,
+        "engine_decisions": engine_decisions,
         "outputs": req.outputs,
-        "provenance": {
-            "cli_version": env!("CARGO_PKG_VERSION"),
-            "schema_version": AGENT_SCHEMA_VERSION,
-            "request_hash": hash_value(&request_value)?,
-            "engine_config_hash": hash_value(&cfg_value)?,
-        },
+        "provenance": provenance,
         "summary": {
             "component_count": component_count(metadata),
             "total_atoms": total_atoms,
             "water_count": metadata.water_count,
             "ion_counts": metadata.ion_counts,
+        },
+    }))
+}
+
+fn validate_warnings(req: &BuildRequest) -> PackResult<Vec<ErrorDetail>> {
+    let components = resolve_components(req)?;
+    Ok(collect_warnings(req, &components))
+}
+
+fn resolved_inputs(req: &BuildRequest) -> PackResult<Value> {
+    let components = resolve_components(req)?;
+    let total_instances = total_component_instances(&components);
+    let graph_versions = components
+        .iter()
+        .filter_map(|component| {
+            component
+                .topology_graph
+                .as_ref()
+                .map(|graph| graph.schema_version.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    let build_manifest_versions = components
+        .iter()
+        .filter_map(|component| {
+            component
+                .polymer_build_handoff
+                .as_ref()
+                .and_then(|value| value.get("manifest_version"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect::<BTreeSet<_>>();
+    let charge_source_kinds = components
+        .iter()
+        .flat_map(|component| component.charge_source_kinds.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    let missing_neutralization = components
+        .iter()
+        .filter(|component| component.per_instance_net_charge.is_none())
+        .map(|component| component.name.clone())
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "morphology_mode": req.environment.morphology.mode,
+        "component_inventory_count": components.len(),
+        "component_instance_count": total_instances,
+        "polymer_build_handoff_present": components.iter().any(|component| component.source_kind == "polymer_build"),
+        "polymer_build_manifest_version": if build_manifest_versions.len() == 1 {
+            build_manifest_versions.iter().next().cloned().map(Value::String).unwrap_or(Value::Null)
+        } else {
+            Value::Array(build_manifest_versions.into_iter().map(Value::String).collect())
+        },
+        "topology_graph_present": components.iter().any(|component| component.topology_graph.is_some()),
+        "topology_graph_version": if graph_versions.len() == 1 {
+            graph_versions.iter().next().cloned().map(Value::String).unwrap_or(Value::Null)
+        } else {
+            Value::Array(graph_versions.into_iter().map(Value::String).collect())
+        },
+        "charge_source_kind": if charge_source_kinds.len() == 1 {
+            charge_source_kinds.iter().next().cloned().map(Value::String).unwrap_or(Value::Null)
+        } else if charge_source_kinds.is_empty() {
+            Value::Null
+        } else {
+            Value::String("mixed".into())
+        },
+        "charge_source_kinds": charge_source_kinds.into_iter().collect::<Vec<_>>(),
+        "neutralization_preconditions": {
+            "requested": req.environment.ions.neutralize,
+            "satisfied": !req.environment.ions.neutralize || missing_neutralization.is_empty(),
+            "missing_charge_components": missing_neutralization,
         },
     }))
 }
@@ -2976,11 +3257,7 @@ fn error_to_envelope(run_id: Option<String>, err: PackError) -> RunErrorEnvelope
         PackError::Placement(_) => (4, "E_RUNTIME_EXEC"),
     };
     let message = err.to_string();
-    let detail = ErrorDetail {
-        code: code.into(),
-        path: None,
-        message,
-    };
+    let detail = error_detail(code, None, message);
     RunErrorEnvelope {
         schema_version: AGENT_SCHEMA_VERSION.into(),
         status: "error".into(),
@@ -2988,6 +3265,7 @@ fn error_to_envelope(run_id: Option<String>, err: PackError) -> RunErrorEnvelope
         exit_code,
         error: detail.clone(),
         errors: vec![detail],
+        warnings: Vec::new(),
     }
 }
 
@@ -3011,7 +3289,7 @@ pub fn schema_json(kind: &str) -> PackResult<String> {
 pub fn example_request(mode: &str) -> PackResult<Value> {
     match mode {
         "solute_solvate" => Ok(json!({
-            "version": AGENT_SCHEMA_VERSION,
+            "schema_version": AGENT_SCHEMA_VERSION,
             "run_id": "solute-solvate-001",
             "solute": {
                 "path": "polymer_50mer.pdb",
@@ -3028,7 +3306,7 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             "outputs": {"coordinates": "outputs/system.pdb", "manifest": "outputs/system_manifest.json"},
         })),
         "polymer_build_handoff" => Ok(json!({
-            "version": AGENT_SCHEMA_VERSION,
+            "schema_version": AGENT_SCHEMA_VERSION,
             "run_id": "polymer-build-handoff-001",
             "polymer_build": {
                 "build_manifest": "outputs/pmma_50mer.build.json",
@@ -3046,7 +3324,7 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             },
         })),
         "components_amorphous_bulk" => Ok(json!({
-            "version": AGENT_SCHEMA_VERSION,
+            "schema_version": AGENT_SCHEMA_VERSION,
             "run_id": "components-bulk-001",
             "components": [
                 {
@@ -3084,7 +3362,7 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             },
         })),
         "components_backbone_aligned_bulk" => Ok(json!({
-            "version": AGENT_SCHEMA_VERSION,
+            "schema_version": AGENT_SCHEMA_VERSION,
             "run_id": "components-aligned-001",
             "components": [
                 {
@@ -3125,6 +3403,7 @@ pub fn capabilities() -> Value {
         "supported_morphology_modes": SUPPORTED_MORPHOLOGY_MODES,
         "supported_charge_sources": ["charge_manifest", "prmtop"],
         "supported_polymer_build_handoff_artifacts": ["build_manifest", "coordinates", "charge_manifest", "topology", "topology_graph"],
+        "schema_targets": ["request", "result", "event"],
         "polymer_build_supported": true,
         "polymer_build_handoff_supported": true,
         "preferred_solute_input": "components",
@@ -3136,20 +3415,44 @@ pub fn capabilities() -> Value {
 
 pub fn validate_request_json(text: &str) -> (i32, Value) {
     match load_agent_request(text) {
-        Ok(req) => (
-            0,
-            json!({
-                "status": "ok",
-                "valid": true,
-                "normalized_request": req,
-            }),
-        ),
+        Ok(req) => {
+            let normalized_request =
+                serde_json::to_value(&req).unwrap_or_else(|_| json!({"schema_version": AGENT_SCHEMA_VERSION}));
+            match resolved_inputs(&req) {
+                Ok(resolved_inputs) => (
+                    0,
+                    json!(ValidateSuccessEnvelope {
+                        schema_version: AGENT_SCHEMA_VERSION.into(),
+                        status: "ok".into(),
+                        valid: true,
+                        normalized_request,
+                        resolved_inputs,
+                        warnings: validate_warnings(&req).unwrap_or_default(),
+                    }),
+                ),
+                Err(err) => {
+                    let envelope = error_to_envelope(req.run_id.clone(), err);
+                    (
+                        envelope.exit_code,
+                        json!({
+                            "schema_version": AGENT_SCHEMA_VERSION,
+                            "status": "error",
+                            "valid": false,
+                            "errors": envelope.errors,
+                            "warnings": envelope.warnings,
+                        }),
+                    )
+                }
+            }
+        }
         Err(err) => (
             err.exit_code,
             json!({
+                "schema_version": AGENT_SCHEMA_VERSION,
                 "status": "error",
                 "valid": false,
                 "errors": err.errors,
+                "warnings": err.warnings,
             }),
         ),
     }
@@ -3429,6 +3732,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 ion_counts: metadata.ion_counts,
             },
             manifest_path: req.outputs.manifest.clone(),
+            warnings: metadata.warnings.clone(),
         })
     })();
 

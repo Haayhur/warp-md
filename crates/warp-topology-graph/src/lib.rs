@@ -4,6 +4,10 @@ use serde_json::Value;
 
 pub const TOPOLOGY_GRAPH_VERSION: &str = "polymer-build.topology-graph.v5";
 
+fn default_topology_graph_version() -> String {
+    TOPOLOGY_GRAPH_VERSION.to_string()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TerminiRequest {
     pub head: String,
@@ -259,7 +263,13 @@ pub struct RelaxMetadata {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TopologyGraph {
-    pub version: String,
+    #[serde(
+        default = "default_topology_graph_version",
+        alias = "version",
+        rename = "schema_version"
+    )]
+    #[schemars(default = "default_topology_graph_version", rename = "schema_version")]
+    pub schema_version: String,
     pub request_id: String,
     pub bundle_id: String,
     pub build_plan: BuildPlan,

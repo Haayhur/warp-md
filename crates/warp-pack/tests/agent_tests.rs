@@ -653,7 +653,7 @@ fn agent_schema_includes_default_version() {
     let schema_text = warp_pack::agent::schema_json("request").expect("request schema");
     let schema: Value = serde_json::from_str(&schema_text).expect("parse schema");
     assert_eq!(
-        schema["properties"]["version"]["default"],
+        schema["properties"]["schema_version"]["default"],
         "warp-pack.agent.v1"
     );
 }
@@ -716,7 +716,7 @@ fn agent_validate_rejects_removed_inline_polymer_request() {
         &serde_json::to_string(&payload).expect("serialize payload"),
     );
     assert_eq!(exit_code, 2);
-    assert_eq!(result["errors"][0]["path"], "polymer");
+    assert_eq!(result["errors"][0]["path"], "/polymer");
 }
 
 #[test]
@@ -753,7 +753,7 @@ fn agent_validate_rejects_removed_inline_polymer_sequence_request() {
         &serde_json::to_string(&payload).expect("serialize payload"),
     );
     assert_eq!(exit_code, 2);
-    assert_eq!(result["errors"][0]["path"], "polymer");
+    assert_eq!(result["errors"][0]["path"], "/polymer");
 }
 
 #[test]
@@ -789,7 +789,7 @@ fn agent_validate_rejects_inline_polymer_without_sequence_token() {
         &serde_json::to_string(&payload).expect("serialize payload"),
     );
     assert_eq!(exit_code, 2);
-    assert_eq!(result["errors"][0]["path"], "polymer");
+    assert_eq!(result["errors"][0]["path"], "/polymer");
 }
 
 #[test]
@@ -830,7 +830,7 @@ fn agent_validate_rejects_mixed_components_and_legacy_input() {
         &serde_json::to_string(&payload).expect("serialize payload"),
     );
     assert_eq!(exit_code, 2);
-    assert_eq!(result["errors"][0]["path"], "components");
+    assert_eq!(result["errors"][0]["path"], "/components");
 }
 
 #[test]
@@ -941,6 +941,31 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
     );
     assert_eq!(validate_code, 0);
     assert_eq!(validate_result["valid"], true);
+    assert_eq!(validate_result["schema_version"], "warp-pack.agent.v1");
+    assert_eq!(
+        validate_result["resolved_inputs"]["polymer_build_manifest_version"],
+        "polymer-build.manifest.v1"
+    );
+    assert_eq!(
+        validate_result["resolved_inputs"]["topology_graph_present"],
+        false
+    );
+    assert_eq!(
+        validate_result["resolved_inputs"]["morphology_mode"],
+        "single_chain_solution"
+    );
+    assert_eq!(
+        validate_result["resolved_inputs"]["neutralization_preconditions"]["satisfied"],
+        true
+    );
+    assert_eq!(
+        validate_result["warnings"][0]["code"],
+        "W_TOPOLOGY_GRAPH_MISSING"
+    );
+    assert_eq!(
+        validate_result["warnings"][0]["path"],
+        "/polymer_build/topology_graph"
+    );
 
     let (exit_code, envelope) = warp_pack::agent::run_request_json(
         &serde_json::to_string(&payload).expect("serialize payload"),
@@ -976,6 +1001,10 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
         "polymer_build_handoff"
     );
     assert_eq!(manifest_value["achieved_salt_counts_by_species"]["Cl-"], 3);
+    assert!(manifest_value["artifact_digests"]["coordinates"]
+        .as_str()
+        .expect("coordinates digest")
+        .starts_with("sha256:"));
 }
 
 #[test]
@@ -1024,6 +1053,10 @@ fn agent_run_components_bulk_uses_prmtop_charge_fallback() {
         "{}",
         serde_json::to_string_pretty(&envelope).expect("envelope text")
     );
+    assert_eq!(
+        envelope["warnings"][0]["code"],
+        "W_CHARGE_SOURCE_PRMTOP_FALLBACK"
+    );
 
     let manifest_value: Value =
         serde_json::from_str(&fs::read_to_string(&manifest_out).expect("read manifest"))
@@ -1037,6 +1070,10 @@ fn agent_run_components_bulk_uses_prmtop_charge_fallback() {
     assert_eq!(
         manifest_value["charge_source_kinds"],
         json!(["prmtop.total_charge"])
+    );
+    assert_eq!(
+        manifest_value["warnings"][0]["code"],
+        "W_CHARGE_SOURCE_PRMTOP_FALLBACK"
     );
     assert_eq!(manifest_value["component_inventory"][0]["count"], 2);
     assert_eq!(
@@ -1558,6 +1595,10 @@ fn agent_run_fixture_port_caps_handoff_records_applied_caps() {
     assert_eq!(hints.len(), 1);
     assert_eq!(hints[0]["cap_state"], "capped_ports_only");
     assert_eq!(hints[0]["port_class_policy"], "class_axis_partitioned");
+    assert!(manifest_value["artifact_digests"]["coordinates"]
+        .as_str()
+        .expect("coordinates digest")
+        .starts_with("sha256:"));
 }
 
 #[test]
@@ -1688,4 +1729,8 @@ fn agent_run_fixture_branched_mix_handoff_records_mixed_fixture_architecture() {
     assert!(hints
         .iter()
         .any(|hint| hint["graph_summary"]["build_mode"] == "branched_polymer"));
+    assert!(manifest_value["artifact_digests"]["coordinates"]
+        .as_str()
+        .expect("coordinates digest")
+        .starts_with("sha256:"));
 }

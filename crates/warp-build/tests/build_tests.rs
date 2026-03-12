@@ -232,6 +232,20 @@ fn schema_and_inspect_source_work() {
     let schema = warp_build::schema_json("request").expect("schema");
     let parsed: Value = serde_json::from_str(&schema).expect("parse schema");
     assert!(parsed["properties"].get("schema_version").is_some());
+    let source_schema = warp_build::schema_json("source_bundle").expect("source schema");
+    let source_schema_value: Value =
+        serde_json::from_str(&source_schema).expect("parse source schema");
+    assert!(source_schema_value["properties"].get("schema_version").is_some());
+    let build_manifest_schema =
+        warp_build::schema_json("build_manifest").expect("build manifest schema");
+    let build_manifest_schema_value: Value =
+        serde_json::from_str(&build_manifest_schema).expect("parse build manifest schema");
+    assert!(build_manifest_schema_value["properties"].get("schema_version").is_some());
+    let charge_manifest_schema =
+        warp_build::schema_json("charge_manifest").expect("charge manifest schema");
+    let charge_manifest_schema_value: Value =
+        serde_json::from_str(&charge_manifest_schema).expect("parse charge manifest schema");
+    assert!(charge_manifest_schema_value["properties"].get("schema_version").is_some());
     let graph_schema = warp_build::schema_json("topology_graph").expect("graph schema");
     let graph_schema_value: Value =
         serde_json::from_str(&graph_schema).expect("parse graph schema");
@@ -338,7 +352,8 @@ fn validate_rejects_random_copolymer_total_units_mismatch() {
             "stereochemistry": {"mode": "inherit"},
         },
         "realization": {
-            "conformation_mode": "random_walk"
+            "conformation_mode": "random_walk",
+            "seed": 12345
         },
         "artifacts": {
             "coordinates": temp_path("coords").to_string_lossy(),
@@ -349,7 +364,40 @@ fn validate_rejects_random_copolymer_total_units_mismatch() {
     let (code, payload) =
         warp_build::validate_request_json(&serde_json::to_string(&request).expect("serialize"));
     assert_eq!(code, 2);
-    assert_eq!(payload["errors"][0]["path"], "target.total_units");
+    assert_eq!(payload["errors"][0]["path"], "/target/total_units");
+}
+
+#[test]
+fn validate_rejects_missing_seed_for_stochastic_modes() {
+    let (_dir, bundle) = make_bundle_dir("random_seed_validate");
+    let request = json!({
+        "schema_version": "polymer-build.agent.v1",
+        "request_id": "build-seed-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"},
+        },
+        "realization": {
+            "conformation_mode": "random_walk"
+        },
+        "artifacts": {
+            "coordinates": temp_path("seed_coords").to_string_lossy(),
+            "build_manifest": temp_path("seed_manifest").to_string_lossy(),
+            "charge_manifest": temp_path("seed_charge").to_string_lossy(),
+        }
+    });
+    let (code, payload) =
+        warp_build::validate_request_json(&serde_json::to_string(&request).expect("serialize"));
+    assert_eq!(code, 2);
+    assert_eq!(payload["errors"][0]["code"], "E_MISSING_SEED");
+    assert_eq!(payload["errors"][0]["path"], "/realization/seed");
 }
 
 #[test]
@@ -400,19 +448,32 @@ fn run_build_writes_polymer_artifacts() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(&build_manifest).expect("read manifest"))
             .expect("parse manifest");
-    assert_eq!(manifest["version"], "polymer-build.manifest.v1");
+    assert_eq!(manifest["schema_version"], "polymer-build.manifest.v1");
     assert_eq!(manifest["summary"]["total_repeat_units"], 4);
     assert_eq!(manifest["realization"]["seed"], 12345);
+    assert_eq!(manifest["realization"]["seed_policy"], "explicit");
     assert_eq!(manifest["summary"]["bond_count"], 3);
     assert_eq!(
         manifest["artifacts"]["topology"],
         topology.to_string_lossy().to_string()
     );
+    assert!(manifest["artifact_digests"]["coordinates"]
+        .as_str()
+        .expect("coordinates digest")
+        .starts_with("sha256:"));
+    assert!(manifest["artifact_digests"]["topology"]
+        .as_str()
+        .expect("topology digest")
+        .starts_with("sha256:"));
+    assert!(manifest["artifact_digests"]["charge_manifest"]
+        .as_str()
+        .expect("charge digest")
+        .starts_with("sha256:"));
 
     let charge: Value =
         serde_json::from_str(&fs::read_to_string(&charge_manifest).expect("read charge"))
             .expect("parse charge");
-    assert_eq!(charge["version"], "warp-build.charge-manifest.v1");
+    assert_eq!(charge["schema_version"], "warp-build.charge-manifest.v1");
     assert_eq!(charge["net_charge_e"], 3.0);
     assert_eq!(
         charge["target_topology_ref"],
@@ -490,7 +551,7 @@ fn run_sequence_build_resolves_named_termini_tokens() {
     let graph: Value =
         serde_json::from_str(&fs::read_to_string(&topology_graph).expect("read graph"))
             .expect("parse graph");
-    assert_eq!(graph["version"], "polymer-build.topology-graph.v5");
+    assert_eq!(graph["schema_version"], "polymer-build.topology-graph.v5");
     assert_eq!(
         graph["build_plan"]["requested_termini"],
         json!({"head": "H", "tail": "T"})
@@ -636,6 +697,9 @@ fn run_ensemble_build_writes_member_manifest() {
 #[test]
 fn validate_accepts_branched_aligned_realization() {
     let (_dir, bundle) = make_bundle_dir("branched_validate");
+    let coords = temp_path("branched_validate_coords.pdb");
+    let build_manifest = temp_path("branched_validate_manifest.json");
+    let charge_manifest = temp_path("branched_validate_charge.json");
     let request = json!({
         "schema_version": "polymer-build.agent.v1",
         "request_id": "branched-validate-001",
@@ -656,7 +720,7 @@ fn validate_accepts_branched_aligned_realization() {
                     }
                 ]
             },
-            "termini": {"head": "H", "tail": "T"},
+            "termini": {"head": "default", "tail": "default"},
             "stereochemistry": {"mode": "inherit"}
         },
         "realization": {
@@ -664,9 +728,9 @@ fn validate_accepts_branched_aligned_realization() {
             "alignment_axis": "z"
         },
         "artifacts": {
-            "coordinates": temp_path("coords").to_string_lossy(),
-            "build_manifest": temp_path("manifest").to_string_lossy(),
-            "charge_manifest": temp_path("charge").to_string_lossy(),
+            "coordinates": coords.to_string_lossy(),
+            "build_manifest": build_manifest.to_string_lossy(),
+            "charge_manifest": charge_manifest.to_string_lossy(),
         }
     });
     let (code, payload) =
@@ -677,6 +741,31 @@ fn validate_accepts_branched_aligned_realization() {
         "{}",
         serde_json::to_string_pretty(&payload).unwrap()
     );
+    assert_eq!(payload["schema_version"], "polymer-build.agent.v1");
+    assert_eq!(payload["resolved_inputs"]["seed_policy"], "deterministic_default");
+    assert_eq!(
+        payload["resolved_inputs"]["resolved_termini_policy"],
+        json!({"head": "source_default", "tail": "source_default"})
+    );
+    assert_eq!(
+        payload["normalized_request"]["artifacts"]["inpcrd"],
+        coords
+            .parent()
+            .expect("coords parent")
+            .join(format!(
+                "{}.inpcrd",
+                coords
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .expect("coords stem")
+            ))
+            .to_string_lossy()
+            .to_string()
+    );
+    let warnings = payload["warnings"].as_array().expect("warnings array");
+    assert!(!warnings.is_empty());
+    assert_eq!(warnings[0]["severity"], "warning");
+    assert_eq!(warnings[0]["path"], "/target/termini/head");
 }
 
 #[test]
@@ -949,7 +1038,7 @@ fn validate_rejects_unknown_conformer_edge_override() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|item| item["path"] == "conformer_policy.edge_overrides[0].edge_id"));
+        .any(|item| item["path"] == "/conformer_policy/edge_overrides/0/edge_id"));
 }
 
 #[test]
@@ -1010,7 +1099,7 @@ fn run_fixture_motif_graph_build_emits_motif_instances() {
     let graph: Value =
         serde_json::from_str(&fs::read_to_string(&topology_graph).expect("read graph"))
             .expect("parse graph");
-    assert_eq!(graph["version"], "polymer-build.topology-graph.v5");
+    assert_eq!(graph["schema_version"], "polymer-build.topology-graph.v5");
     assert_eq!(
         graph["motif_instances"].as_array().map(|items| items.len()),
         Some(1)
@@ -1071,7 +1160,7 @@ fn run_fixture_port_cap_graph_build_applies_default_caps() {
     let graph: Value =
         serde_json::from_str(&fs::read_to_string(&topology_graph).expect("read graph"))
             .expect("parse graph");
-    assert_eq!(graph["version"], "polymer-build.topology-graph.v5");
+    assert_eq!(graph["schema_version"], "polymer-build.topology-graph.v5");
     assert_eq!(
         graph["port_policies"].as_array().map(|items| items.len()),
         Some(2)
@@ -1214,5 +1303,5 @@ fn validate_fixture_bad_motif_bundle_reports_bundle_errors() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|item| item["path"] == "motif_library.BROKEN.exposed_ports.head.node_id"));
+        .any(|item| item["path"] == "/motif_library/BROKEN/exposed_ports/head/node_id"));
 }

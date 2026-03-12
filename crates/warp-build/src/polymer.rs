@@ -27,7 +27,13 @@ pub struct ChargeAtom {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ChargeManifest {
-    pub version: String,
+    #[serde(
+        default = "default_charge_manifest_version",
+        alias = "version",
+        rename = "schema_version"
+    )]
+    #[schemars(default = "default_charge_manifest_version", rename = "schema_version")]
+    pub schema_version: String,
     #[serde(default)]
     pub solute_path: Option<String>,
     #[serde(default)]
@@ -54,6 +60,10 @@ pub struct ChargeManifest {
     pub repeat_charge_e: Option<f32>,
     #[serde(default)]
     pub tail_charge_e: Option<f32>,
+}
+
+fn default_charge_manifest_version() -> String {
+    CHARGE_MANIFEST_VERSION.to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -802,12 +812,12 @@ pub fn load_charge_manifest(path: &Path) -> PackResult<ChargeManifest> {
     let payload = std::fs::read_to_string(path)?;
     let manifest: ChargeManifest =
         serde_json::from_str(&payload).map_err(|err| PackError::Parse(err.to_string()))?;
-    if manifest.version != CHARGE_MANIFEST_VERSION
-        && manifest.version != LEGACY_CHARGE_MANIFEST_VERSION
+    if manifest.schema_version != CHARGE_MANIFEST_VERSION
+        && manifest.schema_version != LEGACY_CHARGE_MANIFEST_VERSION
     {
         return Err(PackError::Invalid(format!(
             "unsupported charge manifest version '{}'",
-            manifest.version
+            manifest.schema_version
         )));
     }
     Ok(manifest)
