@@ -610,7 +610,7 @@ fn load_polymer_build_handoff(
     if handoff.build_manifest.trim().is_empty() {
         return Err(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("polymer_build.build_manifest".into()),
+            Some("/polymer_build/build_manifest".into()),
             "polymer_build.build_manifest cannot be empty",
         ));
     }
@@ -618,14 +618,14 @@ fn load_polymer_build_handoff(
     let text = fs::read_to_string(&handoff.build_manifest).map_err(|err| {
         error_detail(
             "E_CONFIG_VALIDATION",
-            Some("polymer_build.build_manifest".into()),
+            Some("/polymer_build/build_manifest".into()),
             format!("failed to read build manifest: {err}"),
         )
     })?;
     let manifest: Value = serde_json::from_str(&text).map_err(|err| {
         error_detail(
             "E_CONFIG_VALIDATION",
-            Some("polymer_build.build_manifest".into()),
+            Some("/polymer_build/build_manifest".into()),
             format!("failed to parse build manifest: {err}"),
         )
     })?;
@@ -637,7 +637,7 @@ fn load_polymer_build_handoff(
     if version != POLYMER_BUILD_MANIFEST_VERSION {
         return Err(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("polymer_build.build_manifest".into()),
+            Some("/polymer_build/build_manifest".into()),
             format!(
                 "unsupported polymer build manifest version '{version}'; expected {POLYMER_BUILD_MANIFEST_VERSION}"
             ),
@@ -653,7 +653,7 @@ fn load_polymer_build_handoff(
     let coordinates = coordinates.ok_or_else(|| {
         error_detail(
             "E_CONFIG_VALIDATION",
-            Some("polymer_build.coordinates".into()),
+            Some("/polymer_build/coordinates".into()),
             "polymer_build handoff requires coordinates or artifacts.coordinates in build manifest",
         )
     })?;
@@ -686,14 +686,14 @@ fn load_polymer_build_handoff(
         let text = fs::read_to_string(path).map_err(|err| {
             error_detail(
                 "E_CONFIG_VALIDATION",
-                Some("polymer_build.topology_graph".into()),
+                Some("/polymer_build/topology_graph".into()),
                 format!("failed to read topology_graph: {err}"),
             )
         })?;
         let graph: TopologyGraph = serde_json::from_str(&text).map_err(|err| {
             error_detail(
                 "E_CONFIG_VALIDATION",
-                Some("polymer_build.topology_graph".into()),
+                Some("/polymer_build/topology_graph".into()),
                 format!("failed to parse topology_graph: {err}"),
             )
         })?;
@@ -701,7 +701,7 @@ fn load_polymer_build_handoff(
         if !supported_topology_graph_version(graph_version) {
             return Err(error_detail(
                 "E_CONFIG_VALIDATION",
-                Some("polymer_build.topology_graph".into()),
+                Some("/polymer_build/topology_graph".into()),
                 format!("unsupported topology_graph version '{}'", graph_version),
             ));
         }
@@ -709,7 +709,7 @@ fn load_polymer_build_handoff(
             if graph.request_id != request_id {
                 return Err(error_detail(
                     "E_CONFIG_VALIDATION",
-                    Some("polymer_build.topology_graph".into()),
+                    Some("/polymer_build/topology_graph".into()),
                     "topology_graph request_id does not match build manifest",
                 ));
             }
@@ -721,7 +721,7 @@ fn load_polymer_build_handoff(
             if graph.bundle_id != bundle_id {
                 return Err(error_detail(
                     "E_CONFIG_VALIDATION",
-                    Some("polymer_build.topology_graph".into()),
+                    Some("/polymer_build/topology_graph".into()),
                     "topology_graph bundle_id does not match build manifest",
                 ));
             }
@@ -854,21 +854,21 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
     if req.outputs.coordinates.trim().is_empty() {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("outputs.coordinates".into()),
+            Some("/outputs/coordinates".into()),
             "outputs.coordinates cannot be empty",
         ));
     }
     if req.outputs.manifest.trim().is_empty() {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("outputs.manifest".into()),
+            Some("/outputs/manifest".into()),
             "outputs.manifest cannot be empty",
         ));
     }
     if req.outputs.coordinates == req.outputs.manifest {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("outputs.manifest".into()),
+            Some("/outputs/manifest".into()),
             "outputs.coordinates and outputs.manifest must differ",
         ));
     }
@@ -878,7 +878,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
             if req.environment.box_spec.padding_angstrom.unwrap_or(0.0) <= 0.0 {
                 errors.push(error_detail(
                     "E_CONFIG_VALIDATION",
-                    Some("environment.box.padding_angstrom".into()),
+                    Some("/environment/box/padding_angstrom".into()),
                     "padding mode requires positive padding_angstrom",
                 ));
             }
@@ -889,14 +889,14 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
             {
                 errors.push(error_detail(
                     "E_CONFIG_VALIDATION",
-                    Some("environment.box.size_angstrom".into()),
+                    Some("/environment/box/size_angstrom".into()),
                     "fixed_size mode requires size_angstrom or target_density_g_cm3",
                 ));
             }
         }
         other => errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("environment.box.mode".into()),
+            Some("/environment/box/mode".into()),
             format!("unsupported box mode '{other}'"),
         )),
     }
@@ -905,7 +905,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
         "cubic" | "orthorhombic" => {}
         other => errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("environment.box.shape".into()),
+            Some("/environment/box/shape".into()),
             format!("unsupported box shape '{other}'"),
         )),
     }
@@ -916,18 +916,18 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
             Some(model) if SUPPORTED_SOLVENT_MODELS.contains(&model) => {}
             Some(model) => errors.push(error_detail(
                 "E_CONFIG_VALIDATION",
-                Some("environment.solvent.model".into()),
+                Some("/environment/solvent/model".into()),
                 format!("unsupported solvent model '{model}'"),
             )),
             None => errors.push(error_detail(
                 "E_CONFIG_VALIDATION",
-                Some("environment.solvent.model".into()),
+                Some("/environment/solvent/model".into()),
                 "explicit solvent mode requires solvent.model",
             )),
         },
         other => errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("environment.solvent.mode".into()),
+            Some("/environment/solvent/mode".into()),
             format!("unsupported solvent mode '{other}'"),
         )),
     }
@@ -935,28 +935,28 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
     if !SUPPORTED_ION_SPECIES.contains(&req.environment.ions.cation.as_str()) {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("environment.ions.cation".into()),
+            Some("/environment/ions/cation".into()),
             format!("unsupported cation '{}'", req.environment.ions.cation),
         ));
     }
     if !SUPPORTED_ION_SPECIES.contains(&req.environment.ions.anion.as_str()) {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("environment.ions.anion".into()),
+            Some("/environment/ions/anion".into()),
             format!("unsupported anion '{}'", req.environment.ions.anion),
         ));
     }
     if req.environment.ions.cation == req.environment.ions.anion {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("environment.ions.anion".into()),
+            Some("/environment/ions/anion".into()),
             "cation and anion must differ",
         ));
     }
     if req.environment.ions.salt_molar.unwrap_or(0.0) < 0.0 {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("environment.ions.salt_molar".into()),
+            Some("/environment/ions/salt_molar".into()),
             "salt_molar must be >= 0",
         ));
     }
@@ -964,7 +964,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
     if !SUPPORTED_MORPHOLOGY_MODES.contains(&req.environment.morphology.mode.as_str()) {
         errors.push(error_detail(
             "E_UNSUPPORTED_FEATURE",
-            Some("environment.morphology.mode".into()),
+            Some("/environment/morphology/mode".into()),
             format!(
                 "morphology mode '{}' is not executable; supported: {}",
                 req.environment.morphology.mode,
@@ -976,21 +976,21 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
         if target_density <= 0.0 {
             errors.push(error_detail(
                 "E_CONFIG_VALIDATION",
-                Some("environment.morphology.target_density_g_cm3".into()),
+                Some("/environment/morphology/target_density_g_cm3".into()),
                 "target_density_g_cm3 must be > 0",
             ));
         }
         if req.environment.morphology.mode == "single_chain_solution" {
             errors.push(error_detail(
                 "E_UNSUPPORTED_FEATURE",
-                Some("environment.morphology.target_density_g_cm3".into()),
+                Some("/environment/morphology/target_density_g_cm3".into()),
                 "target_density_g_cm3 is only executable for bulk morphologies",
             ));
         }
         if req.environment.solvent.mode != "none" {
             errors.push(error_detail(
                 "E_UNSUPPORTED_FEATURE",
-                Some("environment.solvent.mode".into()),
+                Some("/environment/solvent/mode".into()),
                 "target_density_g_cm3 currently requires solvent.mode = none",
             ));
         }
@@ -1001,7 +1001,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
             if req.environment.box_spec.mode != "fixed_size" {
                 errors.push(error_detail(
                     "E_CONFIG_VALIDATION",
-                    Some("environment.box.mode".into()),
+                    Some("/environment/box/mode".into()),
                     format!(
                         "{} requires fixed_size box mode",
                         req.environment.morphology.mode
@@ -1013,7 +1013,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
             {
                 errors.push(error_detail(
                     "E_CONFIG_VALIDATION",
-                    Some("environment.box.size_angstrom".into()),
+                    Some("/environment/box/size_angstrom".into()),
                     format!(
                         "{} requires size_angstrom or target_density_g_cm3",
                         req.environment.morphology.mode
@@ -1033,7 +1033,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
     {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("environment.morphology.alignment_axis".into()),
+            Some("/environment/morphology/alignment_axis".into()),
             "backbone_aligned_bulk requires alignment_axis",
         ));
     }
@@ -1146,7 +1146,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
         if solute.path.trim().is_empty() {
             errors.push(error_detail(
                 "E_CONFIG_VALIDATION",
-                Some("solute.path".into()),
+                Some("/solute/path".into()),
                 "solute.path cannot be empty",
             ));
         }
@@ -1154,7 +1154,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
             if !SUPPORTED_COMPONENT_KINDS.contains(&kind.as_str()) {
                 errors.push(error_detail(
                     "E_CONFIG_VALIDATION",
-                    Some("solute.kind".into()),
+                    Some("/solute/kind".into()),
                     format!("unsupported solute kind '{kind}'"),
                 ));
             }
@@ -1165,7 +1165,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
         {
             errors.push(error_detail(
                 "E_CONFIG_VALIDATION",
-                Some("solute.charge_manifest".into()),
+                Some("/solute/charge_manifest".into()),
                 "neutralize=true requires solute.charge_manifest or solute.topology",
             ));
         }
@@ -1174,7 +1174,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
         {
             errors.push(error_detail(
                 "E_CONFIG_VALIDATION",
-                Some("solute.kind".into()),
+                Some("/solute/kind".into()),
                 "backbone_aligned_bulk requires polymer_chain inputs",
             ));
         }
@@ -1190,7 +1190,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
                 {
                     errors.push(error_detail(
                         "E_CONFIG_VALIDATION",
-                        Some("polymer_build.charge_manifest".into()),
+                        Some("/polymer_build/charge_manifest".into()),
                         "neutralize=true requires polymer_build charge_manifest or topology",
                     ));
                 }
@@ -1435,7 +1435,7 @@ fn parse_alignment_axis(value: &str) -> Result<Vec3, ErrorDetail> {
         "-z" => Ok(Vec3::new(0.0, 0.0, -1.0)),
         _ => Err(error_detail(
             "E_CONFIG_VALIDATION",
-            Some("environment.morphology.alignment_axis".into()),
+            Some("/environment/morphology/alignment_axis".into()),
             "alignment_axis must be one of x, y, z, -x, -y, -z",
         )),
     }

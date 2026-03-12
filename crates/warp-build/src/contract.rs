@@ -839,7 +839,7 @@ fn resolve_seed(req: &BuildRequest) -> Result<(u64, String), ErrorDetail> {
         Some(seed) => Ok((seed, "explicit".to_string())),
         None if requires_explicit_seed(&req.realization.conformation_mode) => Err(to_error(
             "E_MISSING_SEED",
-            Some("realization.seed".into()),
+            Some("/realization/seed".into()),
             format!(
                 "{} realization requires explicit seed",
                 req.realization.conformation_mode
@@ -1034,7 +1034,7 @@ fn random_copolymer_sequence(
     if sequence.is_empty() {
         return Err(to_error(
             "E_INVALID_TARGET",
-            Some("target.composition".into()),
+            Some("/target/composition".into()),
             "random_copolymer requires a non-empty composition",
         ));
     }
@@ -1071,7 +1071,7 @@ fn expand_sequence(target: &BuildTarget, seed: u64) -> Result<Vec<String>, Error
             if repeat_count == 0 {
                 return Err(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.repeat_count".into()),
+                    Some("/target/repeat_count".into()),
                     "repeat_count must be >= 1",
                 ));
             }
@@ -1085,14 +1085,14 @@ fn expand_sequence(target: &BuildTarget, seed: u64) -> Result<Vec<String>, Error
             let blocks = target.blocks.as_ref().ok_or_else(|| {
                 to_error(
                     "E_INVALID_TARGET",
-                    Some("target.blocks".into()),
+                    Some("/target/blocks".into()),
                     "block_copolymer requires blocks",
                 )
             })?;
             if blocks.is_empty() {
                 return Err(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.blocks".into()),
+                    Some("/target/blocks".into()),
                     "block_copolymer requires at least one block",
                 ));
             }
@@ -1101,7 +1101,7 @@ fn expand_sequence(target: &BuildTarget, seed: u64) -> Result<Vec<String>, Error
                 if block.token.trim().is_empty() || block.count == 0 {
                     return Err(to_error(
                         "E_INVALID_TARGET",
-                        Some(format!("target.blocks[{idx}]")),
+                        Some(format!("/target/blocks/{idx}")),
                         "each block requires token and count >= 1",
                     ));
                 }
@@ -1113,7 +1113,7 @@ fn expand_sequence(target: &BuildTarget, seed: u64) -> Result<Vec<String>, Error
             let composition = target.composition.as_ref().ok_or_else(|| {
                 to_error(
                     "E_INVALID_TARGET",
-                    Some("target.composition".into()),
+                    Some("/target/composition".into()),
                     "random_copolymer requires composition",
                 )
             })?;
@@ -1122,7 +1122,7 @@ fn expand_sequence(target: &BuildTarget, seed: u64) -> Result<Vec<String>, Error
                 if total != total_units {
                     return Err(to_error(
                         "E_INVALID_TARGET",
-                        Some("target.total_units".into()),
+                        Some("/target/total_units".into()),
                         format!(
                             "target.total_units ({total_units}) must equal composition total ({total})"
                         ),
@@ -1133,7 +1133,7 @@ fn expand_sequence(target: &BuildTarget, seed: u64) -> Result<Vec<String>, Error
         }
         other => Err(to_error(
             "E_UNSUPPORTED_TARGET",
-            Some("target.mode".into()),
+            Some("/target/mode".into()),
             format!(
                 "target mode '{}' unsupported; supported: {}",
                 other,
@@ -1826,7 +1826,7 @@ fn finalize_plan_metrics(mut plan: CompiledBuildPlan) -> Result<CompiledBuildPla
     if seen.len() != plan.nodes.len() {
         return Err(to_error(
             "E_INVALID_TARGET",
-            Some("target.graph_edges".into()),
+            Some("/target/graph_edges".into()),
             "compiled build graph must be connected",
         ));
     }
@@ -2188,7 +2188,7 @@ fn compile_linear_plan(
                 canonical_edge_id(&prev.request_node_id, "tail", &request_node_id, "head", idx),
                 policy,
                 None,
-                &format!("target.sequence[{idx}]"),
+                &format!("/target/sequence/{idx}"),
             )?;
         }
         if first_expansion.is_none() {
@@ -2199,7 +2199,7 @@ fn compile_linear_plan(
     let first = first_expansion.as_ref().ok_or_else(|| {
         to_error(
             "E_INVALID_TARGET",
-            Some("target.sequence".into()),
+            Some("/target/sequence".into()),
             "target expands to an empty sequence",
         )
     })?;
@@ -2232,7 +2232,7 @@ fn compile_star_plan(
     if core_token.is_empty() {
         return Err(to_error(
             "E_INVALID_TARGET",
-            Some("target.core_token".into()),
+            Some("/target/core_token".into()),
             "star_polymer requires core_token",
         ));
     }
@@ -2240,7 +2240,7 @@ fn compile_star_plan(
     if core_junctions.is_empty() {
         return Err(to_error(
             "E_INVALID_TARGET",
-            Some("target.core_junctions".into()),
+            Some("/target/core_junctions".into()),
             "star_polymer requires core_junctions",
         ));
     }
@@ -2249,7 +2249,7 @@ fn compile_star_plan(
         if !unique.insert(junction.clone()) {
             return Err(to_error(
                 "E_INVALID_TARGET",
-                Some("target.core_junctions".into()),
+                Some("/target/core_junctions".into()),
                 format!("duplicate core junction '{}'", junction),
             ));
         }
@@ -2258,7 +2258,7 @@ fn compile_star_plan(
     if arm_sequence.is_empty() {
         return Err(to_error(
             "E_INVALID_TARGET",
-            Some("target.arm_sequence".into()),
+            Some("/target/arm_sequence".into()),
             "star_polymer requires arm_sequence",
         ));
     }
@@ -2266,7 +2266,7 @@ fn compile_star_plan(
     if arm_repeat_count == 0 {
         return Err(to_error(
             "E_INVALID_TARGET",
-            Some("target.arm_repeat_count".into()),
+            Some("/target/arm_repeat_count".into()),
             "arm_repeat_count must be >= 1",
         ));
     }
@@ -2320,7 +2320,7 @@ fn compile_star_plan(
                 ),
                 conformer_policy,
                 None,
-                &format!("target.core_junctions[{arm_idx}]"),
+                &format!("/target/core_junctions/{arm_idx}"),
             )?;
             previous = expansion;
         }
@@ -2505,7 +2505,7 @@ fn compile_branched_plan(
     let root = target.branch_tree.as_ref().ok_or_else(|| {
         to_error(
             "E_INVALID_TARGET",
-            Some("target.branch_tree".into()),
+            Some("/target/branch_tree".into()),
             "branched_polymer requires branch_tree",
         )
     })?;
@@ -2558,14 +2558,14 @@ fn compile_graph_plan(
     let graph_nodes = target.graph_nodes.as_ref().ok_or_else(|| {
         to_error(
             "E_INVALID_TARGET",
-            Some("target.graph_nodes".into()),
+            Some("/target/graph_nodes".into()),
             "polymer_graph requires graph_nodes",
         )
     })?;
     if graph_nodes.is_empty() {
         return Err(to_error(
             "E_INVALID_TARGET",
-            Some("target.graph_nodes".into()),
+            Some("/target/graph_nodes".into()),
             "graph_nodes must be non-empty",
         ));
     }
@@ -2580,14 +2580,14 @@ fn compile_graph_plan(
         if node.id.trim().is_empty() {
             return Err(to_error(
                 "E_INVALID_TARGET",
-                Some(format!("target.graph_nodes[{idx}].id")),
+                Some(format!("/target/graph_nodes/{idx}/id")),
                 "graph node id must be non-empty",
             ));
         }
         if top_level_index_by_id.insert(node.id.clone(), idx).is_some() {
             return Err(to_error(
                 "E_INVALID_TARGET",
-                Some(format!("target.graph_nodes[{idx}].id")),
+                Some(format!("/target/graph_nodes/{idx}/id")),
                 format!("duplicate graph node id '{}'", node.id),
             ));
         }
@@ -2617,21 +2617,21 @@ fn compile_graph_plan(
         if edge.from == edge.to {
             return Err(to_error(
                 "E_INVALID_TARGET",
-                Some(format!("target.graph_edges[{edge_idx}]")),
+                Some(format!("/target/graph_edges/{edge_idx}")),
                 "graph edge may not connect a node to itself",
             ));
         }
         let left = expansions.get(&edge.from).ok_or_else(|| {
             to_error(
                 "E_INVALID_TARGET",
-                Some(format!("target.graph_edges[{edge_idx}].from")),
+                Some(format!("/target/graph_edges/{edge_idx}/from")),
                 format!("graph edge references unknown node '{}'", edge.from),
             )
         })?;
         let right = expansions.get(&edge.to).ok_or_else(|| {
             to_error(
                 "E_INVALID_TARGET",
-                Some(format!("target.graph_edges[{edge_idx}].to")),
+                Some(format!("/target/graph_edges/{edge_idx}/to")),
                 format!("graph edge references unknown node '{}'", edge.to),
             )
         })?;
@@ -2642,7 +2642,7 @@ fn compile_graph_plan(
         {
             return Err(to_error(
                 "E_INVALID_TARGET",
-                Some(format!("target.graph_edges[{edge_idx}].from_junction")),
+                Some(format!("/target/graph_edges/{edge_idx}/from_junction")),
                 format!(
                     "junction '{}' reused on graph node '{}'",
                     edge.from_junction, edge.from
@@ -2656,7 +2656,7 @@ fn compile_graph_plan(
         {
             return Err(to_error(
                 "E_INVALID_TARGET",
-                Some(format!("target.graph_edges[{edge_idx}].to_junction")),
+                Some(format!("/target/graph_edges/{edge_idx}/to_junction")),
                 format!(
                     "junction '{}' reused on graph node '{}'",
                     edge.to_junction, edge.to
@@ -2681,7 +2681,7 @@ fn compile_graph_plan(
         if !seen_edges.insert(dedupe) {
             return Err(to_error(
                 "E_INVALID_TARGET",
-                Some(format!("target.graph_edges[{edge_idx}]")),
+                Some(format!("/target/graph_edges/{edge_idx}")),
                 "duplicate graph edge",
             ));
         }
@@ -2711,7 +2711,7 @@ fn compile_graph_plan(
             resolved_edge_id.clone(),
             policy,
             override_ref,
-            &format!("target.graph_edges[{edge_idx}]"),
+            &format!("/target/graph_edges/{edge_idx}"),
         )?;
         if let Some(last) = edges.last_mut() {
             last.bond_order = edge.bond_order.max(last.bond_order);
@@ -2720,7 +2720,7 @@ fn compile_graph_plan(
     let root_expansion = expansions.get(&root_id).ok_or_else(|| {
         to_error(
             "E_INVALID_TARGET",
-            Some("target.graph_root".into()),
+            Some("/target/graph_root".into()),
             format!("graph_root '{}' not present in graph_nodes", root_id),
         )
     })?;
@@ -3076,7 +3076,7 @@ fn base_conformation_mode(mode: &str) -> Result<&str, ErrorDetail> {
         "ensemble" => Ok("random_walk"),
         other => Err(to_error(
             "E_UNSUPPORTED_REALIZATION",
-            Some("realization.conformation_mode".into()),
+            Some("/realization/conformation_mode".into()),
             format!("unsupported conformation mode '{}'", other),
         )),
     }
@@ -3104,49 +3104,49 @@ fn validate_conformer_policy(
     if !allowed_layout.contains(&policy.layout_mode.as_str()) {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("conformer_policy.layout_mode".into()),
+            Some("/conformer_policy/layout_mode".into()),
             format!("unsupported layout_mode '{}'", policy.layout_mode),
         ));
     }
     if !allowed_torsion.contains(&policy.default_torsion.as_str()) {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("conformer_policy.default_torsion".into()),
+            Some("/conformer_policy/default_torsion".into()),
             format!("unsupported default_torsion '{}'", policy.default_torsion),
         ));
     }
     if !allowed_branch_spread.contains(&policy.branch_spread.as_str()) {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("conformer_policy.branch_spread".into()),
+            Some("/conformer_policy/branch_spread".into()),
             format!("unsupported branch_spread '{}'", policy.branch_spread),
         ));
     }
     if !allowed_ring.contains(&policy.ring_mode.as_str()) {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("conformer_policy.ring_mode".into()),
+            Some("/conformer_policy/ring_mode".into()),
             format!("unsupported ring_mode '{}'", policy.ring_mode),
         ));
     }
     if policy.default_torsion == "fixed_deg" && policy.default_torsion_deg.is_none() {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("conformer_policy.default_torsion_deg".into()),
+            Some("/conformer_policy/default_torsion_deg".into()),
             "fixed_deg default_torsion requires default_torsion_deg",
         ));
     }
     if policy.default_torsion == "sample_window" && policy.torsion_window_deg.is_none() {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("conformer_policy.torsion_window_deg".into()),
+            Some("/conformer_policy/torsion_window_deg".into()),
             "sample_window default_torsion requires torsion_window_deg",
         ));
     }
     if !policy.edge_overrides.is_empty() && req.target.mode != "polymer_graph" {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("conformer_policy.edge_overrides".into()),
+            Some("/conformer_policy/edge_overrides".into()),
             "edge_overrides are only supported for polymer_graph requests",
         ));
     }
@@ -3189,7 +3189,7 @@ fn validate_conformer_policy(
         if !known_edge_ids.is_empty() && !known_edge_ids.contains(&edge.edge_id) {
             errors.push(to_error(
                 "E_INVALID_TARGET",
-                Some(format!("conformer_policy.edge_overrides[{idx}].edge_id")),
+                Some(format!("/conformer_policy/edge_overrides/{idx}/edge_id")),
                 format!("edge_id '{}' not present in compiled graph", edge.edge_id),
             ));
         }
@@ -3203,7 +3203,7 @@ fn validate_relax_spec(req: &BuildRequest) -> Vec<ErrorDetail> {
         if req.artifacts.raw_coordinates.is_some() {
             errors.push(to_error(
                 "E_INVALID_TARGET",
-                Some("artifacts.raw_coordinates".into()),
+                Some("/artifacts/raw_coordinates".into()),
                 "raw_coordinates is only valid when realization.relax is set",
             ));
         }
@@ -3212,28 +3212,28 @@ fn validate_relax_spec(req: &BuildRequest) -> Vec<ErrorDetail> {
     if relax.mode != "graph_spring" {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("realization.relax.mode".into()),
+            Some("/realization/relax/mode".into()),
             format!("unsupported relax mode '{}'", relax.mode),
         ));
     }
     if relax.steps.unwrap_or(64) == 0 {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("realization.relax.steps".into()),
+            Some("/realization/relax/steps".into()),
             "relax.steps must be >= 1",
         ));
     }
     if relax.step_scale.unwrap_or(0.25) <= 0.0 {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("realization.relax.step_scale".into()),
+            Some("/realization/relax/step_scale".into()),
             "relax.step_scale must be > 0",
         ));
     }
     if relax.clash_scale.unwrap_or(0.9) <= 0.0 {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("realization.relax.clash_scale".into()),
+            Some("/realization/relax/clash_scale".into()),
             "relax.clash_scale must be > 0",
         ));
     }
@@ -3529,7 +3529,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     if req.source_ref.bundle_id != bundle.bundle_id {
         errors.push(to_error(
             "E_SOURCE_ID",
-            Some("source_ref.bundle_id".into()),
+            Some("/source_ref/bundle_id".into()),
             "source_ref.bundle_id does not match bundle_id",
         ));
     }
@@ -3537,12 +3537,12 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
         match sha256_file(Path::new(&req.source_ref.bundle_path)) {
             Ok(actual) if &actual != expected => errors.push(to_error(
                 "E_SOURCE_DIGEST",
-                Some("source_ref.bundle_digest".into()),
+                Some("/source_ref/bundle_digest".into()),
                 format!("bundle digest mismatch: expected {expected}, got {actual}"),
             )),
             Err(err) => errors.push(to_error(
                 "E_SOURCE_LOAD",
-                Some("source_ref.bundle_path".into()),
+                Some("/source_ref/bundle_path".into()),
                 err.to_string(),
             )),
             _ => {}
@@ -3551,7 +3551,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     if !SUPPORTED_TARGET_MODES.contains(&req.target.mode.as_str()) {
         errors.push(to_error(
             "E_UNSUPPORTED_TARGET",
-            Some("target.mode".into()),
+            Some("/target/mode".into()),
             format!(
                 "target mode '{}' unsupported; supported: {}",
                 req.target.mode,
@@ -3567,7 +3567,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     {
         errors.push(to_error(
             "E_UNSUPPORTED_TARGET",
-            Some("target.mode".into()),
+            Some("/target/mode".into()),
             "source bundle does not advertise requested target mode",
         ));
     }
@@ -3583,14 +3583,14 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.repeat_unit".into()),
+                    Some("/target/repeat_unit".into()),
                     "linear_homopolymer requires repeat_unit",
                 ));
             }
             if req.target.n_repeat.unwrap_or(0) == 0 {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.n_repeat".into()),
+                    Some("/target/n_repeat".into()),
                     "n_repeat must be >= 1",
                 ));
             }
@@ -3605,14 +3605,14 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.sequence".into()),
+                    Some("/target/sequence".into()),
                     "linear_sequence_polymer requires sequence",
                 ));
             }
             if bundle.capabilities.sequence_token_support.is_none() {
                 errors.push(to_error(
                     "E_UNSUPPORTED_TARGET",
-                    Some("target.sequence".into()),
+                    Some("/target/sequence".into()),
                     "source bundle does not advertise sequence token support",
                 ));
             }
@@ -3627,7 +3627,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.blocks".into()),
+                    Some("/target/blocks".into()),
                     "block_copolymer requires blocks",
                 ));
             }
@@ -3642,7 +3642,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.composition".into()),
+                    Some("/target/composition".into()),
                     "random_copolymer requires composition",
                 ));
             }
@@ -3658,7 +3658,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.core_token".into()),
+                    Some("/target/core_token".into()),
                     "star_polymer requires core_token",
                 ));
             }
@@ -3671,7 +3671,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.core_junctions".into()),
+                    Some("/target/core_junctions".into()),
                     "star_polymer requires core_junctions",
                 ));
             }
@@ -3684,14 +3684,14 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.arm_sequence".into()),
+                    Some("/target/arm_sequence".into()),
                     "star_polymer requires arm_sequence",
                 ));
             }
             if req.target.arm_repeat_count.unwrap_or(0) == 0 {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.arm_repeat_count".into()),
+                    Some("/target/arm_repeat_count".into()),
                     "arm_repeat_count must be >= 1",
                 ));
             }
@@ -3700,7 +3700,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             if req.target.branch_tree.is_none() {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.branch_tree".into()),
+                    Some("/target/branch_tree".into()),
                     "branched_polymer requires branch_tree",
                 ));
             }
@@ -3715,7 +3715,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
-                    Some("target.graph_nodes".into()),
+                    Some("/target/graph_nodes".into()),
                     "polymer_graph requires graph_nodes",
                 ));
             }
@@ -3769,7 +3769,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
         if !bundle.unit_library.contains_key(token) {
             errors.push(to_error(
                 "E_UNKNOWN_TOKEN",
-                Some(format!("target.sequence[{idx}]")),
+                Some(format!("/target/sequence/{idx}")),
                 format!(
                     "sequence token '{}' not present in source unit_library",
                     token
@@ -3783,7 +3783,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
                 if !token_support.tokens.iter().any(|item| item == token) {
                     errors.push(to_error(
                         "E_UNKNOWN_TOKEN",
-                        Some(format!("target.sequence[{idx}]")),
+                        Some(format!("/target/sequence/{idx}")),
                         format!(
                             "sequence token '{}' not present in sequence_token_support",
                             token
@@ -3807,7 +3807,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
                     {
                         errors.push(to_error(
                             "E_INVALID_TARGET",
-                            Some("target.sequence".into()),
+                            Some("/target/sequence".into()),
                             format!("unsupported token adjacency '{}-{}'", pair[0], pair[1]),
                         ));
                     }
@@ -3822,7 +3822,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
                     {
                         errors.push(to_error(
                             "E_INVALID_TARGET",
-                            Some("target.sequence".into()),
+                            Some("/target/sequence".into()),
                             format!("unsupported token adjacency '{}-{}'", window[0], window[1]),
                         ));
                     }
@@ -3905,7 +3905,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
         if !bundle_has_token(bundle, token) {
             errors.push(to_error(
                 "E_UNKNOWN_TOKEN",
-                Some(format!("target.sequence[{idx}]")),
+                Some(format!("/target/sequence/{idx}")),
                 format!(
                     "sequence token '{}' not present in source token libraries",
                     token
@@ -3918,7 +3918,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             if !bundle_has_token(bundle, &node.token) {
                 errors.push(to_error(
                     "E_UNKNOWN_TOKEN",
-                    Some(format!("target.graph_nodes[{idx}].token")),
+                    Some(format!("/target/graph_nodes/{idx}/token")),
                     format!(
                         "graph token '{}' not present in source token libraries",
                         node.token
@@ -3942,7 +3942,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     {
         errors.push(to_error(
             "E_UNSUPPORTED_REALIZATION",
-            Some("realization.conformation_mode".into()),
+            Some("/realization/conformation_mode".into()),
             "source bundle does not advertise requested conformation mode",
         ));
     }
@@ -3957,7 +3957,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("realization.alignment_axis".into()),
+            Some("/realization/alignment_axis".into()),
             "aligned realization requires alignment_axis",
         ));
     }
@@ -3966,7 +3966,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     {
         errors.push(to_error(
             "E_INVALID_TARGET",
-            Some("realization.ensemble_size".into()),
+            Some("/realization/ensemble_size".into()),
             "ensemble realization requires ensemble_size >= 1",
         ));
     }
@@ -3978,14 +3978,14 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     {
         errors.push(to_error(
             "E_UNSUPPORTED_STEREOCHEMISTRY",
-            Some("target.stereochemistry.mode".into()),
+            Some("/target/stereochemistry/mode".into()),
             "source bundle does not advertise requested stereochemistry mode",
         ));
     }
     if !SUPPORTED_TACTICITY_MODES.contains(&req.target.stereochemistry.mode.as_str()) {
         errors.push(to_error(
             "E_UNSUPPORTED_STEREOCHEMISTRY",
-            Some("target.stereochemistry.mode".into()),
+            Some("/target/stereochemistry/mode".into()),
             format!(
                 "unsupported stereochemistry mode '{}'",
                 req.target.stereochemistry.mode
@@ -4164,7 +4164,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     if req.artifacts.topology.is_some() && !topology_transfer_supported(&bundle) {
         errors.push(to_error(
             "E_UNSUPPORTED_TARGET",
-            Some("artifacts.topology".into()),
+            Some("/artifacts/topology".into()),
             "source bundle does not provide a transferable source prmtop",
         ));
     }
@@ -6101,7 +6101,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 request_id: req.request_id,
                 errors: vec![to_error(
                     "E_OUTPUT_WRITE",
-                    Some("artifacts.topology_graph".into()),
+                    Some("/artifacts/topology_graph".into()),
                     err.to_string()
                 )],
                 warnings: vec![],
@@ -6143,7 +6143,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     request_id: req.request_id,
                     errors: vec![to_error(
                         "E_OUTPUT_WRITE",
-                        Some("artifacts.ensemble_manifest".into()),
+                        Some("/artifacts/ensemble_manifest".into()),
                         err.to_string()
                     )],
                     warnings: vec![],
@@ -6184,7 +6184,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     request_id: req.request_id,
                     errors: vec![to_error(
                         "E_OUTPUT_WRITE",
-                        Some("artifacts.topology".into()),
+                        Some("/artifacts/topology".into()),
                         err.to_string(),
                     )],
                     warnings: vec![],
