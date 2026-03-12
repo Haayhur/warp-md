@@ -1,28 +1,33 @@
 from __future__ import annotations
 
-import subprocess
+from warp_md import build as build_contract
+from warp_md import build_cli
 
-from warp_md import build_cli, polymer_build
 
-
-def test_build_cli_forwards_args(monkeypatch) -> None:
-    calls = {"cmd": None}
-
-    def fake_run(cmd, check):  # type: ignore[override]
-        calls["cmd"] = cmd
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(polymer_build, "_binary", lambda: "polymer-build")
-    monkeypatch.setattr(subprocess, "run", fake_run)
+def test_build_cli_schema_uses_python_wrapper(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        build_contract,
+        "schema_json",
+        lambda kind="request": {"schema_version": "polymer-build.agent.v1", "kind": kind},
+    )
 
     exit_code = build_cli.run_cli(["schema", "--kind", "request"])
 
     assert exit_code == 0
-    assert calls["cmd"] == ["polymer-build", "schema", "--kind", "request"]
+    assert "polymer-build.agent.v1" in capsys.readouterr().out
+
+
+def test_build_cli_help_renders_without_native_bindings(capsys) -> None:
+    try:
+        build_cli.run_cli(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert "warp-build" in capsys.readouterr().out
 
 
 def test_polymer_build_binary_prefers_warp_build_env(monkeypatch) -> None:
     monkeypatch.setenv("WARP_BUILD_BINARY", "/tmp/warp-build-bin")
     monkeypatch.setenv("POLYMER_BUILD_BINARY", "/tmp/polymer-build-bin")
 
-    assert polymer_build._binary() == "/tmp/warp-build-bin"
+    assert build_contract._binary() == "/tmp/warp-build-bin"

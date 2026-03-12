@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 traj-core = { path = "../traj-core" }
 traj-io = { path = "../traj-io" }
 traj-engine = { path = "../traj-engine" }
+warp-build = { path = "../warp-build" }
 warp-pack = { path = "../warp-pack" }
 warp-pep = { path = "../warp-pep" }
 pyo3 = { version = "0.21", features = ["extension-module"] }

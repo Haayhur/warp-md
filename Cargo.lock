@@ -1000,6 +1000,7 @@ dependencies = [
  "traj-core",
  "traj-engine",
  "traj-io",
+ "warp-build",
  "warp-pack",
  "warp-pep",
 ]

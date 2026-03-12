@@ -17,7 +17,7 @@ icon: dna
 
 Use the tools like this:
 
-1. `warp-build` or `warp_md.polymer_build` compiles a reusable source bundle into a target chain
+1. `warp-build` or `warp_md.build` compiles a reusable source bundle into a target chain
 2. `warp-pack` consumes the build manifest and assembles the world
 
 That split keeps:
@@ -50,14 +50,14 @@ warp-build run request.json --stream
 
 {% tab title="Python Wrapper" %}
 ```python
-from warp_md import polymer_build as pb
+from warp_md import build as wb
 
-request = pb.example_request("random_walk")
-bundle = pb.example_bundle()
-caps = pb.capabilities()
+request = wb.example_request("random_walk")
+bundle = wb.example_bundle()
+caps = wb.capabilities()
 
-result = pb.validate(request)
-exit_code, envelope = pb.run(request, stream=False)
+result = wb.validate(request)
+exit_code, envelope = wb.run(request, stream=False)
 print(exit_code, envelope["status"])
 ```
 

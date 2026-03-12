@@ -351,6 +351,56 @@ fn json_value_to_py<'py>(py: Python<'py>, value: &serde_json::Value) -> PyResult
 
 #[pyfunction]
 #[pyo3(signature = (kind="request"))]
+fn build_agent_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
+    let text = warp_build::schema_json(kind)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_string_to_py(py, text)
+}
+
+#[pyfunction]
+#[pyo3(signature = (mode="random_walk"))]
+fn build_agent_example<'py>(py: Python<'py>, mode: &str) -> PyResult<PyObject> {
+    let value = warp_build::example_request(mode);
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn build_agent_example_bundle<'py>(py: Python<'py>) -> PyResult<PyObject> {
+    let value = warp_build::example_bundle();
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn build_agent_capabilities<'py>(py: Python<'py>) -> PyResult<PyObject> {
+    let value = warp_build::capabilities();
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn build_agent_inspect_source<'py>(py: Python<'py>, path: &str) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_build::inspect_source_json(path);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
+fn build_agent_validate<'py>(py: Python<'py>, json: &str) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_build::validate_request_json(json);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
+#[pyo3(signature = (json, stream_ndjson=false))]
+fn build_agent_run<'py>(
+    py: Python<'py>,
+    json: &str,
+    stream_ndjson: bool,
+) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_build::run_request_json(json, stream_ndjson);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
+#[pyo3(signature = (kind="request"))]
 fn pack_agent_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
     let text = warp_pack::agent::schema_json(kind)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -999,6 +1049,13 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pack_from_json, m)?)?;
     m.add_function(wrap_pyfunction!(pack_from_inp, m)?)?;
     m.add_function(wrap_pyfunction!(pack_config_from_inp, m)?)?;
+    m.add_function(wrap_pyfunction!(build_agent_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(build_agent_example, m)?)?;
+    m.add_function(wrap_pyfunction!(build_agent_example_bundle, m)?)?;
+    m.add_function(wrap_pyfunction!(build_agent_capabilities, m)?)?;
+    m.add_function(wrap_pyfunction!(build_agent_inspect_source, m)?)?;
+    m.add_function(wrap_pyfunction!(build_agent_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(build_agent_run, m)?)?;
     m.add_function(wrap_pyfunction!(pack_agent_schema, m)?)?;
     m.add_function(wrap_pyfunction!(pack_agent_example, m)?)?;
     m.add_function(wrap_pyfunction!(pack_agent_capabilities, m)?)?;

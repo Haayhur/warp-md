@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from warp_md import polymer_build as polymer_build_contract
+from warp_md import build as build_contract
 
 
 def test_schema_json_forwards_subcommand(monkeypatch) -> None:
@@ -20,12 +20,13 @@ def test_schema_json_forwards_subcommand(monkeypatch) -> None:
             "",
         )
 
-    monkeypatch.setattr(polymer_build_contract, "_binary", lambda: "polymer-build")
+    monkeypatch.setattr(build_contract, "_native", lambda: None)
+    monkeypatch.setattr(build_contract, "_binary", lambda: "warp-build")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    payload = polymer_build_contract.schema_json("request")
+    payload = build_contract.schema_json("request")
     assert payload["schema_version"] == "polymer-build.agent.v1"
-    assert calls["cmd"] == ["polymer-build", "schema", "--kind", "request"]
+    assert calls["cmd"] == ["warp-build", "schema", "--kind", "request"]
 
 
 def test_example_and_bundle_endpoints(monkeypatch) -> None:
@@ -37,12 +38,13 @@ def test_example_and_bundle_endpoints(monkeypatch) -> None:
             return subprocess.CompletedProcess(cmd, 0, json.dumps({"version": "bundle"}), "")
         return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": True}), "")
 
-    monkeypatch.setattr(polymer_build_contract, "_binary", lambda: "polymer-build")
+    monkeypatch.setattr(build_contract, "_native", lambda: None)
+    monkeypatch.setattr(build_contract, "_binary", lambda: "warp-build")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    example = polymer_build_contract.example_request("linear_homopolymer")
-    bundle = polymer_build_contract.example_bundle()
-    caps = polymer_build_contract.capabilities()
+    example = build_contract.example_request("linear_homopolymer")
+    bundle = build_contract.example_bundle()
+    caps = build_contract.capabilities()
 
     assert example["mode"] == "extended"
     assert bundle["version"] == "bundle"
@@ -56,12 +58,13 @@ def test_capabilities_endpoints(monkeypatch) -> None:
         captured["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, json.dumps({"supports_named_termini_tokens": True}), "")
 
-    monkeypatch.setattr(polymer_build_contract, "_binary", lambda: "polymer-build")
+    monkeypatch.setattr(build_contract, "_native", lambda: None)
+    monkeypatch.setattr(build_contract, "_binary", lambda: "warp-build")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    payload = polymer_build_contract.capabilities()
+    payload = build_contract.capabilities()
     assert payload["supports_named_termini_tokens"] is True
-    assert captured["cmd"] == ["polymer-build", "capabilities"]
+    assert captured["cmd"] == ["warp-build", "capabilities"]
 
 
 def test_inspect_source_passes_source_path(monkeypatch, tmp_path: Path) -> None:
@@ -79,10 +82,11 @@ def test_inspect_source_passes_source_path(monkeypatch, tmp_path: Path) -> None:
             "",
         )
 
-    monkeypatch.setattr(polymer_build_contract, "_binary", lambda: "polymer-build")
+    monkeypatch.setattr(build_contract, "_native", lambda: None)
+    monkeypatch.setattr(build_contract, "_binary", lambda: "warp-build")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    result = polymer_build_contract.inspect_source(source)
+    result = build_contract.inspect_source(source)
 
     assert result["unit_library_size"] == 0
     assert source_path is not None
@@ -103,10 +107,11 @@ def test_validate_request_writes_payload_file(monkeypatch) -> None:
             "",
         )
 
-    monkeypatch.setattr(polymer_build_contract, "_binary", lambda: "polymer-build")
+    monkeypatch.setattr(build_contract, "_native", lambda: None)
+    monkeypatch.setattr(build_contract, "_binary", lambda: "warp-build")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    result = polymer_build_contract.validate(payload)
+    result = build_contract.validate(payload)
     assert result["valid"] is True
     assert request_payload == payload
 
@@ -119,10 +124,23 @@ def test_run_build_request_supports_stream_flag(monkeypatch) -> None:
         calls["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(polymer_build_contract, "_binary", lambda: "polymer-build")
+    monkeypatch.setattr(build_contract, "_native", lambda: None)
+    monkeypatch.setattr(build_contract, "_binary", lambda: "warp-build")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    exit_code, envelope = polymer_build_contract.run(payload, stream=True)
+    exit_code, envelope = build_contract.run(payload, stream=True)
     assert exit_code == 0
     assert envelope == {}
     assert "--stream" in calls["cmd"]
+
+
+def test_capabilities_prefers_native_binding(monkeypatch) -> None:
+    class Native:
+        @staticmethod
+        def build_agent_capabilities():
+            return {"native": True}
+
+    monkeypatch.setattr(build_contract, "_native", lambda: Native())
+
+    payload = build_contract.capabilities()
+    assert payload == {"native": True}
