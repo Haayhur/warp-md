@@ -603,16 +603,20 @@ struct PyDielectricPlan {
 #[pymethods]
 impl PyDielectricPlan {
     #[new]
-    #[pyo3(signature = (selection, charges, group_by="resid", length_scale=None, group_types=None))]
+    #[pyo3(signature = (selection, charges, group_by="resid", length_scale=None, group_types=None, temperature=300.0, make_whole=true))]
     fn new(
         selection: &PySelection,
         charges: Vec<f64>,
         group_by: &str,
         length_scale: Option<f64>,
         group_types: Option<Vec<usize>>,
+        temperature: f64,
+        make_whole: bool,
     ) -> PyResult<Self> {
         let group_by = parse_group_by(group_by)?;
-        let mut plan = DielectricPlan::new(selection.selection.clone(), group_by, charges);
+        let mut plan = DielectricPlan::new(selection.selection.clone(), group_by, charges)
+            .with_temperature(temperature)
+            .with_make_whole(make_whole);
         if let Some(scale) = length_scale {
             plan = plan.with_length_scale(scale);
         }

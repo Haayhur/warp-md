@@ -365,6 +365,73 @@ fn conductivity_plan_atom_selected_io_path() {
 }
 
 #[test]
+fn dielectric_plan_constant_dipole_gives_unity() {
+    let mut system = build_system();
+    let sel = system.select("resid 1").unwrap();
+    let charges = vec![1.0f64, -1.0f64];
+    let mut plan = DielectricPlan::new(sel, GroupBy::Resid, charges);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 10.0,
+        lz: 10.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Dielectric(output) => {
+            assert!((output.dielectric_total - 1.0).abs() < 1.0e-6);
+            assert!((output.dielectric_rot - 1.0).abs() < 1.0e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn dielectric_plan_fluctuating_dipole_matches_neumann_formula() {
+    let mut system = build_system();
+    let sel = system.select("resid 1").unwrap();
+    let charges = vec![1.0f64, -1.0f64];
+    let temperature = 300.0f64;
+    let mut plan =
+        DielectricPlan::new(sel, GroupBy::Resid, charges).with_temperature(temperature);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 10.0,
+        lz: 10.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Dielectric(output) => {
+            let fluct_ea2 = 0.25f64;
+            let elementary_charge = 1.602_176_634e-19_f64;
+            let angstrom_to_m = 1.0e-10_f64;
+            let angstrom3_to_m3 = 1.0e-30_f64;
+            let eps0 = 8.854_187_812_8e-12_f64;
+            let kb = 1.380_649e-23_f64;
+            let volume_ang3 = 10.0f64 * 10.0 * 10.0;
+            let expected = 1.0
+                + fluct_ea2 * (elementary_charge * angstrom_to_m).powi(2)
+                    / (3.0 * eps0 * kb * temperature * volume_ang3 * angstrom3_to_m3);
+            let got = output.dielectric_total as f64;
+            let rel = (got - expected).abs() / expected.abs().max(1.0);
+            assert!(rel < 1.0e-6, "got {got} expected {expected}");
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn ion_pair_corr_constant_pairs() {
     let mut system = build_two_resid_system();
     let sel = system.select("resid 1:2").unwrap();
@@ -505,7 +572,9 @@ fn rdf_plan_counts() {
     match out {
         PlanOutput::Rdf(rdf) => {
             let total: u64 = rdf.counts.iter().sum();
-            assert!(total > 0);
+            assert_eq!(total, 2);
+            assert_eq!(rdf.counts[0], 0);
+            assert_eq!(rdf.counts[1], 2);
         }
         _ => panic!("unexpected output"),
     }

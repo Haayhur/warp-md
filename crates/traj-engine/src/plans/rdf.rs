@@ -128,6 +128,7 @@ impl Plan for RdfPlan {
         let _ = device;
         let n_atoms = chunk.n_atoms;
         let bin_width = self.r_max / self.bins as f32;
+        let same_sel = Arc::ptr_eq(&self.sel_a.indices, &self.sel_b.indices);
         #[cfg(feature = "cuda")]
         if let (Device::Cuda(ctx), Some(gpu)) = (device, &mut self.gpu) {
             let mut box_l = Vec::new();
@@ -193,7 +194,7 @@ impl Plan for RdfPlan {
                 let pos_a = chunk.coords[frame * n_atoms + a_idx];
                 for &b in self.sel_b.indices.iter() {
                     let b_idx = b as usize;
-                    if a_idx == b_idx && Arc::ptr_eq(&self.sel_a.indices, &self.sel_b.indices) {
+                    if same_sel && a_idx == b_idx {
                         continue;
                     }
                     let pos_b = chunk.coords[frame * n_atoms + b_idx];

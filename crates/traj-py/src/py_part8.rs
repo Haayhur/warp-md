@@ -281,7 +281,7 @@ impl PyRdfPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -289,10 +289,18 @@ impl PyRdfPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<PyObject> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
         match output {
             PlanOutput::Rdf(rdf) => {
                 let r = PyArray1::from_vec_bound(py, rdf.r);
@@ -323,7 +331,7 @@ impl PyPairDistPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -331,10 +339,18 @@ impl PyPairDistPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<PyObject> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
         match output {
             PlanOutput::Histogram { centers, counts } => Ok(hist_to_py(py, centers, counts)),
             _ => Err(PyRuntimeError::new_err("unexpected output")),

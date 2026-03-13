@@ -164,7 +164,7 @@ def _build_dielectric(system: System, spec: Dict[str, Any]):
         raise ValueError("dielectric.charges is required")
     charges = _resolve_charges(system, charges_spec)
     group_types = _resolve_group_types(system, sel, group_by, spec.get("group_types"))
-    kwargs = _pick(spec, ["length_scale"])
+    kwargs = _pick(spec, ["length_scale", "temperature", "make_whole"])
     if group_types is not None:
         kwargs["group_types"] = group_types
     return DielectricPlan(sel, charges, group_by=group_by, **kwargs)
@@ -540,4 +540,3 @@ CLI_TO_PLAN = {
     "jcoupling": "jcoupling",
     "gist": "gist",
 }
-

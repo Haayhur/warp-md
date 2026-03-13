@@ -389,7 +389,7 @@ ANALYSIS_METADATA: Dict[str, AnalysisContract] = {
         aliases=["dielectric-constant"],
         description="Dielectric constant from dipole fluctuations",
         required_fields=["selection", "charges"],
-        optional_fields=["group_by", "length_scale"],
+        optional_fields=["group_by", "length_scale", "temperature", "make_whole"],
         field_types={
             "selection": FieldSpec(
                 type="string",
@@ -400,6 +400,20 @@ ANALYSIS_METADATA: Dict[str, AnalysisContract] = {
                 type="string",
                 semantic_type="charges",
                 description="Charge specification method",
+            ),
+            "temperature": FieldSpec(
+                type="float",
+                semantic_type="float",
+                description="Simulation temperature in Kelvin",
+                default=300.0,
+                minimum=0.0,
+                unit="K",
+            ),
+            "make_whole": FieldSpec(
+                type="boolean",
+                semantic_type="boolean",
+                description="Reconstruct grouped molecules across periodic boundaries",
+                default=True,
             ),
         },
         outputs=[

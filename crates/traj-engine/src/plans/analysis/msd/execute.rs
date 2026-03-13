@@ -549,13 +549,12 @@ impl Plan for MsdPlan {
                 let mut data = vec![0.0f32; lags.len() * cols];
                 for (idx, &lag) in lags.iter().enumerate() {
                     time.push((dt0 * lag as f64) as f32);
-                    let count = counts[idx] as f64;
-                    if count == 0.0 {
+                    if counts[idx] == 0 {
                         continue;
                     }
                     let base = idx * cols;
                     for c in 0..cols {
-                        data[base + c] = (acc[base + c] / count) as f32;
+                        data[base + c] = acc[base + c] as f32;
                     }
                 }
                 Ok(PlanOutput::TimeSeries {

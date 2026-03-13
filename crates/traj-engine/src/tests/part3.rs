@@ -1212,3 +1212,57 @@ fn msd_plan_rejects_nonuniform_time_spacing() {
         Err(err) => assert!(err.to_string().contains("uniform frame spacing")),
     }
 }
+
+#[test]
+fn msd_plan_fft_matches_ring() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[1.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+        vec![[2.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0]],
+        vec![[3.0, 0.0, 0.0, 1.0], [4.0, 0.0, 0.0, 1.0]],
+    ];
+
+    let mut ring = MsdPlan::new(sel.clone(), GroupBy::Resid)
+        .with_lag_mode(LagMode::Ring)
+        .with_max_lag(3);
+    let mut fft = MsdPlan::new(sel, GroupBy::Resid).with_lag_mode(LagMode::Fft);
+
+    let mut exec_ring = Executor::new(system.clone());
+    let mut traj_ring = InMemoryTraj::new(frames.clone());
+    let out_ring = exec_ring.run_plan(&mut ring, &mut traj_ring).unwrap();
+
+    let mut exec_fft = Executor::new(system);
+    let mut traj_fft = InMemoryTraj::new(frames);
+    let out_fft = exec_fft.run_plan(&mut fft, &mut traj_fft).unwrap();
+
+    match (out_ring, out_fft) {
+        (
+            PlanOutput::TimeSeries {
+                rows: ring_rows,
+                cols: ring_cols,
+                time: ring_time,
+                data: ring_data,
+            },
+            PlanOutput::TimeSeries {
+                rows: fft_rows,
+                cols: fft_cols,
+                time: fft_time,
+                data: fft_data,
+            },
+        ) => {
+            assert_eq!(ring_rows, fft_rows);
+            assert_eq!(ring_cols, fft_cols);
+            assert_eq!(ring_time.len(), fft_time.len());
+            assert_eq!(ring_data.len(), fft_data.len());
+            for (a, b) in ring_time.iter().zip(fft_time.iter()) {
+                assert!((a - b).abs() < 1.0e-6, "time mismatch: {a} vs {b}");
+            }
+            for (a, b) in ring_data.iter().zip(fft_data.iter()) {
+                assert!((a - b).abs() < 1.0e-5, "data mismatch: {a} vs {b}");
+            }
+        }
+        _ => panic!("unexpected output"),
+    }
+}

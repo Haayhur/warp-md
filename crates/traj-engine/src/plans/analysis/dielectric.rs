@@ -1,5 +1,6 @@
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::{Box3, FrameChunk};
+use traj_core::pbc_utils::{apply_pbc, apply_pbc_triclinic, cell_and_inv_from_box};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
@@ -17,6 +18,8 @@ pub struct DielectricPlan {
     group_by: GroupBy,
     group_types: Option<Vec<usize>>,
     charges: Vec<f64>,
+    temperature: f64,
+    make_whole: bool,
     length_scale: f64,
     groups: Option<GroupMap>,
     masses: Vec<f64>,
@@ -43,6 +46,8 @@ impl DielectricPlan {
             group_by,
             group_types: None,
             charges,
+            temperature: 300.0,
+            make_whole: true,
             length_scale: 1.0,
             groups: None,
             masses: Vec::new(),
@@ -64,6 +69,16 @@ impl DielectricPlan {
         self.group_types = Some(types);
         self
     }
+
+    pub fn with_temperature(mut self, temperature: f64) -> Self {
+        self.temperature = temperature;
+        self
+    }
+
+    pub fn with_make_whole(mut self, make_whole: bool) -> Self {
+        self.make_whole = make_whole;
+        self
+    }
 }
 
 impl Plan for DielectricPlan {
@@ -81,6 +96,11 @@ impl Plan for DielectricPlan {
                 "charges length does not match atom count".into(),
             ));
         }
+        if !(self.temperature.is_finite() && self.temperature > 0.0) {
+            return Err(TrajError::Mismatch(
+                "dielectric requires a positive temperature".into(),
+            ));
+        }
         let mut spec = GroupSpec::new(self.selection.clone(), self.group_by);
         if let Some(types) = &self.group_types {
             spec = spec.with_group_types(types.clone());
@@ -91,6 +111,9 @@ impl Plan for DielectricPlan {
         {
             self.gpu = None;
             if let Device::Cuda(ctx) = device {
+                if self.make_whole {
+                    return Ok(());
+                }
                 let (offsets, indices, max_len) =
                     groups_to_csr(&self.groups.as_ref().unwrap().groups);
                 let groups = ctx.groups(&offsets, &indices, max_len)?;
@@ -231,15 +254,37 @@ impl Plan for DielectricPlan {
         let mut trans_sq = Vec::with_capacity(n_frames);
         let mut rot_trans = Vec::with_capacity(n_frames);
 
-        let mut murot_avg = 0.0f64;
-        let mut murottrans_avg = 0.0f64;
+        let mut murot_mean = [0.0f64; 3];
+        let mut murot_sq_mean = [0.0f64; 3];
+        let mut mu_mean = [0.0f64; 3];
+        let mut mu_sq_mean = [0.0f64; 3];
         let mut muavg = 0.0f64;
+        let mut volume_sum = 0.0f64;
+        let mut volume_count = 0usize;
 
         for frame in 0..n_frames {
             let mut murot = [0.0f64; 3];
             let mut mutrans = [0.0f64; 3];
+            if frame >= self.boxes.len() {
+                return Err(TrajError::Mismatch(
+                    "dielectric requires box metadata for every frame".into(),
+                ));
+            }
+            let box_ = self.boxes[frame];
+            volume_sum += box_volume(box_, self.length_scale)?;
+            volume_count += 1;
             for (g_idx, atoms) in groups.groups.iter().enumerate() {
-                let dip = dipoles[frame * n_groups + g_idx];
+                let dip = if self.make_whole {
+                    group_dipole_whole(
+                        &self.coords[frame * self.n_atoms..(frame + 1) * self.n_atoms],
+                        atoms,
+                        &self.charges,
+                        box_,
+                        self.length_scale,
+                    )?
+                } else {
+                    dipoles[frame * n_groups + g_idx]
+                };
                 let mut mol_charge = 0.0f64;
                 for &atom_idx in atoms {
                     mol_charge += self.charges[atom_idx];
@@ -262,29 +307,56 @@ impl Plan for DielectricPlan {
             let r2 = murot[0] * murot[0] + murot[1] * murot[1] + murot[2] * murot[2];
             let t2 = mutrans[0] * mutrans[0] + mutrans[1] * mutrans[1] + mutrans[2] * mutrans[2];
             let rt = murot[0] * mutrans[0] + murot[1] * mutrans[1] + murot[2] * mutrans[2];
+            let mu = [
+                murot[0] + mutrans[0],
+                murot[1] + mutrans[1],
+                murot[2] + mutrans[2],
+            ];
             rot_sq.push(r2 as f32);
             trans_sq.push(t2 as f32);
             rot_trans.push(rt as f32);
-            murot_avg += r2;
-            murottrans_avg += rt;
+            for k in 0..3 {
+                murot_mean[k] += murot[k];
+                murot_sq_mean[k] += murot[k] * murot[k];
+                mu_mean[k] += mu[k];
+                mu_sq_mean[k] += mu[k] * mu[k];
+            }
         }
 
         let n_frames_f = n_frames as f64;
-        murot_avg /= n_frames_f;
-        murottrans_avg /= n_frames_f;
+        for k in 0..3 {
+            murot_mean[k] /= n_frames_f;
+            murot_sq_mean[k] /= n_frames_f;
+            mu_mean[k] /= n_frames_f;
+            mu_sq_mean[k] /= n_frames_f;
+        }
         muavg /= n_frames_f * denom;
+        let avg_volume = volume_sum / volume_count.max(1) as f64;
+        if !(avg_volume.is_finite() && avg_volume > 0.0) {
+            return Err(TrajError::Mismatch(
+                "dielectric requires a positive periodic box volume".into(),
+            ));
+        }
 
-        let debye = 3.33564e-30_f64;
-        let eps0 = 8.85418781762e-12_f64;
-        let kb = 1.380648813e-23_f64;
-        let enm = 0.020819434_f64;
-        let multiple = debye * debye / (enm * enm * eps0 * kb);
+        let fluct_rot = (0..3)
+            .map(|k| murot_sq_mean[k] - murot_mean[k] * murot_mean[k])
+            .sum::<f64>();
+        let fluct_total = (0..3)
+            .map(|k| mu_sq_mean[k] - mu_mean[k] * mu_mean[k])
+            .sum::<f64>();
 
-        let murot_scaled = murot_avg * multiple;
-        let murottrans_scaled = murottrans_avg * multiple;
-        let dielectric_rot = (murot_scaled + 1.0) as f32;
-        let dielectric_total = (1.0 + murot_scaled + murottrans_scaled) as f32;
-        let mu_avg = (muavg / enm) as f32;
+        let elementary_charge = 1.602_176_634e-19_f64;
+        let angstrom_to_m = 1.0e-10_f64;
+        let angstrom3_to_m3 = 1.0e-30_f64;
+        let eps0 = 8.854_187_812_8e-12_f64;
+        let kb = 1.380_649e-23_f64;
+        let dipole_scale = elementary_charge * angstrom_to_m;
+        let fluct_scale = dipole_scale * dipole_scale;
+        let denom_eps = 3.0 * eps0 * kb * self.temperature * (avg_volume * angstrom3_to_m3);
+        let dielectric_rot = (1.0 + fluct_rot * fluct_scale / denom_eps) as f32;
+        let dielectric_total = (1.0 + fluct_total * fluct_scale / denom_eps) as f32;
+        let debye_per_ea = (elementary_charge * angstrom_to_m) / 3.33564e-30_f64;
+        let mu_avg = (muavg * debye_per_ea) as f32;
 
         let time: Vec<f32> = self.times.iter().map(|t| *t as f32).collect();
         Ok(PlanOutput::Dielectric(crate::executor::DielectricOutput {
@@ -297,4 +369,81 @@ impl Plan for DielectricPlan {
             mu_avg,
         }))
     }
+}
+
+fn box_volume(box_: Box3, length_scale: f64) -> TrajResult<f64> {
+    let raw = match box_ {
+        Box3::Orthorhombic { lx, ly, lz } => (lx as f64) * (ly as f64) * (lz as f64),
+        Box3::Triclinic { m } => {
+            let m0 = m[0] as f64;
+            let m1 = m[1] as f64;
+            let m2 = m[2] as f64;
+            let m3 = m[3] as f64;
+            let m4 = m[4] as f64;
+            let m5 = m[5] as f64;
+            let m6 = m[6] as f64;
+            let m7 = m[7] as f64;
+            let m8 = m[8] as f64;
+            (m0 * (m4 * m8 - m5 * m7) - m1 * (m3 * m8 - m5 * m6) + m2 * (m3 * m7 - m4 * m6)).abs()
+        }
+        Box3::None => {
+            return Err(TrajError::Mismatch(
+                "dielectric requires orthorhombic or triclinic box metadata".into(),
+            ))
+        }
+    };
+    Ok(raw * length_scale.powi(3))
+}
+
+fn group_dipole_whole(
+    frame_coords: &[[f32; 4]],
+    atoms: &[usize],
+    charges: &[f64],
+    box_: Box3,
+    length_scale: f64,
+) -> TrajResult<[f64; 3]> {
+    if atoms.is_empty() {
+        return Ok([0.0, 0.0, 0.0]);
+    }
+    let anchor = frame_coords[atoms[0]];
+    let anchor_pos = [
+        (anchor[0] as f64) * length_scale,
+        (anchor[1] as f64) * length_scale,
+        (anchor[2] as f64) * length_scale,
+    ];
+    let maybe_triclinic = match box_ {
+        Box3::Triclinic { .. } => Some(cell_and_inv_from_box(box_)?),
+        _ => None,
+    };
+    let mut dip = [0.0f64; 3];
+    for &atom_idx in atoms {
+        let pos = frame_coords[atom_idx];
+        let mut dx = ((pos[0] - anchor[0]) as f64) * length_scale;
+        let mut dy = ((pos[1] - anchor[1]) as f64) * length_scale;
+        let mut dz = ((pos[2] - anchor[2]) as f64) * length_scale;
+        match box_ {
+            Box3::Orthorhombic { lx, ly, lz } => {
+                apply_pbc(
+                    &mut dx,
+                    &mut dy,
+                    &mut dz,
+                    (lx as f64) * length_scale,
+                    (ly as f64) * length_scale,
+                    (lz as f64) * length_scale,
+                );
+            }
+            Box3::Triclinic { .. } => {
+                let (cell, inv) = maybe_triclinic
+                    .as_ref()
+                    .expect("triclinic box conversion must be available");
+                apply_pbc_triclinic(&mut dx, &mut dy, &mut dz, cell, inv);
+            }
+            Box3::None => {}
+        }
+        let q = charges[atom_idx];
+        dip[0] += q * (anchor_pos[0] + dx);
+        dip[1] += q * (anchor_pos[1] + dy);
+        dip[2] += q * (anchor_pos[2] + dz);
+    }
+    Ok(dip)
 }

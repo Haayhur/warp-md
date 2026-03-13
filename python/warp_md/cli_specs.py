@@ -132,6 +132,8 @@ def _spec_dielectric(args, system: System) -> Dict[str, Any]:
         "selection": args.selection,
         "group_by": args.group_by,
         "charges": _parse_charges_arg(args.charges, system),
+        "temperature": args.temperature,
+        "make_whole": args.make_whole,
     }
     if args.length_scale is not None:
         spec["length_scale"] = args.length_scale

@@ -175,10 +175,22 @@ def setup_dielectric_args(parser: argparse.ArgumentParser) -> None:
         help="Charges: JSON list, table:path, or selections:[{selection,charge},...]",
     )
     parser.add_argument(
+        "--temperature",
+        type=float,
+        default=300.0,
+        help="Temperature (K) for dielectric fluctuation scaling",
+    )
+    parser.add_argument(
         "--group-by",
         choices=["resid", "chain", "resid_chain"],
         default="resid",
         help="Group-by mode",
+    )
+    parser.add_argument(
+        "--make-whole",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reconstruct grouped molecules across periodic boundaries before dipole evaluation",
     )
     parser.add_argument("--length-scale", type=float, help="Length scale")
     add_group_types_args(parser)
