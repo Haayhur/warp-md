@@ -352,21 +352,27 @@ fn json_value_to_py<'py>(py: Python<'py>, value: &serde_json::Value) -> PyResult
 #[pyfunction]
 #[pyo3(signature = (kind="request"))]
 fn build_agent_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
-    let text = warp_build::schema_json(kind)
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let text = warp_build::schema_json(kind).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     json_string_to_py(py, text)
 }
 
 #[pyfunction]
-#[pyo3(signature = (mode="random_walk"))]
-fn build_agent_example<'py>(py: Python<'py>, mode: &str) -> PyResult<PyObject> {
-    let value = warp_build::example_request(mode);
+#[pyo3(signature = (mode="random_walk", bundle_path="source.bundle.json"))]
+fn build_agent_example<'py>(py: Python<'py>, mode: &str, bundle_path: &str) -> PyResult<PyObject> {
+    let value = warp_build::example_request_for_bundle(mode, bundle_path);
     json_value_to_py(py, &value)
 }
 
 #[pyfunction]
 fn build_agent_example_bundle<'py>(py: Python<'py>) -> PyResult<PyObject> {
     let value = warp_build::example_bundle();
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn build_agent_write_example_bundle<'py>(py: Python<'py>, path: &str) -> PyResult<PyObject> {
+    let value = warp_build::write_example_bundle(path)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     json_value_to_py(py, &value)
 }
 
@@ -402,8 +408,8 @@ fn build_agent_run<'py>(
 #[pyfunction]
 #[pyo3(signature = (kind="request"))]
 fn pack_agent_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
-    let text = warp_pack::agent::schema_json(kind)
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let text =
+        warp_pack::agent::schema_json(kind).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     json_string_to_py(py, text)
 }
 
@@ -792,8 +798,8 @@ fn pep_build(
         return pep_emit(&struc, out, fmt).map_err(|e| PyRuntimeError::new_err(e.to_string()));
     }
 
-    let rama = pep_parse_preset(preset.as_deref())
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let rama =
+        pep_parse_preset(preset.as_deref()).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
     if let Some(tl) = three_letter.as_deref() {
         let specs = warp_pep::builder::parse_three_letter_sequence(&tl.to_uppercase())
@@ -803,15 +809,13 @@ fn pep_build(
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
         } else {
             match (&phi, &psi) {
-                (Some(phi_v), Some(psi_v)) => {
-                    warp_pep::builder::make_structure_from_specs(
-                        &specs,
-                        phi_v,
-                        psi_v,
-                        omega.as_deref(),
-                    )
-                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
-                }
+                (Some(phi_v), Some(psi_v)) => warp_pep::builder::make_structure_from_specs(
+                    &specs,
+                    phi_v,
+                    psi_v,
+                    omega.as_deref(),
+                )
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
                 (None, None) => warp_pep::builder::make_extended_structure_from_specs(&specs)
                     .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
                 _ => {
@@ -839,13 +843,10 @@ fn pep_build(
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
     } else {
         match (&phi, &psi) {
-            (Some(phi_v), Some(psi_v)) => warp_pep::builder::make_structure(
-                seq,
-                phi_v,
-                psi_v,
-                omega.as_deref(),
-            )
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
+            (Some(phi_v), Some(psi_v)) => {
+                warp_pep::builder::make_structure(seq, phi_v, psi_v, omega.as_deref())
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            }
             (None, None) => warp_pep::builder::make_extended_structure(seq)
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?,
             _ => {
@@ -887,8 +888,8 @@ fn pep_mutate(
         ));
     }
 
-    let rama = pep_parse_preset(preset.as_deref())
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let rama =
+        pep_parse_preset(preset.as_deref()).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
     let mut struc = if let Some(path) = input_path.as_deref() {
         warp_pep::convert::read_structure(path)
@@ -1036,6 +1037,7 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCountInVoxelPlan>()?;
     m.add_class::<PyDensityPlan>()?;
     m.add_class::<PyVolmapPlan>()?;
+    m.add_class::<PyFreeVolumePlan>()?;
     m.add_class::<PyEquipartitionPlan>()?;
     m.add_class::<PyHbondPlan>()?;
     m.add_class::<PyRdfPlan>()?;
@@ -1052,6 +1054,7 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_agent_schema, m)?)?;
     m.add_function(wrap_pyfunction!(build_agent_example, m)?)?;
     m.add_function(wrap_pyfunction!(build_agent_example_bundle, m)?)?;
+    m.add_function(wrap_pyfunction!(build_agent_write_example_bundle, m)?)?;
     m.add_function(wrap_pyfunction!(build_agent_capabilities, m)?)?;
     m.add_function(wrap_pyfunction!(build_agent_inspect_source, m)?)?;
     m.add_function(wrap_pyfunction!(build_agent_validate, m)?)?;
@@ -1461,10 +1464,7 @@ fn grid_to_py(py: Python<'_>, output: traj_engine::GridOutput) -> PyResult<PyObj
     Ok(dict.into_py(py))
 }
 
-fn clustering_to_py(
-    py: Python<'_>,
-    output: traj_engine::ClusteringOutput,
-) -> PyResult<PyObject> {
+fn clustering_to_py(py: Python<'_>, output: traj_engine::ClusteringOutput) -> PyResult<PyObject> {
     let dict = PyDict::new_bound(py);
     dict.set_item("labels", PyArray1::from_vec_bound(py, output.labels))?;
     dict.set_item("centroids", PyArray1::from_vec_bound(py, output.centroids))?;

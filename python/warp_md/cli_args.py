@@ -255,6 +255,16 @@ def setup_water_count_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--length-scale", type=float, help="Length scale")
 
 
+def setup_free_volume_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Selection to mark occupied space")
+    parser.add_argument("--center-selection", required=True, help="Center selection")
+    parser.add_argument("--box-unit", help="Voxel size (x,y,z) - defaults to 1.0,1.0,1.0 if not specified")
+    parser.add_argument("--region-size", help="Region size (x,y,z) - auto-detected from selection bounding box if not specified")
+    parser.add_argument("--probe-radius", type=float, help="Probe radius in coordinate units")
+    parser.add_argument("--shift", help="Shift (x,y,z)")
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+
+
 def setup_equipartition_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--selection", required=True, help="Selection string")
     parser.add_argument(
@@ -333,6 +343,7 @@ REGISTRY = {
     "ion-pair-correlation": setup_ion_pair_args,
     "structure-factor": setup_structure_factor_args,
     "water-count": setup_water_count_args,
+    "free-volume": setup_free_volume_args,
     "equipartition": setup_equipartition_args,
     "hbond": setup_hbond_args,
     "rdf": setup_rdf_args,

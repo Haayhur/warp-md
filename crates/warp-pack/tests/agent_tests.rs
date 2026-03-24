@@ -31,7 +31,7 @@ fn run_fixture_polymer_build(
     let charge_manifest = temp_path(&format!("{request_id}_charge.json"));
     let topology_graph = temp_path(&format!("{request_id}_topology.json"));
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": request_id,
         "source_ref": {
             "bundle_id": bundle_id,
@@ -141,10 +141,10 @@ fn write_polymer_build_manifest(
         format!(
             "{}\n",
             serde_json::to_string_pretty(&json!({
-                "version": "polymer-build.manifest.v1",
+                "version": "warp-build.manifest.v1",
                 "request_id": "build-001",
                 "normalized_request": {
-                    "schema_version": "polymer-build.agent.v1",
+                    "schema_version": "warp-build.agent.v1",
                     "request_id": "build-001",
                     "source_ref": {
                         "bundle_id": "pmma_param_bundle_v1",
@@ -210,10 +210,10 @@ fn write_polymer_build_manifest_with_topology(
         format!(
             "{}\n",
             serde_json::to_string_pretty(&json!({
-                "version": "polymer-build.manifest.v1",
+                "version": "warp-build.manifest.v1",
                 "request_id": "build-002",
                 "normalized_request": {
-                    "schema_version": "polymer-build.agent.v1",
+                    "schema_version": "warp-build.agent.v1",
                     "request_id": "build-002",
                     "source_ref": {
                         "bundle_id": "pmma_param_bundle_v1",
@@ -268,7 +268,7 @@ fn write_linear_topology_graph(path_label: &str) -> std::path::PathBuf {
         format!(
             "{}\n",
             serde_json::to_string_pretty(&json!({
-                "version": "polymer-build.topology-graph.v5",
+                "version": "warp-build.topology-graph.v5",
                 "request_id": "build-003",
                 "bundle_id": "pmma_param_bundle_v1",
                 "build_plan": {
@@ -412,7 +412,7 @@ fn write_linear_topology_graph_with_port_class(
         format!(
             "{}\n",
             serde_json::to_string_pretty(&json!({
-                "version": "polymer-build.topology-graph.v5",
+                "version": "warp-build.topology-graph.v5",
                 "request_id": "build-005",
                 "bundle_id": "pmma_param_bundle_v1",
                 "build_plan": {
@@ -487,7 +487,7 @@ fn write_branched_topology_graph(path_label: &str) -> std::path::PathBuf {
         format!(
             "{}\n",
             serde_json::to_string_pretty(&json!({
-                "version": "polymer-build.topology-graph.v5",
+                "version": "warp-build.topology-graph.v5",
                 "request_id": "build-004",
                 "bundle_id": "pmma_param_bundle_v1",
                 "build_plan": {
@@ -605,10 +605,10 @@ fn write_polymer_build_manifest_with_topology_graph_request(
         format!(
             "{}\n",
             serde_json::to_string_pretty(&json!({
-                "version": "polymer-build.manifest.v1",
+                "version": "warp-build.manifest.v1",
                 "request_id": request_id,
                 "normalized_request": {
-                    "schema_version": "polymer-build.agent.v1",
+                    "schema_version": "warp-build.agent.v1",
                     "request_id": request_id,
                     "source_ref": {
                         "bundle_id": "pmma_param_bundle_v1",
@@ -920,7 +920,7 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
 
     let payload = json!({
         "version": "warp-pack.agent.v1",
-        "run_id": "polymer-build-handoff-run",
+        "run_id": "warp-build-handoff-run",
         "polymer_build": {
             "build_manifest": build_manifest.to_string_lossy(),
         },
@@ -944,7 +944,7 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
     assert_eq!(validate_result["schema_version"], "warp-pack.agent.v1");
     assert_eq!(
         validate_result["resolved_inputs"]["polymer_build_manifest_version"],
-        "polymer-build.manifest.v1"
+        "warp-build.manifest.v1"
     );
     assert_eq!(
         validate_result["resolved_inputs"]["topology_graph_present"],
@@ -990,7 +990,7 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
     assert_eq!(manifest_value["net_charge_before_neutralization"], 3.0);
     assert_eq!(
         manifest_value["polymer_build_handoff"]["manifest_version"],
-        "polymer-build.manifest.v1"
+        "warp-build.manifest.v1"
     );
     assert_eq!(
         manifest_value["built_solute_artifact"]["target_n_repeat"],
@@ -1222,7 +1222,7 @@ fn agent_run_polymer_build_handoff_uses_manifest_topology_fallback() {
 
     let payload = json!({
         "version": "warp-pack.agent.v1",
-        "run_id": "polymer-build-topology-run",
+        "run_id": "warp-build-topology-run",
         "polymer_build": {
             "build_manifest": build_manifest.to_string_lossy(),
         },

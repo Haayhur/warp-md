@@ -22,7 +22,7 @@ use traj_engine::{
     ClosestPlan, ClusterMethod, ConductivityPlan, ContourLengthPlan, CountInVoxelPlan, DensityPlan,
     DielectricPlan, DihedralPlan, DihedralRmsPlan, DipoleAlignmentPlan, DistancePlan,
     DistanceRmsdPlan, DistanceToPointPlan, DistanceToReferencePlan, DockingPlan, DsspPlan,
-    EndToEndPlan, EquipartitionPlan, Executor, FixImageBondsPlan, GetVelocityPlan, GistDirectPlan,
+    EndToEndPlan, EquipartitionPlan, Executor, FixImageBondsPlan, FreeVolumePlan, GetVelocityPlan, GistDirectPlan,
     GistGridPlan, GroupBy, HausdorffPlan, HbondPlan, ImagePlan, IonPairCorrelationPlan, LagMode,
     LowestCurvePlan, MakeStructurePlan, MatrixMode, MatrixPlan, MeanStructurePlan, MindistPlan,
     MolSurfPlan, MsdPlan, MultiDihedralPlan, MultiPuckerMode, MultiPuckerPlan, NativeContactsPlan,

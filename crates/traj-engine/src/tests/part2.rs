@@ -959,6 +959,95 @@ fn count_in_voxel_basic() {
 }
 
 #[test]
+fn free_volume_basic_and_probe_effect() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let center_sel = system.select("name CA").unwrap();
+
+    let mut plan_no_probe =
+        FreeVolumePlan::new(sel.clone(), center_sel.clone(), Some([1.0, 1.0, 1.0]), Some([1.0, 1.0, 1.0]));
+    let frames = vec![vec![[0.2, 0.2, 0.2, 1.0], [0.2, 0.2, 0.2, 1.0]]];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system.clone());
+    let out_no_probe = exec.run_plan(&mut plan_no_probe, &mut traj).unwrap();
+
+    let mut plan_probe =
+        FreeVolumePlan::new(sel, center_sel, Some([1.0, 1.0, 1.0]), Some([1.0, 1.0, 1.0])).with_probe_radius(1.1);
+    let frames = vec![vec![[0.2, 0.2, 0.2, 1.0], [0.2, 0.2, 0.2, 1.0]]];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out_probe = exec.run_plan(&mut plan_probe, &mut traj).unwrap();
+
+    match out_no_probe {
+        PlanOutput::Grid(grid) => {
+            assert_eq!(grid.dims, [2, 2, 2]);
+            assert_eq!(grid.mean.len(), 8);
+            assert!(grid.mean.iter().all(|v| *v >= 0.0 && *v <= 1.0));
+        }
+        _ => panic!("unexpected output"),
+    }
+    match out_probe {
+        PlanOutput::Grid(grid) => {
+            assert_eq!(grid.dims, [2, 2, 2]);
+            assert!(grid.mean.iter().all(|v| *v >= 0.0 && *v <= 1.0));
+            // With a probe radius > voxel size, all voxels should be occupied => free fraction 0.
+            assert!(grid.mean.iter().all(|v| *v <= 1.0e-6));
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn free_volume_auto_detect_region_size() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let center_sel = system.select("name CA").unwrap();
+
+    // Test auto-detection: no box_unit or region_size specified
+    let mut plan = FreeVolumePlan::new(sel.clone(), center_sel.clone(), None, None);
+    let frames = vec![vec![[0.2, 0.2, 0.2, 1.0], [0.2, 0.2, 0.2, 1.0]]];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+
+    match out {
+        PlanOutput::Grid(grid) => {
+            // With default box_unit of 1.0 Å and auto-detected region_size,
+            // should have a valid grid output
+            assert!(grid.dims[0] > 0);
+            assert!(grid.dims[1] > 0);
+            assert!(grid.dims[2] > 0);
+            assert!(grid.mean.iter().all(|v| *v >= 0.0 && *v <= 1.0));
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn free_volume_auto_detect_box_unit_only() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let center_sel = system.select("name CA").unwrap();
+
+    // Test with only box_unit specified
+    let mut plan = FreeVolumePlan::new(sel.clone(), center_sel.clone(), Some([2.0, 2.0, 2.0]), None);
+    let frames = vec![vec![[0.2, 0.2, 0.2, 1.0], [0.2, 0.2, 0.2, 1.0]]];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+
+    match out {
+        PlanOutput::Grid(grid) => {
+            // With box_unit of 2.0 Å and auto-detected region_size,
+            // should have fewer voxels than with default 1.0 Å
+            assert!(grid.dims[0] > 0);
+            assert!(grid.mean.iter().all(|v| *v >= 0.0 && *v <= 1.0));
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn distance_to_point_plan_basic() {
     let mut system = build_system();
     let sel = system.select("name CA").unwrap();

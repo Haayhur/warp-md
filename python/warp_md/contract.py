@@ -1409,6 +1409,80 @@ ANALYSIS_METADATA: Dict[str, AnalysisContract] = {
         ],
     ),
 
+    "free_volume": AnalysisContract(
+        name="free_volume",
+        aliases=["free-volume", "free-volume-fraction", "ffv"],
+        description="Fraction of free volume on a voxel grid. Auto-detects region_size from selection bounding box and defaults box_unit to 1.0 Å if not specified.",
+        required_fields=["selection", "center_selection"],
+        optional_fields=["box_unit", "region_size", "probe_radius", "shift", "length_scale"],
+        field_types={
+            "selection": FieldSpec(
+                type="string",
+                semantic_type="selection",
+                description="Atoms treated as occupied volume",
+            ),
+            "center_selection": FieldSpec(
+                type="string",
+                semantic_type="selection",
+                description="Selection used to define grid origin and auto-detect region_size",
+            ),
+            "box_unit": FieldSpec(
+                type="array",
+                semantic_type="vector",
+                description="Voxel size (x, y, z) in Angstroms. Defaults to [1.0, 1.0, 1.0] if not specified.",
+                default=[1.0, 1.0, 1.0],
+            ),
+            "region_size": FieldSpec(
+                type="array",
+                semantic_type="vector",
+                description="Region extents (x, y, z) in Angstroms. Auto-detected from center_selection bounding box with 10%% padding if not specified.",
+            ),
+            "probe_radius": FieldSpec(
+                type="float",
+                semantic_type="float",
+                description="Probe radius that expands occupied volume",
+                minimum=0,
+            ),
+            "shift": FieldSpec(
+                type="array",
+                semantic_type="vector",
+                description="Shift for centered coordinates",
+            ),
+            "length_scale": FieldSpec(
+                type="float",
+                semantic_type="float",
+                description="Coordinate length scale",
+                default=1.0,
+            ),
+        },
+        outputs=[
+            ArtifactSpec(
+                kind="grid",
+                format="npz",
+                fields=["dims", "mean", "std", "first", "last", "min", "max"],
+                description="Per-voxel free-volume fraction statistics",
+            ),
+        ],
+        tags=["spatial", "grid", "void", "solvation"],
+        examples=[
+            {
+                "name": "free_volume",
+                "selection": "protein",
+                "center_selection": "protein",
+                "box_unit": [1.0, 1.0, 1.0],
+                "region_size": [30.0, 30.0, 30.0],
+                "probe_radius": 0.5,
+                "note": "Explicit parameters",
+            },
+            {
+                "name": "free_volume_auto",
+                "selection": "protein",
+                "center_selection": "protein",
+                "note": "Auto-detects region_size from bounding box, defaults box_unit to 1.0 Å",
+            },
+        ],
+    ),
+
     "surf": AnalysisContract(
         name="surf",
         aliases=["surface-area", "sas"],
@@ -1756,6 +1830,8 @@ CLI_TO_ANALYSIS: Dict[str, str] = {
     "structure_factor": "structure_factor",
     "water-count": "water_count",
     "water_count": "water_count",
+    "free-volume": "free_volume",
+    "free_volume": "free_volume",
     "equipartition": "equipartition",
     "hbond": "hbond",
     "rdf": "rdf",

@@ -17,6 +17,7 @@ try:
         DipoleAlignmentPlan,
         EndToEndPlan,
         EquipartitionPlan,
+        FreeVolumePlan,
         HbondPlan,
         IonPairCorrelationPlan,
         MsdPlan,
@@ -41,6 +42,7 @@ except Exception as exc:  # pragma: no cover - import guard for help/metadata us
     DipoleAlignmentPlan = None  # type: ignore[assignment]
     EndToEndPlan = None  # type: ignore[assignment]
     EquipartitionPlan = None  # type: ignore[assignment]
+    FreeVolumePlan = None  # type: ignore[assignment]
     HbondPlan = None  # type: ignore[assignment]
     IonPairCorrelationPlan = None  # type: ignore[assignment]
     MsdPlan = None  # type: ignore[assignment]

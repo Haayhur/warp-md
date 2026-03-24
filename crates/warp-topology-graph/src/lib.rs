@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const TOPOLOGY_GRAPH_VERSION: &str = "polymer-build.topology-graph.v5";
+pub const TOPOLOGY_GRAPH_VERSION: &str = "warp-build.topology-graph.v5";
 
 fn default_topology_graph_version() -> String {
     TOPOLOGY_GRAPH_VERSION.to_string()

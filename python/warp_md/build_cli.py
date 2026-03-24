@@ -30,7 +30,7 @@ def _load_request(path: str) -> Dict[str, Any]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="warp-build", description="Agent-safe polymer builder")
+    parser = argparse.ArgumentParser(prog="warp-build", description="Agent-safe warp-build CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     schema_cmd = sub.add_parser("schema", help="print request/result/event/source schemas")
@@ -54,12 +54,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     example_cmd = sub.add_parser("example", help="print example build request")
     example_cmd.add_argument("--mode", default="random_walk", help="example mode")
+    example_cmd.add_argument("--bundle-path", default="source.bundle.json", help="bundle path to embed in the example")
     example_cmd.add_argument("--format", choices=["json", "yaml"], default="json", help="output format")
     example_cmd.add_argument("--json", action="store_true", help="alias for --format json")
 
     example_bundle_cmd = sub.add_parser("example-bundle", help="print example source bundle")
     example_bundle_cmd.add_argument("--format", choices=["json", "yaml"], default="json", help="output format")
     example_bundle_cmd.add_argument("--json", action="store_true", help="alias for --format json")
+    example_bundle_cmd.add_argument("--out", help="optional bundle output path; also writes companion example artifacts")
 
     caps_cmd = sub.add_parser("capabilities", help="print build capabilities")
     caps_cmd.add_argument("--format", choices=["json", "yaml"], default="json", help="output format")
@@ -97,12 +99,16 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
 
     if args.cmd == "example":
         fmt = "json" if args.json else args.format
-        print(_dump_payload(build_contract.example_request(args.mode), fmt))
+        print(_dump_payload(build_contract.example_request(args.mode, bundle_path=args.bundle_path), fmt))
         return 0
 
     if args.cmd == "example-bundle":
         fmt = "json" if args.json else args.format
-        print(_dump_payload(build_contract.example_bundle(), fmt))
+        if args.out:
+            build_contract.write_example_bundle(args.out)
+            print(args.out)
+        else:
+            print(_dump_payload(build_contract.example_bundle(), fmt))
         return 0
 
     if args.cmd == "capabilities":

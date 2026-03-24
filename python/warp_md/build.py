@@ -29,9 +29,7 @@ def _native() -> Any:
 
 
 def _binary() -> str:
-    command = os.environ.get("WARP_BUILD_BINARY") or os.environ.get(
-        "POLYMER_BUILD_BINARY", "warp-build"
-    )
+    command = os.environ.get("WARP_BUILD_BINARY", "warp-build")
     if os.path.isabs(command) or os.path.dirname(command):
         return command
     return shutil.which(command) or command
@@ -112,14 +110,14 @@ def schema(kind: str = "request") -> Dict[str, Any]:
     return schema_json(kind)
 
 
-def example_request(mode: str = "random_walk") -> Dict[str, Any]:
+def example_request(mode: str = "random_walk", *, bundle_path: str = "source.bundle.json") -> Dict[str, Any]:
     native = _native()
     if native is not None:
-        payload = native.build_agent_example(mode)
+        payload = native.build_agent_example(mode, bundle_path)
         if not isinstance(payload, dict):
             raise RuntimeError("native build example payload must decode to a dict")
         return payload
-    _, payload = _run_cli(["example", "--mode", mode])
+    _, payload = _run_cli(["example", "--mode", mode, "--bundle-path", bundle_path])
     return payload
 
 
@@ -131,6 +129,28 @@ def example_bundle() -> Dict[str, Any]:
             raise RuntimeError("native build example bundle payload must decode to a dict")
         return payload
     _, payload = _run_cli(["example-bundle"])
+    return payload
+
+
+def write_example_bundle(path: str | Path) -> Dict[str, Any]:
+    native = _native()
+    if native is not None and hasattr(native, "build_agent_write_example_bundle"):
+        payload = native.build_agent_write_example_bundle(str(path))
+        if not isinstance(payload, dict):
+            raise RuntimeError("native write example bundle payload must decode to a dict")
+        return payload
+    cli = _binary()
+    result = subprocess.run(
+        [cli, "example-bundle", "--out", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "warp-build example-bundle --out failed")
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("materialized example bundle must decode to an object")
     return payload
 
 
@@ -201,6 +221,7 @@ __all__ = [
     "schema",
     "example_request",
     "example_bundle",
+    "write_example_bundle",
     "capabilities",
     "inspect_source",
     "validate_request_payload",

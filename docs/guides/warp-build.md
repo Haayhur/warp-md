@@ -1,9 +1,9 @@
 ---
-description: Native polymer build stage for agent-first chain construction
+description: Native warp-build stage for agent-first chain construction
 icon: dna
 ---
 
-# Polymer Builder
+# Warp Build
 
 `warp-build` owns polymer construction. `warp-pack` owns world assembly around the built chain.
 
@@ -35,8 +35,8 @@ That split keeps:
 ```bash
 # Schema and examples
 warp-build schema --kind request
-warp-build example-bundle > source.bundle.json
-warp-build example --mode random_walk > request.json
+warp-build example-bundle --out source.bundle.json
+warp-build example --mode random_walk --bundle-path source.bundle.json > request.json
 
 # Validate and run
 warp-build validate request.json
@@ -44,7 +44,7 @@ warp-build run request.json --stream
 ```
 
 {% hint style="warning" %}
-`warp-build` is the public CLI wrapper. If the native builder binary is not on `PATH`, set `WARP_BUILD_BINARY` or `POLYMER_BUILD_BINARY` to the built `polymer-build` executable.
+`warp-build` is the public CLI wrapper. If the native builder binary is not on `PATH`, set `WARP_BUILD_BINARY` to the built `warp-build` executable.
 {% endhint %}
 {% endtab %}
 
@@ -64,9 +64,7 @@ print(exit_code, envelope["status"])
 If the native binary is not on `PATH`, point the wrapper at it:
 
 ```bash
-export POLYMER_BUILD_BINARY="$PWD/target/debug/polymer-build"
-# or
-export WARP_BUILD_BINARY="$PWD/target/debug/polymer-build"
+export WARP_BUILD_BINARY="$PWD/target/debug/warp-build"
 ```
 {% endtab %}
 {% endtabs %}
@@ -120,7 +118,7 @@ Common realization modes:
 
 ```json
 {
-  "version": "polymer-build.agent.v1",
+  "version": "warp-build.agent.v1",
   "source_ref": "pmma.bundle.json",
   "target": {
     "mode": "linear_homopolymer",

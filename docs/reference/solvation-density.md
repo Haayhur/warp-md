@@ -131,6 +131,52 @@ Also available as: `warp_md.analysis.count_in_voxel()`
 
 ---
 
+### FreeVolumePlan
+
+*Fraction of free volume (FFV) on a voxel grid.*
+
+```python
+from warp_md import FreeVolumePlan
+
+# With auto-detection (recommended)
+plan = FreeVolumePlan(
+    selection=system.select("protein"),
+    center_selection=system.select("protein"),
+)
+result = plan.run(traj, system)
+
+# With explicit parameters
+plan = FreeVolumePlan(
+    selection=system.select("protein"),
+    center_selection=system.select("protein"),
+    box_unit=(1.0, 1.0, 1.0),      # Voxel size (Å), defaults to (1.0, 1.0, 1.0)
+    region_size=(30.0, 30.0, 30.0), # Region extents (Å), auto-detected if None
+    probe_radius=0.5,               # optional
+)
+result = plan.run(traj, system)
+```
+
+**Auto-detection:**
+- `region_size` is computed from `center_selection` bounding box with 10% padding
+- `box_unit` defaults to 1.0 Å if not specified
+- Requires initial coordinates in the system (from PDB/GRO topology)
+
+FFV is estimated per voxel as:
+
+`FFV = free_frames / total_frames = 1 - occupied_frames / total_frames`
+
+#### Output (dict)
+
+| Key | Description |
+|-----|-------------|
+| `dims` | Grid dimensions `[nx, ny, nz]` |
+| `mean` | Mean FFV per voxel (`0..1`) |
+| `std` | FFV standard deviation |
+| `first`, `last` | First/last frame free mask (0/1) |
+| `min`, `max` | Per-voxel min/max over frames |
+
+---
+
 ## Density Profiles
 
 ### DensityPlan

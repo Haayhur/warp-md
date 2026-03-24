@@ -131,7 +131,7 @@ cargo build --release --all-features
         </tr>
         <tr>
             <td><strong>🧬 Polymer Build</strong><br>Build chains, sequence polymers, branched polymers, and graph polymers with `warp-build`.</td>
-            <td><a href="guides/polymer-builder.md">Polymer Builder</a></td>
+            <td><a href="guides/warp-build.md">Warp Build</a></td>
         </tr>
         <tr>
             <td><strong>📦 World Building</strong><br>Pack molecules into simulation boxes with warp-pack. 10+ input formats.</td>
@@ -197,7 +197,7 @@ print(f"Mean Rg: {rg.mean():.2f} Å")  # Done. That was easy.
 | [Getting Started](getting-started/installation.md) | From zero to simulation in minutes |
 | [Tutorial](tutorial/README.md) | The complete learning path |
 | [Agent Schema](reference/agent-schema.md) | The contract your agent signs |
-| [Polymer Builder](guides/polymer-builder.md) | Build chains and emit handoff artifacts for `warp-pack` |
+| [Warp Build](guides/warp-build.md) | Build chains and emit handoff artifacts for `warp-pack` |
 | [Packing Guide](guides/packing.md) | Build initial coordinates with warp-pack |
 | [Peptide Builder](guides/peptide-builder.md) | Construct and mutate peptides with warp-pep |
 | [API Reference](reference/README.md) | Every class, every parameter |

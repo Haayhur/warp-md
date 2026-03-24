@@ -87,6 +87,7 @@ try:
         PyCountInVoxelPlan as CountInVoxelPlan,
         PyDensityPlan as DensityPlan,
         PyVolmapPlan as VolmapPlan,
+        PyFreeVolumePlan as FreeVolumePlan,
         PyEquipartitionPlan as EquipartitionPlan,
         PyXcorrPlan as XcorrPlan,
         PyWaveletPlan as WaveletPlan,
@@ -244,6 +245,7 @@ except Exception as exc:  # pragma: no cover - allow CLI help without bindings
     CountInVoxelPlan = _Missing
     DensityPlan = _Missing
     VolmapPlan = _Missing
+    FreeVolumePlan = _Missing
     EquipartitionPlan = _Missing
     XcorrPlan = _Missing
     WaveletPlan = _Missing
@@ -445,6 +447,7 @@ __all__ = [
     "CountInVoxelPlan",
     "DensityPlan",
     "VolmapPlan",
+    "FreeVolumePlan",
     "EquipartitionPlan",
     "XcorrPlan",
     "WaveletPlan",

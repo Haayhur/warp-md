@@ -14,7 +14,7 @@ pub use feature_store::{
 };
 pub use plans::analysis::{
     AtomicCorrPlan, ClusterMethod, ConductivityPlan, CountInVoxelPlan, DensityPlan, DielectricPlan,
-    DipoleAlignmentPlan, DockingPlan, DsspPlan, EquipartitionPlan, GistDirectPlan, GistGridPlan,
+    DipoleAlignmentPlan, DockingPlan, DsspPlan, EquipartitionPlan, FreeVolumePlan, GistDirectPlan, GistGridPlan,
     GroupBy, GroupMap, GroupSpec, HbondPlan, IonPairCorrelationPlan, MolSurfPlan, MsdPlan,
     MultiPuckerMode, MultiPuckerPlan, NmrIredPlan, RotAcfPlan, StructureFactorPlan, SurfAlgorithm,
     SurfPlan, ToroidalDiffusionPlan, TorsionDiffusionPlan, TorsionStat, TrajectoryClusterPlan,

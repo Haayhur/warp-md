@@ -23,7 +23,7 @@ use crate::io::{read_molecule, write_output, MoleculeData};
 use crate::pack::run;
 
 pub const AGENT_SCHEMA_VERSION: &str = "warp-pack.agent.v1";
-const POLYMER_BUILD_MANIFEST_VERSION: &str = "polymer-build.manifest.v1";
+const WARP_BUILD_MANIFEST_VERSION: &str = "warp-build.manifest.v1";
 
 const SUPPORTED_BUILD_MODES: &[&str] = &[
     "solute_solvate",
@@ -492,11 +492,7 @@ fn warning_detail(
     }
 }
 
-fn component_warning_path(
-    req: &BuildRequest,
-    index: usize,
-    suffix: &str,
-) -> Option<String> {
+fn component_warning_path(req: &BuildRequest, index: usize, suffix: &str) -> Option<String> {
     let trimmed = suffix.trim_matches('/');
     if req.components.is_some() {
         if trimmed.is_empty() {
@@ -598,10 +594,7 @@ fn resolve_relative(base_path: &str, value: &str) -> String {
 }
 
 fn supported_topology_graph_version(version: &str) -> bool {
-    matches!(
-        version,
-        "polymer-build.topology-graph.v4" | "polymer-build.topology-graph.v5"
-    )
+    matches!(version, "warp-build.topology-graph.v5")
 }
 
 fn load_polymer_build_handoff(
@@ -634,12 +627,12 @@ fn load_polymer_build_handoff(
         .or_else(|| manifest.get("version"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if version != POLYMER_BUILD_MANIFEST_VERSION {
+    if version != WARP_BUILD_MANIFEST_VERSION {
         return Err(error_detail(
             "E_CONFIG_VALIDATION",
             Some("/polymer_build/build_manifest".into()),
             format!(
-                "unsupported polymer build manifest version '{version}'; expected {POLYMER_BUILD_MANIFEST_VERSION}"
+                "unsupported polymer build manifest version '{version}'; expected {WARP_BUILD_MANIFEST_VERSION}"
             ),
         ));
     }
@@ -796,8 +789,8 @@ fn ion_template_path(species: &str) -> String {
 }
 
 fn parse_request_text(text: &str) -> Result<BuildRequest, ErrorDetail> {
-    let payload: Value =
-        serde_json::from_str(text).map_err(|err| error_detail("E_CONFIG_VALIDATION", None, err.to_string()))?;
+    let payload: Value = serde_json::from_str(text)
+        .map_err(|err| error_detail("E_CONFIG_VALIDATION", None, err.to_string()))?;
     if payload.get("polymer").is_some() {
         return Err(error_detail(
             "E_UNSUPPORTED_FEATURE",
@@ -2455,7 +2448,7 @@ fn resolve_polymer_build_component(
         build_manifest_path: Some(loaded.manifest_path.clone()),
         forcefield_ref: loaded.forcefield_ref.clone(),
         connectivity_hint: Some("polymer_build_handoff".into()),
-        parameter_source: Some("polymer-build.agent.v1".into()),
+        parameter_source: Some("warp-build.agent.v1".into()),
         source_detail: json!({
             "kind": "polymer_chain",
             "path": loaded.coordinates_path,
@@ -2464,7 +2457,7 @@ fn resolve_polymer_build_component(
             "charge_manifest": loaded.charge_manifest_path,
             "build_manifest": loaded.manifest_path,
             "connectivity_hint": "polymer_build_handoff",
-            "parameter_source": "polymer-build.agent.v1",
+            "parameter_source": "warp-build.agent.v1",
             "forcefield_ref": loaded.forcefield_ref,
         }),
         built_artifact: Some(json!({
@@ -2500,7 +2493,7 @@ fn resolve_polymer_build_component(
             "realization": build_realization.clone(),
         })),
         polymer_controls: Some(json!({
-            "handoff_source": POLYMER_BUILD_MANIFEST_VERSION,
+            "handoff_source": WARP_BUILD_MANIFEST_VERSION,
             "target": build_target,
             "realization": build_realization,
         })),
@@ -3307,7 +3300,7 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
         })),
         "polymer_build_handoff" => Ok(json!({
             "schema_version": AGENT_SCHEMA_VERSION,
-            "run_id": "polymer-build-handoff-001",
+            "run_id": "warp-build-handoff-001",
             "polymer_build": {
                 "build_manifest": "outputs/pmma_50mer.build.json",
                 "topology_graph": "outputs/pmma_50mer.topology.json"
@@ -3416,8 +3409,8 @@ pub fn capabilities() -> Value {
 pub fn validate_request_json(text: &str) -> (i32, Value) {
     match load_agent_request(text) {
         Ok(req) => {
-            let normalized_request =
-                serde_json::to_value(&req).unwrap_or_else(|_| json!({"schema_version": AGENT_SCHEMA_VERSION}));
+            let normalized_request = serde_json::to_value(&req)
+                .unwrap_or_else(|_| json!({"schema_version": AGENT_SCHEMA_VERSION}));
             match resolved_inputs(&req) {
                 Ok(resolved_inputs) => (
                     0,

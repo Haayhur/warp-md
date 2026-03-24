@@ -216,6 +216,24 @@ def _spec_water_count(args, system: System) -> Dict[str, Any]:
     return spec
 
 
+def _spec_free_volume(args, system: System) -> Dict[str, Any]:
+    spec: Dict[str, Any] = {
+        "selection": args.selection,
+        "center_selection": args.center_selection,
+    }
+    if hasattr(args, 'box_unit') and args.box_unit is not None:
+        spec["box_unit"] = _parse_float_tuple(args.box_unit, 3, "box_unit")
+    if hasattr(args, 'region_size') and args.region_size is not None:
+        spec["region_size"] = _parse_float_tuple(args.region_size, 3, "region_size")
+    if args.probe_radius is not None:
+        spec["probe_radius"] = args.probe_radius
+    if args.shift:
+        spec["shift"] = _parse_float_tuple(args.shift, 3, "shift")
+    if args.length_scale is not None:
+        spec["length_scale"] = args.length_scale
+    return spec
+
+
 def _spec_equipartition(args, system: System) -> Dict[str, Any]:
     spec: Dict[str, Any] = {
         "selection": args.selection,
@@ -299,6 +317,7 @@ SPEC_BUILDERS = {
     "ion-pair-correlation": _spec_ion_pair,
     "structure-factor": _spec_structure_factor,
     "water-count": _spec_water_count,
+    "free-volume": _spec_free_volume,
     "equipartition": _spec_equipartition,
     "hbond": _spec_hbond,
     "rdf": _spec_rdf,

@@ -60,8 +60,8 @@ Everything your agent needs to know about warp-md — every class, every paramet
             <td><a href="advanced-plans.md">Advanced Plans</a></td>
         </tr>
         <tr>
-            <td><strong>Polymer Builder</strong><br>Source bundles, build manifests, topology graphs, and handoff into world-build</td>
-            <td><a href="../guides/polymer-builder.md">Polymer Builder</a></td>
+            <td><strong>Warp Build</strong><br>Source bundles, build manifests, topology graphs, and handoff into world-build</td>
+            <td><a href="../guides/warp-build.md">Warp Build</a></td>
         </tr>
         <tr>
             <td><strong>Builder Helpers</strong><br>Charges, group types, selection utilities</td>

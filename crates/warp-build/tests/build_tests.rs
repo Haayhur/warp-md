@@ -252,7 +252,7 @@ fn schema_and_inspect_source_work() {
     assert!(graph_schema_value["properties"].get("build_plan").is_some());
     assert_eq!(
         warp_build::example_request("random_walk")["schema_version"],
-        "polymer-build.agent.v1"
+        "warp-build.agent.v1"
     );
 
     let (_dir, bundle) = make_bundle_dir("inspect");
@@ -306,7 +306,7 @@ fn schema_and_inspect_source_work() {
 fn validate_rejects_unknown_repeat_unit() {
     let (_dir, bundle) = make_bundle_dir("validate");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "build-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -338,7 +338,7 @@ fn validate_rejects_unknown_repeat_unit() {
 fn validate_rejects_random_copolymer_total_units_mismatch() {
     let (_dir, bundle) = make_bundle_dir("random_validate");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "build-002",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -371,7 +371,7 @@ fn validate_rejects_random_copolymer_total_units_mismatch() {
 fn validate_rejects_missing_seed_for_stochastic_modes() {
     let (_dir, bundle) = make_bundle_dir("random_seed_validate");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "build-seed-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -408,7 +408,7 @@ fn run_build_writes_polymer_artifacts() {
     let charge_manifest = temp_path("charge_manifest.json");
     let topology = temp_path("topology.prmtop");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "build-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -448,7 +448,7 @@ fn run_build_writes_polymer_artifacts() {
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(&build_manifest).expect("read manifest"))
             .expect("parse manifest");
-    assert_eq!(manifest["schema_version"], "polymer-build.manifest.v1");
+    assert_eq!(manifest["schema_version"], "warp-build.manifest.v1");
     assert_eq!(manifest["summary"]["total_repeat_units"], 4);
     assert_eq!(manifest["realization"]["seed"], 12345);
     assert_eq!(manifest["realization"]["seed_policy"], "explicit");
@@ -492,7 +492,7 @@ fn run_sequence_build_resolves_named_termini_tokens() {
     let topology = temp_path("named_termini_topology.prmtop");
     let topology_graph = temp_path("named_termini_topology_graph.json");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "named-termini-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -551,7 +551,7 @@ fn run_sequence_build_resolves_named_termini_tokens() {
     let graph: Value =
         serde_json::from_str(&fs::read_to_string(&topology_graph).expect("read graph"))
             .expect("parse graph");
-    assert_eq!(graph["schema_version"], "polymer-build.topology-graph.v5");
+    assert_eq!(graph["schema_version"], "warp-build.topology-graph.v5");
     assert_eq!(
         graph["build_plan"]["requested_termini"],
         json!({"head": "H", "tail": "T"})
@@ -573,7 +573,7 @@ fn run_block_build_writes_topology_graph() {
     let topology = temp_path("block_topology.prmtop");
     let topology_graph = temp_path("block_topology_graph.json");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "block-build-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -637,7 +637,7 @@ fn run_ensemble_build_writes_member_manifest() {
     let topology_graph = temp_path("ensemble_topology_graph.json");
     let ensemble_manifest = temp_path("ensemble_manifest.json");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "ensemble-build-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -701,7 +701,7 @@ fn validate_accepts_branched_aligned_realization() {
     let build_manifest = temp_path("branched_validate_manifest.json");
     let charge_manifest = temp_path("branched_validate_charge.json");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "branched-validate-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -741,7 +741,7 @@ fn validate_accepts_branched_aligned_realization() {
         "{}",
         serde_json::to_string_pretty(&payload).unwrap()
     );
-    assert_eq!(payload["schema_version"], "polymer-build.agent.v1");
+    assert_eq!(payload["schema_version"], "warp-build.agent.v1");
     assert_eq!(payload["resolved_inputs"]["seed_policy"], "deterministic_default");
     assert_eq!(
         payload["resolved_inputs"]["resolved_termini_policy"],
@@ -777,7 +777,7 @@ fn run_star_and_branched_builds_write_branch_metadata() {
     let star_topology = temp_path("star_topology.prmtop");
     let star_graph = temp_path("star_graph.json");
     let star_request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "star-build-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -841,7 +841,7 @@ fn run_star_and_branched_builds_write_branch_metadata() {
     let branched_topology = temp_path("branched_topology.prmtop");
     let branched_graph = temp_path("branched_graph.json");
     let branched_request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "branched-build-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -929,7 +929,7 @@ fn run_polymer_graph_build_writes_cycle_metadata() {
     let topology = temp_path("graph_topology.prmtop");
     let graph = temp_path("graph_topology.json");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "graph-build-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -993,7 +993,7 @@ fn run_polymer_graph_build_writes_cycle_metadata() {
 fn validate_rejects_unknown_conformer_edge_override() {
     let (_dir, bundle) = make_bundle_dir("graph_override_validate");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "graph-override-001",
         "source_ref": {
             "bundle_id": "pmma_param_bundle_v1",
@@ -1049,7 +1049,7 @@ fn run_fixture_motif_graph_build_emits_motif_instances() {
     let charge_manifest = temp_path("fixture_graph_charge.json");
     let topology_graph = temp_path("fixture_graph_topology.json");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "fixture-graph-001",
         "source_ref": {
             "bundle_id": "pmma_fixture_bundle_v1",
@@ -1099,7 +1099,7 @@ fn run_fixture_motif_graph_build_emits_motif_instances() {
     let graph: Value =
         serde_json::from_str(&fs::read_to_string(&topology_graph).expect("read graph"))
             .expect("parse graph");
-    assert_eq!(graph["schema_version"], "polymer-build.topology-graph.v5");
+    assert_eq!(graph["schema_version"], "warp-build.topology-graph.v5");
     assert_eq!(
         graph["motif_instances"].as_array().map(|items| items.len()),
         Some(1)
@@ -1121,7 +1121,7 @@ fn run_fixture_port_cap_graph_build_applies_default_caps() {
     let charge_manifest = temp_path("fixture_port_caps_charge.json");
     let topology_graph = temp_path("fixture_port_caps_topology.json");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "fixture-port-caps-001",
         "source_ref": {
             "bundle_id": "pmma_port_caps_bundle_v1",
@@ -1160,7 +1160,7 @@ fn run_fixture_port_cap_graph_build_applies_default_caps() {
     let graph: Value =
         serde_json::from_str(&fs::read_to_string(&topology_graph).expect("read graph"))
             .expect("parse graph");
-    assert_eq!(graph["schema_version"], "polymer-build.topology-graph.v5");
+    assert_eq!(graph["schema_version"], "warp-build.topology-graph.v5");
     assert_eq!(
         graph["port_policies"].as_array().map(|items| items.len()),
         Some(2)
@@ -1188,7 +1188,7 @@ fn run_fixture_branched_mix_build_emits_branch_and_port_metadata() {
     let charge_manifest = temp_path("fixture_branched_mix_charge.json");
     let topology_graph = temp_path("fixture_branched_mix_topology.json");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "fixture-branched-mix-001",
         "source_ref": {
             "bundle_id": "pmma_branched_mix_bundle_v1",
@@ -1270,7 +1270,7 @@ fn run_fixture_branched_mix_build_emits_branch_and_port_metadata() {
 fn validate_fixture_bad_motif_bundle_reports_bundle_errors() {
     let (_dir, bundle) = copy_fixture_dir("pmma_bad_motif", "fixture_bad_motif");
     let request = json!({
-        "schema_version": "polymer-build.agent.v1",
+        "schema_version": "warp-build.agent.v1",
         "request_id": "fixture-bad-motif-001",
         "source_ref": {
             "bundle_id": "pmma_bad_motif_bundle_v1",

@@ -35,7 +35,7 @@ pip install maturin
 maturin develop
 python -c "import warp_md; print(warp_md.System)"
 
-# Native polymer builder CLI
+# Native warp-build CLI
 warp-build schema --kind request
 ```
 
@@ -115,6 +115,6 @@ python -m pytest python/warp_md/tests
 - GitBook: [https://warp-md.gitbook.io](https://warp-md.gitbook.io)
 - Local docs index: `docs/README.md`
 - CLI reference: `docs/reference/cli.md`
-- Polymer builder guide: `docs/guides/polymer-builder.md`
+- Warp Build guide: `docs/guides/warp-build.md`
 - Packing guide: `docs/guides/packing.md`
 - Peptide builder guide: `docs/guides/peptide-builder.md`

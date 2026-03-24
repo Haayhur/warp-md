@@ -54,8 +54,9 @@ architect.md
 *inp
 # Public fixture/package exceptions
 !crates/warp-build/tests/fixtures/**/*.json
-!crates/warp-build/tests/fixtures/**/*.pdb
+#!crates/warp-build/tests/fixtures/**/*.pdb
 !crates/warp-build/tests/fixtures/**/*.prmtop
 !python/warp_md/pack/data/*.pdb
 # Local release notes (private workflow docs)
 LOCAL_PUBLIC_RELEASE_PATHWAY.md
+outputs/

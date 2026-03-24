@@ -7,7 +7,7 @@ use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use warp_pack::io::{write_amber_inpcrd, write_output};
+use warp_pack::io::{write_amber_inpcrd, write_minimal_prmtop, write_output, AmberTopology};
 use warp_pack::{geom::center_of_geometry, OutputSpec, PackError, PackResult};
 
 use crate::polymer::{
@@ -33,9 +33,9 @@ use warp_topology_graph::{
 };
 
 pub const SOURCE_BUNDLE_SCHEMA_VERSION: &str = "polymer-param-source.bundle.v1";
-pub const BUILD_SCHEMA_VERSION: &str = "polymer-build.agent.v1";
-pub const BUILD_MANIFEST_VERSION: &str = "polymer-build.manifest.v1";
-const ENSEMBLE_MANIFEST_VERSION: &str = "polymer-build.ensemble-manifest.v1";
+pub const BUILD_SCHEMA_VERSION: &str = "warp-build.agent.v1";
+pub const BUILD_MANIFEST_VERSION: &str = "warp-build.manifest.v1";
+const ENSEMBLE_MANIFEST_VERSION: &str = "warp-build.ensemble-manifest.v1";
 
 const SUPPORTED_TARGET_MODES: &[&str] = &[
     "linear_homopolymer",
@@ -73,6 +73,12 @@ const SUPPORTED_TACTICITY_MODES: &[&str] = &[
     "atactic",
 ];
 const SUPPORTED_TERMINI_POLICIES: &[&str] = &["default", "source_default"];
+const EXAMPLE_BUNDLE_ID: &str = "pmma_param_bundle_v1";
+const EXAMPLE_BUNDLE_PATH: &str = "source.bundle.json";
+const EXAMPLE_SOURCE_COORDINATES: &str = "training.pdb";
+const EXAMPLE_SOURCE_TOPOLOGY: &str = "training.prmtop";
+const EXAMPLE_SOURCE_CHARGE_MANIFEST: &str = "training_charge.json";
+const EXAMPLE_FORCEFIELD_REF: &str = "training.ffxml";
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TrainingContext {
@@ -5207,10 +5213,76 @@ pub fn schema_json(kind: &str) -> PackResult<String> {
     serde_json::to_string_pretty(&value).map_err(|err| PackError::Parse(err.to_string()))
 }
 
+fn example_training_oligomer_pdb() -> &'static str {
+    "ATOM      1  C1  HDA A   1       0.000   0.000   0.000  1.00  0.00           C\n\
+ATOM      2  C2  RPT A   2       3.000   0.000   0.000  1.00  0.00           C\n\
+ATOM      3  C3  TLA A   3       6.000   0.000   0.000  1.00  0.00           C\n\
+END\n"
+}
+
+fn example_training_prmtop() -> AmberTopology {
+    AmberTopology {
+        atom_names: vec!["C1".into(), "C2".into(), "C3".into()],
+        residue_labels: vec!["HDA".into(), "RPT".into(), "TLA".into()],
+        residue_pointers: vec![1, 2, 3],
+        atomic_numbers: vec![6, 6, 6],
+        masses: vec![12.01, 12.01, 12.01],
+        charges: vec![0.5, 1.0, 0.5],
+        atom_type_indices: vec![1, 1, 1],
+        amber_atom_types: vec!["CT".into(), "CT".into(), "CT".into()],
+        radii: vec![1.7, 1.7, 1.7],
+        screen: vec![0.8, 0.8, 0.8],
+        bonds: vec![(0, 1), (1, 2)],
+        bond_type_indices: vec![1, 1],
+        bond_force_constants: vec![310.0],
+        bond_equil_values: vec![1.53],
+        angles: vec![[0, 1, 2]],
+        angle_type_indices: vec![1],
+        angle_force_constants: vec![55.0],
+        angle_equil_values: vec![109.5],
+        dihedrals: Vec::new(),
+        dihedral_type_indices: Vec::new(),
+        dihedral_force_constants: Vec::new(),
+        dihedral_periodicities: Vec::new(),
+        dihedral_phases: Vec::new(),
+        scee_scale_factors: Vec::new(),
+        scnb_scale_factors: Vec::new(),
+        solty: vec![0.0],
+        impropers: Vec::new(),
+        improper_type_indices: Vec::new(),
+        excluded_atoms: vec![vec![2], vec![1, 3], vec![2]],
+        nonbonded_parm_index: vec![1],
+        lennard_jones_acoef: vec![1.0],
+        lennard_jones_bcoef: vec![0.5],
+        lennard_jones_14_acoef: vec![0.8],
+        lennard_jones_14_bcoef: vec![0.4],
+        hbond_acoef: vec![0.0],
+        hbond_bcoef: vec![0.0],
+        hbcut: vec![0.0],
+        tree_chain_classification: vec!["M".into(), "M".into(), "E".into()],
+        join_array: vec![0, 0, 0],
+        irotat: vec![0, 0, 0],
+        solvent_pointers: Vec::new(),
+        atoms_per_molecule: Vec::new(),
+        box_dimensions: Vec::new(),
+        radius_set: Some("modified Bondi radii".into()),
+        ipol: 0,
+    }
+}
+
+fn example_charge_manifest() -> Value {
+    json!({
+        "version": CHARGE_MANIFEST_VERSION,
+        "head_charge_e": 0.5,
+        "repeat_charge_e": 1.0,
+        "tail_charge_e": 0.5,
+    })
+}
+
 pub fn example_bundle() -> Value {
     json!({
         "schema_version": SOURCE_BUNDLE_SCHEMA_VERSION,
-        "bundle_id": "pmma_param_bundle_v1",
+        "bundle_id": EXAMPLE_BUNDLE_ID,
         "training_context": {
             "mode": "oligomer_training",
             "training_oligomer_n": 3,
@@ -5264,10 +5336,10 @@ pub fn example_bundle() -> Value {
                 "anchor_atoms": [{"scope": "unit", "selector": "name C1"}]
             },
             "pmma_head": {
-                "attach_atom": {"scope": "unit", "selector": "name C1"},
+                "attach_atom": {"scope": "unit", "selector": "name C2"},
                 "leaving_atoms": [],
                 "bond_order": 1,
-                "anchor_atoms": [{"scope": "unit", "selector": "name C1"}]
+                "anchor_atoms": [{"scope": "unit", "selector": "name C2"}]
             },
             "pmma_tail": {
                 "attach_atom": {"scope": "unit", "selector": "name C2"},
@@ -5294,16 +5366,58 @@ pub fn example_bundle() -> Value {
             "charge_transfer_supported": true
         },
         "artifacts": {
-            "source_coordinates": "pmma_trimer.pdb",
-            "source_topology_ref": "pmma_trimer.prmtop",
-            "forcefield_ref": "pmma_polymer.ffxml",
-            "source_charge_manifest": "pmma_trimer_charge.json"
+            "source_coordinates": EXAMPLE_SOURCE_COORDINATES,
+            "source_topology_ref": EXAMPLE_SOURCE_TOPOLOGY,
+            "forcefield_ref": EXAMPLE_FORCEFIELD_REF,
+            "source_charge_manifest": EXAMPLE_SOURCE_CHARGE_MANIFEST
         },
         "charge_model": {}
     })
 }
 
-pub fn example_request(mode: &str) -> Value {
+pub fn write_example_bundle(path: &str) -> Result<Value, String> {
+    let bundle = example_bundle();
+    let bundle_path = Path::new(path);
+    if let Some(parent) = bundle_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    fs::write(
+        bundle_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&bundle).map_err(|err| err.to_string())?
+        ),
+    )
+    .map_err(|err| err.to_string())?;
+    let outdir = bundle_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::write(
+        outdir.join(EXAMPLE_SOURCE_COORDINATES),
+        example_training_oligomer_pdb(),
+    )
+    .map_err(|err| err.to_string())?;
+    write_minimal_prmtop(
+        outdir
+            .join(EXAMPLE_SOURCE_TOPOLOGY)
+            .to_string_lossy()
+            .as_ref(),
+        &example_training_prmtop(),
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        outdir.join(EXAMPLE_SOURCE_CHARGE_MANIFEST),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&example_charge_manifest())
+                .map_err(|err| err.to_string())?
+        ),
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(outdir.join(EXAMPLE_FORCEFIELD_REF), "<ForceField/>\n")
+        .map_err(|err| err.to_string())?;
+    Ok(bundle)
+}
+
+pub fn example_request_for_bundle(mode: &str, bundle_path: &str) -> Value {
     let (target, realization) = match mode {
         "sequence" => (
             json!({
@@ -5439,13 +5553,12 @@ pub fn example_request(mode: &str) -> Value {
                 "graph_root": "n1",
                 "graph_nodes": [
                     {"id": "n1", "token": "A"},
-                    {"id": "n2", "token": "M2"},
+                    {"id": "n2", "token": "B"},
                     {"id": "n3", "token": "A"}
                 ],
                 "graph_edges": [
-                    {"id": "e1", "from": "n1", "to": "n2", "from_junction": "head", "to_junction": "head", "bond_order": 1},
+                    {"id": "e1", "from": "n1", "to": "n2", "from_junction": "tail", "to_junction": "head", "bond_order": 1},
                     {"id": "e2", "from": "n2", "to": "n3", "from_junction": "tail", "to_junction": "head", "bond_order": 1},
-                    {"id": "e3", "from": "n3", "to": "n1", "from_junction": "tail", "to_junction": "tail", "bond_order": 1}
                 ],
                 "termini": {"head": "default", "tail": "default"},
                 "stereochemistry": {"mode": "inherit"}
@@ -5478,9 +5591,8 @@ pub fn example_request(mode: &str) -> Value {
         "schema_version": BUILD_SCHEMA_VERSION,
         "request_id": "pmma-build-50mer-001",
         "source_ref": {
-            "bundle_id": "pmma_param_bundle_v1",
-            "bundle_path": "pmma_param_bundle.json",
-            "bundle_digest": "sha256:..."
+            "bundle_id": EXAMPLE_BUNDLE_ID,
+            "bundle_path": bundle_path,
         },
         "target": target,
         "realization": {
@@ -5508,15 +5620,7 @@ pub fn example_request(mode: &str) -> Value {
         } else {
             None
         },
-        "port_cap_overrides": if mode == "graph" || mode == "polymer_graph" {
-            vec![json!({
-                "node_id": "n2",
-                "port": "tail",
-                "cap": {"token": "T", "junction": "head"}
-            })]
-        } else {
-            Vec::<Value>::new()
-        },
+        "port_cap_overrides": Vec::<Value>::new(),
         "artifacts": {
             "coordinates": "pmma_50mer.pdb",
             "raw_coordinates": "pmma_50mer.raw.pdb",
@@ -5528,6 +5632,10 @@ pub fn example_request(mode: &str) -> Value {
             "ensemble_manifest": ensemble_manifest
         }
     })
+}
+
+pub fn example_request(mode: &str) -> Value {
+    example_request_for_bundle(mode, EXAMPLE_BUNDLE_PATH)
 }
 
 pub fn capabilities() -> Value {
@@ -5692,7 +5800,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 json!(ErrorEnvelope {
                     schema_version: BUILD_SCHEMA_VERSION.into(),
                     status: "error".into(),
-                    request_id: "polymer-build".into(),
+                    request_id: "warp-build".into(),
                     errors: vec![err],
                     warnings: vec![],
                 }),

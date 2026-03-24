@@ -12,6 +12,7 @@ from .cli_api import (
     DipoleAlignmentPlan,
     EndToEndPlan,
     EquipartitionPlan,
+    FreeVolumePlan,
     HbondPlan,
     IonPairCorrelationPlan,
     MsdPlan,
@@ -236,6 +237,21 @@ def _build_water_count(system: System, spec: Dict[str, Any]):
     if "shift" in kwargs:
         kwargs["shift"] = _as_tuple(kwargs["shift"], 3, "shift")
     return WaterCountPlan(water_sel, center_sel, **kwargs)
+
+
+def _build_free_volume(system: System, spec: Dict[str, Any]):
+    sel = _select(system, spec.get("selection"), "free_volume.selection")
+    center_sel = _select(system, spec.get("center_selection"), "free_volume.center_selection")
+    box_unit = spec.get("box_unit")
+    region_size = spec.get("region_size")
+    kwargs = _pick(spec, ["probe_radius", "shift", "length_scale"])
+    if box_unit is not None:
+        kwargs["box_unit"] = _as_tuple(box_unit, 3, "box_unit")
+    if region_size is not None:
+        kwargs["region_size"] = _as_tuple(region_size, 3, "region_size")
+    if "shift" in kwargs:
+        kwargs["shift"] = _as_tuple(kwargs["shift"], 3, "shift")
+    return FreeVolumePlan(sel, center_sel, **kwargs)
 
 
 def _build_equipartition(system: System, spec: Dict[str, Any]):
@@ -471,6 +487,7 @@ PLAN_BUILDERS = {
     "ion_pair_correlation": _build_ion_pair,
     "structure_factor": _build_structure_factor,
     "water_count": _build_water_count,
+    "free_volume": _build_free_volume,
     "equipartition": _build_equipartition,
     "hbond": _build_hbond,
     "rdf": _build_rdf,
@@ -513,6 +530,7 @@ CLI_TO_PLAN = {
     "ion-pair-correlation": "ion_pair_correlation",
     "structure-factor": "structure_factor",
     "water-count": "water_count",
+    "free-volume": "free_volume",
     "equipartition": "equipartition",
     "hbond": "hbond",
     "rdf": "rdf",

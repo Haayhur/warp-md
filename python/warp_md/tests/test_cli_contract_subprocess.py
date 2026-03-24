@@ -94,6 +94,9 @@ def test_subprocess_list_plans_json_details() -> None:
     rg_plan = next(item for item in payload["plans"] if item["name"] == "rg")
     assert "arguments" in rg_plan
     assert any("--selection" in arg["flags"] for arg in rg_plan["arguments"])
+    ffv_plan = next(item for item in payload["plans"] if item["name"] == "free_volume")
+    assert ffv_plan["plan"] == "free-volume"
+    assert any("--probe-radius" in arg["flags"] for arg in ffv_plan["arguments"])
 
 
 def test_subprocess_list_plans_json_alias_details() -> None:

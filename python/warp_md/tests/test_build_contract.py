@@ -16,7 +16,7 @@ def test_schema_json_forwards_subcommand(monkeypatch) -> None:
         return subprocess.CompletedProcess(
             cmd,
             0,
-            json.dumps({"schema_version": "polymer-build.agent.v1"}),
+            json.dumps({"schema_version": "warp-build.agent.v1"}),
             "",
         )
 
@@ -25,7 +25,7 @@ def test_schema_json_forwards_subcommand(monkeypatch) -> None:
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     payload = build_contract.schema_json("request")
-    assert payload["schema_version"] == "polymer-build.agent.v1"
+    assert payload["schema_version"] == "warp-build.agent.v1"
     assert calls["cmd"] == ["warp-build", "schema", "--kind", "request"]
 
 
@@ -49,6 +49,21 @@ def test_example_and_bundle_endpoints(monkeypatch) -> None:
     assert example["mode"] == "extended"
     assert bundle["version"] == "bundle"
     assert isinstance(caps, dict)
+
+
+def test_write_example_bundle_materializes_from_cli(monkeypatch, tmp_path: Path) -> None:
+    out = tmp_path / "source.bundle.json"
+
+    def fake_run(cmd, capture_output, text, check):  # type: ignore[override]
+        out.write_text(json.dumps({"bundle_id": "pmma_param_bundle_v1"}), encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, str(out), "")
+
+    monkeypatch.setattr(build_contract, "_native", lambda: None)
+    monkeypatch.setattr(build_contract, "_binary", lambda: "warp-build")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    payload = build_contract.write_example_bundle(out)
+    assert payload["bundle_id"] == "pmma_param_bundle_v1"
 
 
 def test_capabilities_endpoints(monkeypatch) -> None:
@@ -94,7 +109,7 @@ def test_inspect_source_passes_source_path(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_validate_request_writes_payload_file(monkeypatch) -> None:
-    payload = {"version": "polymer-build.agent.v1"}
+    payload = {"version": "warp-build.agent.v1"}
     request_payload: dict[str, Any] = {}
 
     def fake_run(cmd, capture_output, text, check):  # type: ignore[override]
@@ -118,7 +133,7 @@ def test_validate_request_writes_payload_file(monkeypatch) -> None:
 
 def test_run_build_request_supports_stream_flag(monkeypatch) -> None:
     calls = {"cmd": None}
-    payload = {"version": "polymer-build.agent.v1"}
+    payload = {"version": "warp-build.agent.v1"}
 
     def fake_run(cmd, capture_output, text, check):  # type: ignore[override]
         calls["cmd"] = cmd

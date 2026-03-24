@@ -30,6 +30,7 @@ def test_list_plans_json() -> None:
     payload = json.loads(result.stdout)
     assert "plans" in payload
     assert "rg" in payload["plans"]
+    assert "free_volume" in payload["plans"]
 
 
 def test_list_plans_json_alias() -> None:

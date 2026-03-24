@@ -161,6 +161,67 @@ impl PyVolmapPlan {
 
 
 #[pyclass]
+struct PyFreeVolumePlan {
+    plan: RefCell<FreeVolumePlan>,
+}
+
+#[pymethods]
+impl PyFreeVolumePlan {
+    #[new]
+    #[pyo3(signature = (selection, center_selection, box_unit=None, region_size=None, probe_radius=None, shift=None, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        center_selection: &PySelection,
+        box_unit: Option<(f64, f64, f64)>,
+        region_size: Option<(f64, f64, f64)>,
+        probe_radius: Option<f64>,
+        shift: Option<(f64, f64, f64)>,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let box_unit_arr = box_unit.map(|v| [v.0, v.1, v.2]);
+        let region_size_arr = region_size.map(|v| [v.0, v.1, v.2]);
+
+        let mut plan = FreeVolumePlan::new(
+            selection.selection.clone(),
+            center_selection.selection.clone(),
+            box_unit_arr,
+            region_size_arr,
+        );
+        if let Some(radius) = probe_radius {
+            plan = plan.with_probe_radius(radius);
+        }
+        if let Some(shift) = shift {
+            plan = plan.with_shift([shift.0, shift.1, shift.2]);
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
+        match output {
+            PlanOutput::Grid(output) => grid_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+
+#[pyclass]
 struct PyEquipartitionPlan {
     plan: RefCell<EquipartitionPlan>,
 }
