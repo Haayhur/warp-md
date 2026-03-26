@@ -148,7 +148,23 @@ fn write_output_formats() {
     assert!(pdb_text.contains("CRYST1"));
     assert!(pdb_text.contains("CONECT"));
     assert!(pdb_text.contains("TER"));
+    let atom_line = pdb_text
+        .lines()
+        .find(|line| line.starts_with("ATOM") || line.starts_with("HETATM"))
+        .expect("strict pdb atom line");
+    assert!(atom_line.len() >= 78);
     let _ = fs::remove_file(&pdb_path);
+
+    let pdb_strict_path = temp_path("out_strict.pdb");
+    let pdb_strict_spec = OutputSpec {
+        path: pdb_strict_path.to_string_lossy().to_string(),
+        format: "pdb-strict".into(),
+        scale: Some(1.0),
+    };
+    write_output(&out, &pdb_strict_spec, true, 0.0, true, false).expect("pdb strict write");
+    let pdb_strict_text = fs::read_to_string(&pdb_strict_path).expect("pdb strict read");
+    assert!(pdb_strict_text.contains("CONECT"));
+    let _ = fs::remove_file(&pdb_strict_path);
 
     let xyz_path = temp_path("out.xyz");
     let xyz_spec = OutputSpec {
@@ -220,4 +236,20 @@ fn write_output_formats() {
     let crd_text = fs::read_to_string(&crd_path).expect("crd read");
     assert!(crd_text.contains("* TITLE"));
     let _ = fs::remove_file(&crd_path);
+}
+
+#[test]
+fn pdb_strict_rejects_long_residue_names() {
+    let mut out = sample_output();
+    out.atoms[0].resname = "pes_8mer_029".into();
+    let pdb_path = temp_path("out_strict_invalid_resname.pdb");
+    let pdb_spec = OutputSpec {
+        path: pdb_path.to_string_lossy().to_string(),
+        format: "pdb-strict".into(),
+        scale: Some(1.0),
+    };
+    let err = write_output(&out, &pdb_spec, false, 0.0, false, false).expect_err("strict pdb should reject long residue names");
+    assert!(err
+        .to_string()
+        .contains("pdb-strict residue name 'pes_8mer_029' exceeds 3 characters"));
 }

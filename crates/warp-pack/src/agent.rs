@@ -45,6 +45,23 @@ const SUPPORTED_MORPHOLOGY_MODES: &[&str] = &[
     "amorphous_bulk",
     "backbone_aligned_bulk",
 ];
+const SUPPORTED_OUTPUT_FORMATS: &[&str] = &[
+    "pdb",
+    "pdb-strict",
+    "pdbx",
+    "cif",
+    "mmcif",
+    "gro",
+    "lammps",
+    "lammps-data",
+    "lmp",
+    "mol2",
+    "crd",
+    "inpcrd",
+    "rst",
+    "rst7",
+    "xyz",
+];
 
 const AVOGADRO: f64 = 6.022_140_76e23;
 const ANGSTROM3_TO_LITER: f64 = 1.0e-27;
@@ -176,6 +193,16 @@ pub struct EnvironmentRequest {
 pub struct OutputRequest {
     pub coordinates: String,
     pub manifest: String,
+    #[serde(default)]
+    pub md_package: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default = "default_write_conect")]
+    #[schemars(default = "default_write_conect")]
+    pub write_conect: bool,
+    #[serde(default = "default_preserve_topology_graph")]
+    #[schemars(default = "default_preserve_topology_graph")]
+    pub preserve_topology_graph: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -212,6 +239,8 @@ pub struct ErrorDetail {
 pub struct ArtifactEnvelope {
     pub coordinates: String,
     pub manifest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub md_package: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -383,6 +412,14 @@ fn default_cubic() -> String {
 
 fn default_none() -> String {
     "none".to_string()
+}
+
+fn default_write_conect() -> bool {
+    true
+}
+
+fn default_preserve_topology_graph() -> bool {
+    true
 }
 
 fn default_na() -> String {
@@ -597,6 +634,15 @@ fn supported_topology_graph_version(version: &str) -> bool {
     matches!(version, "warp-build.topology-graph.v5")
 }
 
+fn manifest_string_path(manifest: &Value, pointers: &[&str]) -> Option<String> {
+    pointers.iter().find_map(|pointer| {
+        manifest
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    })
+}
+
 fn load_polymer_build_handoff(
     handoff: &PolymerBuildArtifactRef,
 ) -> Result<LoadedPolymerBuildHandoff, ErrorDetail> {
@@ -651,27 +697,27 @@ fn load_polymer_build_handoff(
         )
     })?;
     let charge_manifest_path = handoff.charge_manifest.clone().or_else(|| {
-        manifest
-            .pointer("/artifacts/charge_manifest")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
+        manifest_string_path(
+            &manifest,
+            &["/artifacts/charge_manifest", "/md_ready_handoff/charge_manifest"],
+        )
     });
     let topology = handoff.topology.clone().or_else(|| {
-        manifest
-            .pointer("/artifacts/topology")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
+        manifest_string_path(
+            &manifest,
+            &["/artifacts/topology", "/md_ready_handoff/topology"],
+        )
     });
     let topology_graph_path = handoff.topology_graph.clone().or_else(|| {
-        manifest
-            .pointer("/artifacts/topology_graph")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
+        manifest_string_path(
+            &manifest,
+            &["/artifacts/topology_graph", "/md_ready_handoff/topology_graph"],
+        )
     });
-    let forcefield_ref = manifest
-        .pointer("/artifacts/forcefield_ref")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
+    let forcefield_ref = manifest_string_path(
+        &manifest,
+        &["/artifacts/forcefield_ref", "/md_ready_handoff/forcefield_ref"],
+    );
     let topology_graph_path = topology_graph_path
         .as_deref()
         .map(|path| resolve_relative(&handoff.build_manifest, path));
@@ -766,6 +812,33 @@ fn infer_output_format(path: &str) -> String {
         .and_then(|value| value.to_str())
         .unwrap_or("pdb")
         .to_ascii_lowercase()
+}
+
+fn resolved_output_format(outputs: &OutputRequest) -> String {
+    outputs
+        .format
+        .clone()
+        .unwrap_or_else(|| infer_output_format(&outputs.coordinates))
+}
+
+fn default_md_package_path(manifest_path: &str) -> String {
+    let path = Path::new(manifest_path);
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("system_manifest");
+    parent
+        .join(format!("{stem}.md-ready.json"))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn resolved_md_package_path(outputs: &OutputRequest) -> String {
+    outputs
+        .md_package
+        .clone()
+        .unwrap_or_else(|| default_md_package_path(&outputs.manifest))
 }
 
 fn water_template_path(model: &str) -> String {
@@ -863,6 +936,22 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
             "E_CONFIG_VALIDATION",
             Some("/outputs/manifest".into()),
             "outputs.coordinates and outputs.manifest must differ",
+        ));
+    }
+    let resolved_format = resolved_output_format(&req.outputs);
+    if !SUPPORTED_OUTPUT_FORMATS.contains(&resolved_format.as_str()) {
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("/outputs/format".into()),
+            format!("unsupported output format '{resolved_format}'"),
+        ));
+    }
+    let md_package = resolved_md_package_path(&req.outputs);
+    if md_package == req.outputs.coordinates || md_package == req.outputs.manifest {
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("/outputs/md_package".into()),
+            "outputs.md_package must differ from outputs.coordinates and outputs.manifest",
         ));
     }
 
@@ -2396,6 +2485,39 @@ fn resolve_polymer_build_component(
         .cloned()
         .unwrap_or(Value::Null);
     let (mol, context) = load_solute_context(&loaded.coordinates_path, loaded.topology.as_deref())?;
+    let source_structure_path = loaded
+        .manifest
+        .pointer("/resolved_inputs/resolved_source_artifacts/coordinates")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let source_topology_path = loaded
+        .manifest
+        .pointer("/resolved_inputs/resolved_source_artifacts/topology")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let source_sequence_tokens = build_summary
+        .get("resolved_sequence")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let template_sequence_resnames = build_summary
+        .get("template_sequence_resnames")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let applied_residue_resnames = build_summary
+        .get("applied_residue_resnames")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let chain_instance_mapping = (0..count)
+        .map(|copy_idx| {
+            let packed_start = copy_idx * context.chain_count + 1;
+            let packed_end = packed_start + context.chain_count.saturating_sub(1);
+            json!({
+                "copy_index": copy_idx + 1,
+                "source_chain_indices": (1..=context.chain_count).collect::<Vec<_>>(),
+                "packed_chain_indices": (packed_start..=packed_end).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
     if let Some(graph) = loaded.topology_graph.as_ref() {
         let residue_count = mol
             .atoms
@@ -2459,6 +2581,11 @@ fn resolve_polymer_build_component(
             "connectivity_hint": "polymer_build_handoff",
             "parameter_source": "warp-build.agent.v1",
             "forcefield_ref": loaded.forcefield_ref,
+            "source_structure_path": source_structure_path,
+            "source_topology_path": source_topology_path,
+            "source_sequence_tokens": source_sequence_tokens,
+            "template_sequence_resnames": template_sequence_resnames,
+            "applied_residue_resnames": applied_residue_resnames,
         }),
         built_artifact: Some(json!({
             "path": loaded.coordinates_path.clone(),
@@ -2469,6 +2596,9 @@ fn resolve_polymer_build_component(
             "seed": build_realization.get("seed").cloned().unwrap_or(Value::Null),
             "source_bundle": source_bundle.clone(),
             "forcefield_ref": loaded.forcefield_ref.clone(),
+            "source_sequence_tokens": source_sequence_tokens.clone(),
+            "template_sequence_resnames": template_sequence_resnames.clone(),
+            "applied_residue_resnames": applied_residue_resnames.clone(),
         })),
         polymer_build_handoff: Some(json!({
             "build_manifest": loaded.manifest_path.clone(),
@@ -2485,6 +2615,14 @@ fn resolve_polymer_build_component(
             "forcefield_ref": loaded.forcefield_ref.clone(),
             "source_bundle": source_bundle.clone(),
             "summary": build_summary.clone(),
+            "source_structure_path": source_structure_path,
+            "source_topology_path": source_topology_path,
+            "source_sequence_tokens": source_sequence_tokens,
+            "template_sequence_resnames": template_sequence_resnames,
+            "applied_residue_resnames": applied_residue_resnames,
+            "copy_count": count,
+            "source_chain_count_per_copy": context.chain_count,
+            "chain_instance_mapping": chain_instance_mapping,
         })),
         polymer_artifact: Some(json!({
             "build_manifest": loaded.manifest_path.clone(),
@@ -2922,7 +3060,7 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
         write_crd: None,
         output: Some(OutputSpec {
             path: req.outputs.coordinates.clone(),
-            format: infer_output_format(&req.outputs.coordinates),
+            format: resolved_output_format(&req.outputs),
             scale: Some(1.0),
         }),
     };
@@ -2958,6 +3096,7 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
                 "connectivity_hint": component.connectivity_hint,
                 "parameter_source": component.parameter_source,
                 "aligned_euler": component.fixed_rotation_euler,
+                "polymer_md_handoff": component.polymer_build_handoff,
             })
         })
         .collect::<Vec<_>>();
@@ -3020,7 +3159,10 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
                     "net_charge_before_neutralization": net_charge_before_neutralization,
                     "neutralization_policy": neutralization_policy,
                 },
-                "output_format": infer_output_format(&req.outputs.coordinates),
+                "output_format": resolved_output_format(&req.outputs),
+                "write_conect": req.outputs.write_conect,
+                "preserve_topology_graph": req.outputs.preserve_topology_graph,
+                "md_package": resolved_md_package_path(&req.outputs),
                 "charge_sources": {
                     "manifest_paths": charge_manifest_paths,
                     "source_kinds": charge_source_kinds,
@@ -3039,6 +3181,8 @@ fn build_manifest(
     cfg: &PackConfig,
     metadata: &TranslationMetadata,
     total_atoms: usize,
+    md_package_path: &str,
+    md_package_digest: Option<String>,
 ) -> PackResult<Value> {
     let request_value =
         serde_json::to_value(req).map_err(|err| PackError::Parse(err.to_string()))?;
@@ -3072,6 +3216,7 @@ fn build_manifest(
     });
     let artifact_digests = json!({
         "coordinates": sha256_file(Path::new(&req.outputs.coordinates)).ok(),
+        "md_package": md_package_digest,
         "component_inputs": component_input_digests,
     });
     let engine_decisions = json!({
@@ -3117,6 +3262,7 @@ fn build_manifest(
         "source_solute_artifact": metadata.source_solute_artifact,
         "built_solute_artifact": metadata.built_solute_artifact,
         "polymer_build_handoff": metadata.polymer_build_handoff,
+        "md_ready_polymer_handoff": metadata.polymer_build_handoff,
         "polymer_artifact": metadata.polymer_artifact,
         "polymer_controls": metadata.polymer_controls,
         "charge_manifest_path": metadata.charge_manifest_path,
@@ -3154,16 +3300,29 @@ fn build_manifest(
         "output_metadata": {
             "coordinates": {
                 "path": req.outputs.coordinates,
-                "format": infer_output_format(&req.outputs.coordinates),
+                "format": resolved_output_format(&req.outputs),
+                "write_conect": req.outputs.write_conect,
             },
             "manifest": {
                 "path": req.outputs.manifest,
                 "format": "json",
+            },
+            "md_package": {
+                "path": md_package_path,
+                "format": "json",
+                "preserve_topology_graph": req.outputs.preserve_topology_graph,
             }
         },
         "artifact_digests": artifact_digests,
         "engine_decisions": engine_decisions,
-        "outputs": req.outputs,
+        "outputs": {
+            "coordinates": req.outputs.coordinates,
+            "manifest": req.outputs.manifest,
+            "md_package": md_package_path,
+            "format": resolved_output_format(&req.outputs),
+            "write_conect": req.outputs.write_conect,
+            "preserve_topology_graph": req.outputs.preserve_topology_graph,
+        },
         "provenance": provenance,
         "summary": {
             "component_count": component_count(metadata),
@@ -3172,6 +3331,55 @@ fn build_manifest(
             "ion_counts": metadata.ion_counts,
         },
     }))
+}
+
+fn build_md_ready_package(
+    req: &BuildRequest,
+    metadata: &TranslationMetadata,
+    md_package_path: &str,
+) -> Value {
+    let preserved_topology_graphs = if req.outputs.preserve_topology_graph {
+        metadata
+            .component_inventory
+            .iter()
+            .filter_map(|item| item.get("topology_graph").cloned())
+            .filter(|value| !value.is_null())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    json!({
+        "schema_version": "warp-md.md-ready-package.v1",
+        "run_id": req.run_id,
+        "coordinates": {
+            "path": req.outputs.coordinates,
+            "format": resolved_output_format(&req.outputs),
+            "write_conect": req.outputs.write_conect,
+        },
+        "pack_manifest": {
+            "path": req.outputs.manifest,
+        },
+        "md_package_path": md_package_path,
+        "preserve_topology_graph": req.outputs.preserve_topology_graph,
+        "topology_graphs": preserved_topology_graphs,
+        "polymer_build_handoff": if req.outputs.preserve_topology_graph {
+            metadata.polymer_build_handoff.clone()
+        } else {
+            None
+        },
+        "component_inventory": metadata.component_inventory,
+        "md_engine_helpers": {
+            "openmm": {
+                "coordinates": req.outputs.coordinates,
+                "pack_manifest": req.outputs.manifest,
+                "polymer_build_handoff": if req.outputs.preserve_topology_graph {
+                    metadata.polymer_build_handoff.clone()
+                } else {
+                    None
+                },
+            }
+        }
+    })
 }
 
 fn validate_warnings(req: &BuildRequest) -> PackResult<Vec<ErrorDetail>> {
@@ -3227,6 +3435,10 @@ fn resolved_inputs(req: &BuildRequest) -> PackResult<Value> {
         } else {
             Value::Array(graph_versions.into_iter().map(Value::String).collect())
         },
+        "output_format": resolved_output_format(&req.outputs),
+        "md_package": resolved_md_package_path(&req.outputs),
+        "write_conect": req.outputs.write_conect,
+        "preserve_topology_graph": req.outputs.preserve_topology_graph,
         "charge_source_kind": if charge_source_kinds.len() == 1 {
             charge_source_kinds.iter().next().cloned().map(Value::String).unwrap_or(Value::Null)
         } else if charge_source_kinds.is_empty() {
@@ -3296,7 +3508,14 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
                 "ions": {"neutralize": true, "salt_molar": 0.15, "cation": "Na+", "anion": "Cl-"},
                 "morphology": {"mode": "single_chain_solution"},
             },
-            "outputs": {"coordinates": "outputs/system.pdb", "manifest": "outputs/system_manifest.json"},
+            "outputs": {
+                "coordinates": "outputs/system.pdb",
+                "manifest": "outputs/system_manifest.json",
+                "md_package": "outputs/system_manifest.md-ready.json",
+                "format": "pdb-strict",
+                "write_conect": true,
+                "preserve_topology_graph": true
+            },
         })),
         "polymer_build_handoff" => Ok(json!({
             "schema_version": AGENT_SCHEMA_VERSION,
@@ -3313,7 +3532,11 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             },
             "outputs": {
                 "coordinates": "outputs/polymer_50mer_solvated.pdb",
-                "manifest": "outputs/polymer_50mer_solvated_manifest.json"
+                "manifest": "outputs/polymer_50mer_solvated_manifest.json",
+                "md_package": "outputs/polymer_50mer_solvated_manifest.md-ready.json",
+                "format": "pdb-strict",
+                "write_conect": true,
+                "preserve_topology_graph": true
             },
         })),
         "components_amorphous_bulk" => Ok(json!({
@@ -3351,7 +3574,11 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             },
             "outputs": {
                 "coordinates": "outputs/components_bulk.pdb",
-                "manifest": "outputs/components_bulk_manifest.json"
+                "manifest": "outputs/components_bulk_manifest.json",
+                "md_package": "outputs/components_bulk_manifest.md-ready.json",
+                "format": "pdb-strict",
+                "write_conect": true,
+                "preserve_topology_graph": true
             },
         })),
         "components_backbone_aligned_bulk" => Ok(json!({
@@ -3377,7 +3604,11 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             },
             "outputs": {
                 "coordinates": "outputs/components_aligned_bulk.pdb",
-                "manifest": "outputs/components_aligned_bulk_manifest.json"
+                "manifest": "outputs/components_aligned_bulk_manifest.json",
+                "md_package": "outputs/components_aligned_bulk_manifest.md-ready.json",
+                "format": "pdb-strict",
+                "write_conect": true,
+                "preserve_topology_graph": true
             },
         })),
         _ => Err(PackError::Invalid(
@@ -3395,6 +3626,8 @@ pub fn capabilities() -> Value {
         "supported_ion_species": SUPPORTED_ION_SPECIES,
         "supported_morphology_modes": SUPPORTED_MORPHOLOGY_MODES,
         "supported_charge_sources": ["charge_manifest", "prmtop"],
+        "supported_output_formats": SUPPORTED_OUTPUT_FORMATS,
+        "supported_output_controls": ["format", "write_conect", "preserve_topology_graph", "md_package"],
         "supported_polymer_build_handoff_artifacts": ["build_manifest", "coordinates", "charge_manifest", "topology", "topology_graph"],
         "schema_targets": ["request", "result", "event"],
         "polymer_build_supported": true,
@@ -3638,7 +3871,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 .ok_or_else(|| PackError::Invalid("missing output spec".into()))?,
             false,
             0.0,
-            true,
+            req.outputs.write_conect,
             false,
         )?;
 
@@ -3687,7 +3920,26 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             stream_ndjson,
         );
 
-        let manifest = build_manifest(&req, &cfg, &metadata, packed.atoms.len())?;
+        let md_package_path = resolved_md_package_path(&req.outputs);
+        let md_package = build_md_ready_package(&req, &metadata, &md_package_path);
+        ensure_parent(&md_package_path)?;
+        fs::write(
+            &md_package_path,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&md_package)
+                    .map_err(|err| PackError::Parse(err.to_string()))?
+            ),
+        )?;
+        let md_package_digest = sha256_file(Path::new(&md_package_path)).ok();
+        let manifest = build_manifest(
+            &req,
+            &cfg,
+            &metadata,
+            packed.atoms.len(),
+            &md_package_path,
+            md_package_digest,
+        )?;
         ensure_parent(&req.outputs.manifest)?;
         fs::write(
             &req.outputs.manifest,
@@ -3717,6 +3969,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             artifacts: ArtifactEnvelope {
                 coordinates: req.outputs.coordinates.clone(),
                 manifest: req.outputs.manifest.clone(),
+                md_package: Some(md_package_path.clone()),
             },
             summary: RunSummary {
                 component_count: component_count(&metadata),

@@ -53,7 +53,10 @@ impl FreeVolumePlan {
     }
 
     /// Compute bounding box from selection positions
-    fn compute_bounding_box(system: &System, selection: &Selection) -> Option<(f64, f64, f64, f64, f64, f64)> {
+    fn compute_bounding_box(
+        system: &System,
+        selection: &Selection,
+    ) -> Option<(f64, f64, f64, f64, f64, f64)> {
         let positions = system.positions0.as_ref()?;
         if positions.is_empty() {
             return None;
@@ -189,17 +192,9 @@ impl Plan for FreeVolumePlan {
             // Compute bounding box from center_selection
             match Self::compute_bounding_box(system, &self.center_selection) {
                 Some((min_x, min_y, min_z, max_x, max_y, max_z)) => {
-                    let size = [
-                        max_x - min_x,
-                        max_y - min_y,
-                        max_z - min_z,
-                    ];
+                    let size = [max_x - min_x, max_y - min_y, max_z - min_z];
                     // Ensure minimum size of 1.0 Å in each dimension
-                    [
-                        size[0].max(1.0),
-                        size[1].max(1.0),
-                        size[2].max(1.0),
-                    ]
+                    [size[0].max(1.0), size[1].max(1.0), size[2].max(1.0)]
                 }
                 None => {
                     return Err(TrajError::Mismatch(

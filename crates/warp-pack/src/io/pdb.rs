@@ -70,7 +70,11 @@ pub fn write_pdb(
     box_sides_fix: f32,
     write_conect: bool,
     hexadecimal_indices: bool,
+    strict_fields: bool,
 ) -> PackResult<()> {
+    if strict_fields {
+        validate_strict_pdb_output(out, hexadecimal_indices)?;
+    }
     let file = File::create(path)?;
     let mut file = BufWriter::new(file);
     if add_box_sides {
@@ -90,33 +94,43 @@ pub fn write_pdb(
     for (i, atom) in out.atoms.iter().enumerate() {
         let idx = i + 1;
         let pos = atom.position.scale(scale);
-        let segid = if atom.segid.is_empty() {
-            "    ".to_string()
-        } else {
-            format!("{:>4}", atom.segid.chars().take(4).collect::<String>())
-        };
         let record = match atom.record_kind {
             AtomRecordKind::Atom => "ATOM  ",
             AtomRecordKind::HetAtom => "HETATM",
         };
         let idx_str = format_atom_id(idx, hexadecimal_indices);
         let resid_str = format_res_id(atom.resid, hexadecimal_indices);
+        let atom_name = format_atom_name(&atom.name);
+        let resname = truncate_right(&atom.resname, 3);
+        let chain = if atom.chain == ' ' { 'A' } else { atom.chain };
+        let element = format_element(&atom.element);
         let line = format!(
-            "{record}{idx:>5} {name:<4} {resname:>3} {chain}{resid:>4}    {x:>8.3}{y:>8.3}{z:>8.3}           {segid}\n",
+            "{record}{idx:>5} {name}{alt}{resname:>3} {chain}{resid:>4}{icode}   {x:>8.3}{y:>8.3}{z:>8.3}{occ:>6.2}{temp:>6.2}          {element:>2}  \n",
             record = record,
             idx = idx_str,
-            name = atom.name,
-            resname = atom.resname,
-            chain = atom.chain,
+            name = atom_name,
+            alt = " ",
+            resname = resname,
+            chain = chain,
             resid = resid_str,
+            icode = " ",
             x = pos.x,
             y = pos.y,
             z = pos.z,
-            segid = segid
+            occ = 1.0,
+            temp = 0.0,
+            element = element,
         );
         file.write_all(line.as_bytes())?;
         if matches!(ter_iter.peek(), Some(next) if *next == i) {
-            file.write_all(b"TER\n")?;
+            let ter_line = format!(
+                "TER   {:>5}      {:>3} {}{:>4}\n",
+                format_atom_id(idx + 1, hexadecimal_indices),
+                resname,
+                chain,
+                resid_str
+            );
+            file.write_all(ter_line.as_bytes())?;
             ter_iter.next();
         }
     }
@@ -124,6 +138,53 @@ pub fn write_pdb(
         write_conect_lines(&mut file, &out.bonds, hexadecimal_indices)?;
     }
     file.write_all(b"END\n")?;
+    Ok(())
+}
+
+fn validate_strict_pdb_output(out: &PackOutput, hexadecimal_indices: bool) -> PackResult<()> {
+    if hexadecimal_indices {
+        return Err(PackError::Invalid(
+            "pdb-strict does not support hexadecimal atom or residue indices; use mmcif for larger systems".into(),
+        ));
+    }
+    for atom in &out.atoms {
+        let resname = atom.resname.trim();
+        if resname.len() > 3 {
+            return Err(PackError::Invalid(format!(
+                "pdb-strict residue name '{}' exceeds 3 characters; preserve residue templates or use mmcif",
+                resname
+            )));
+        }
+        let name = atom.name.trim();
+        if name.len() > 4 {
+            return Err(PackError::Invalid(format!(
+                "pdb-strict atom name '{}' exceeds 4 characters; use mmcif",
+                name
+            )));
+        }
+        let element = atom.element.trim();
+        if element.len() > 2 {
+            return Err(PackError::Invalid(format!(
+                "pdb-strict element '{}' exceeds 2 characters; use mmcif",
+                element
+            )));
+        }
+        if atom.resid < -999 || atom.resid > 9999 {
+            return Err(PackError::Invalid(format!(
+                "pdb-strict residue id '{}' exceeds fixed-column width; use mmcif",
+                atom.resid
+            )));
+        }
+        let pos = atom.position;
+        for (axis, value) in [("x", pos.x), ("y", pos.y), ("z", pos.z)] {
+            if value < -999.999 || value > 9999.999 {
+                return Err(PackError::Invalid(format!(
+                    "pdb-strict {axis} coordinate '{}' exceeds fixed-column width; use mmcif",
+                    value
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -183,5 +244,31 @@ fn format_res_id(resid: i32, hex: bool) -> String {
         format!("{:X}", resid)
     } else {
         format!("{resid}")
+    }
+}
+
+fn truncate_right(value: &str, width: usize) -> String {
+    value.chars().take(width).collect::<String>()
+}
+
+fn format_atom_name(name: &str) -> String {
+    let trimmed = name.trim();
+    let compact = trimmed.chars().take(4).collect::<String>();
+    format!("{compact:>4}")
+}
+
+fn format_element(element: &str) -> String {
+    let trimmed = element.trim();
+    let mut chars = trimmed.chars();
+    match (chars.next(), chars.next()) {
+        (Some(first), Some(second)) => {
+            format!(
+                "{}{}",
+                first.to_ascii_uppercase(),
+                second.to_ascii_lowercase()
+            )
+        }
+        (Some(first), None) => first.to_ascii_uppercase().to_string(),
+        _ => "  ".into(),
     }
 }

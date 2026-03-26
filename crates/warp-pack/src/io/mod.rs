@@ -80,7 +80,7 @@ pub fn write_output(
     let scale = spec.scale.unwrap_or(1.0);
     let box_fix = if add_box_sides { box_sides_fix } else { 0.0 };
     match format.as_str() {
-        "pdb" => write_pdb(
+        "pdb" | "pdb-strict" => write_pdb(
             out,
             &spec.path,
             scale,
@@ -88,6 +88,7 @@ pub fn write_output(
             box_fix,
             write_conect,
             hexadecimal_indices,
+            format == "pdb-strict",
         ),
         "xyz" => write_xyz(out, &spec.path, scale),
         "pdbx" | "cif" | "mmcif" => write_pdbx(out, &spec.path, scale, box_fix),

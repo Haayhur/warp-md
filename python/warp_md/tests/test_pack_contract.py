@@ -104,6 +104,13 @@ def test_pack_capabilities_json() -> None:
         "backbone_aligned_bulk",
     ]
     assert payload["supported_charge_sources"] == ["charge_manifest", "prmtop"]
+    assert "pdb-strict" in payload["supported_output_formats"]
+    assert payload["supported_output_controls"] == [
+        "format",
+        "write_conect",
+        "preserve_topology_graph",
+        "md_package",
+    ]
     assert "tip3p" in payload["supported_solvent_models"]
 
 
@@ -111,6 +118,10 @@ def test_pack_example_polymer_build_handoff() -> None:
     payload = pack_contract.example_request("polymer_build_handoff")
     assert payload["polymer_build"]["build_manifest"] == "outputs/pmma_50mer.build.json"
     assert payload["environment"]["solvent"]["model"] == "tip3p"
+    assert payload["outputs"]["format"] == "pdb-strict"
+    assert payload["outputs"]["write_conect"] is True
+    assert payload["outputs"]["preserve_topology_graph"] is True
+    assert payload["outputs"]["md_package"].endswith(".md-ready.json")
 
 
 def test_pack_example_components_bulk() -> None:
@@ -197,6 +208,7 @@ def test_run_build_request_solute_writes_manifest(tmp_path: Path) -> None:
     charge_manifest = tmp_path / "solute_charge.json"
     coords = tmp_path / "out" / "system.pdb"
     manifest = tmp_path / "out" / "system_manifest.json"
+    md_package = tmp_path / "out" / "system_manifest.md-ready.json"
     _write_solute(solute)
     _write_json(
         charge_manifest,
@@ -223,6 +235,10 @@ def test_run_build_request_solute_writes_manifest(tmp_path: Path) -> None:
         "outputs": {
             "coordinates": str(coords),
             "manifest": str(manifest),
+            "md_package": str(md_package),
+            "format": "pdb-strict",
+            "write_conect": True,
+            "preserve_topology_graph": True,
         },
     }
 
@@ -231,6 +247,7 @@ def test_run_build_request_solute_writes_manifest(tmp_path: Path) -> None:
     assert envelope["status"] == "ok"
     assert coords.exists()
     assert manifest.exists()
+    assert md_package.exists()
 
     manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
     assert manifest_payload["neutralization_policy_applied"] == "charge_manifest.net_charge_e"
@@ -238,6 +255,14 @@ def test_run_build_request_solute_writes_manifest(tmp_path: Path) -> None:
     assert manifest_payload["charge_source_kinds"] == ["net_charge_e"]
     assert manifest_payload["water_count"] > 0
     assert manifest_payload["final_box_vectors_angstrom"][0][0] > 0.0
+    assert manifest_payload["output_metadata"]["coordinates"]["format"] == "pdb-strict"
+    assert manifest_payload["output_metadata"]["coordinates"]["write_conect"] is True
+    assert manifest_payload["output_metadata"]["md_package"]["path"] == str(md_package)
+
+    md_package_payload = json.loads(md_package.read_text(encoding="utf-8"))
+    assert md_package_payload["coordinates"]["format"] == "pdb-strict"
+    assert md_package_payload["coordinates"]["write_conect"] is True
+    assert md_package_payload["pack_manifest"]["path"] == str(manifest)
 
 
 def test_run_components_bulk_with_prmtop_fallback(tmp_path: Path) -> None:

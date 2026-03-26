@@ -648,6 +648,46 @@ fn write_polymer_build_manifest_with_topology_graph_request(
     path
 }
 
+fn write_polymer_build_manifest_with_md_ready_handoff_only(
+    path_label: &str,
+    coords_path: &std::path::Path,
+    topology_path: &std::path::Path,
+    topology_graph_path: &std::path::Path,
+) -> std::path::PathBuf {
+    let path = write_polymer_build_manifest_with_topology_graph_request(
+        path_label,
+        coords_path,
+        topology_path,
+        topology_graph_path,
+        "build-003",
+        "linear_homopolymer",
+        3,
+    );
+    let mut manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&path).expect("read build manifest"))
+            .expect("parse build manifest");
+    let topology = manifest["artifacts"]["topology"].clone();
+    let topology_graph = manifest["artifacts"]["topology_graph"].clone();
+    let forcefield_ref = manifest["artifacts"]["forcefield_ref"].clone();
+    manifest["artifacts"]["topology"] = Value::Null;
+    manifest["artifacts"]["topology_graph"] = Value::Null;
+    manifest["artifacts"]["forcefield_ref"] = Value::Null;
+    manifest["md_ready_handoff"] = json!({
+        "topology": topology,
+        "topology_graph": topology_graph,
+        "forcefield_ref": forcefield_ref,
+    });
+    fs::write(
+        &path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&manifest).expect("serialize build manifest")
+        ),
+    )
+    .expect("rewrite build manifest");
+    path
+}
+
 #[test]
 fn agent_schema_includes_default_version() {
     let schema_text = warp_pack::agent::schema_json("request").expect("request schema");
@@ -917,6 +957,7 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
         write_polymer_build_manifest("agent_polymer_handoff_build.json", &coords_in, &charge);
     let coords_out = temp_path("agent_polymer_handoff_out.pdb");
     let manifest_out = temp_path("agent_polymer_handoff_manifest.json");
+    let md_package_out = temp_path("agent_polymer_handoff_manifest.md-ready.json");
 
     let payload = json!({
         "version": "warp-pack.agent.v1",
@@ -933,6 +974,10 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
         "outputs": {
             "coordinates": coords_out.to_string_lossy(),
             "manifest": manifest_out.to_string_lossy(),
+            "md_package": md_package_out.to_string_lossy(),
+            "format": "pdb-strict",
+            "write_conect": true,
+            "preserve_topology_graph": true,
         },
     });
 
@@ -979,6 +1024,7 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
     );
     assert!(coords_out.exists());
     assert!(manifest_out.exists());
+    assert!(md_package_out.exists());
 
     let manifest_value: Value =
         serde_json::from_str(&fs::read_to_string(&manifest_out).expect("read manifest"))
@@ -1005,6 +1051,37 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
         .as_str()
         .expect("coordinates digest")
         .starts_with("sha256:"));
+    assert_eq!(
+        manifest_value["output_metadata"]["coordinates"]["format"],
+        "pdb-strict"
+    );
+    assert_eq!(
+        manifest_value["output_metadata"]["coordinates"]["write_conect"],
+        true
+    );
+    assert_eq!(
+        manifest_value["output_metadata"]["md_package"]["path"],
+        md_package_out.to_string_lossy().to_string()
+    );
+
+    let md_package_value: Value =
+        serde_json::from_str(&fs::read_to_string(&md_package_out).expect("read md package"))
+            .expect("parse md package");
+    assert_eq!(md_package_value["coordinates"]["format"], "pdb-strict");
+    assert_eq!(md_package_value["coordinates"]["write_conect"], true);
+    assert_eq!(
+        md_package_value["pack_manifest"]["path"],
+        manifest_out.to_string_lossy().to_string()
+    );
+    let coords_text = fs::read_to_string(&coords_out).expect("read output coordinates");
+    let atom_line = coords_text
+        .lines()
+        .find(|line| line.starts_with("ATOM") || line.starts_with("HETATM"))
+        .expect("polymer atom line");
+    assert_eq!(atom_line[17..20].trim(), "HDA");
+    assert_eq!(atom_line[21..22].trim(), "A");
+    assert_eq!(atom_line[22..26].trim(), "1");
+    assert!(atom_line[30..38].trim().parse::<f32>().is_ok());
 }
 
 #[test]
@@ -1353,6 +1430,74 @@ fn agent_run_amorphous_bulk_records_typed_graph_packing_hints() {
     assert_eq!(
         manifest_value["component_inventory"][0]["topology_graph_summary"]["architecture"],
         "linear"
+    );
+}
+
+#[test]
+fn agent_run_polymer_build_handoff_reads_md_ready_handoff_fallbacks() {
+    let coords_in = write_training_oligomer("agent_polymer_md_ready_coords.pdb");
+    let topology = write_prmtop("agent_polymer_md_ready.prmtop", 1.0);
+    let topology_graph = write_linear_topology_graph("agent_polymer_md_ready.topology.json");
+    let build_manifest = write_polymer_build_manifest_with_md_ready_handoff_only(
+        "agent_polymer_md_ready_build.json",
+        &coords_in,
+        &topology,
+        &topology_graph,
+    );
+    let coords_out = temp_path("agent_polymer_md_ready_out.pdb");
+    let manifest_out = temp_path("agent_polymer_md_ready_manifest.json");
+
+    let payload = json!({
+        "version": "warp-pack.agent.v1",
+        "run_id": "warp-build-md-ready-run",
+        "polymer_build": {
+            "build_manifest": build_manifest.to_string_lossy(),
+        },
+        "environment": {
+            "box": {"mode": "fixed_size", "size_angstrom": 30.0, "shape": "cubic"},
+            "solvent": {"mode": "none"},
+            "ions": {"neutralize": false, "cation": "Na+", "anion": "Cl-"},
+            "morphology": {"mode": "single_chain_solution"},
+        },
+        "outputs": {
+            "coordinates": coords_out.to_string_lossy(),
+            "manifest": manifest_out.to_string_lossy(),
+            "format": "pdb-strict",
+            "write_conect": true,
+            "preserve_topology_graph": true,
+        },
+    });
+
+    let (exit_code, envelope) = warp_pack::agent::run_request_json(
+        &serde_json::to_string(&payload).expect("serialize payload"),
+        false,
+    );
+    assert_eq!(
+        exit_code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&envelope).expect("envelope text")
+    );
+
+    let manifest_value: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest_out).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(
+        manifest_value["component_inventory"][0]["topology"],
+        topology.to_string_lossy().to_string()
+    );
+    assert_eq!(
+        manifest_value["component_inventory"][0]["topology_graph"],
+        topology_graph.to_string_lossy().to_string()
+    );
+    assert_eq!(
+        manifest_value["component_inventory"][0]["forcefield_ref"],
+        build_manifest
+            .parent()
+            .expect("manifest parent")
+            .join("training.ffxml")
+            .to_string_lossy()
+            .to_string()
     );
 }
 

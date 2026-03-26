@@ -56,11 +56,6 @@ pub(crate) fn load_template(
         non_standard_conect,
         spec.topology.as_deref().map(Path::new),
     )?;
-    if let Some(name) = &spec.name {
-        for atom in molecule.atoms.iter_mut() {
-            atom.resname = name.clone();
-        }
-    }
     if let Some(chain) = &spec.chain {
         let ch = chain.chars().next().unwrap_or('A');
         for atom in molecule.atoms.iter_mut() {
