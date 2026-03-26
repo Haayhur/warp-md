@@ -12,9 +12,9 @@ use warp_pack::{geom::center_of_geometry, OutputSpec, PackError, PackResult};
 
 use crate::polymer::{
     build_polymer_graph, compute_sequence_polymer_net_charge_from_prmtop,
-    compute_sequence_polymer_net_charge_from_source, load_charge_manifest,
-    write_polymer_prmtop_from_source, GraphEdgeSpec, GraphNodeSpec, TokenJunctionSpec,
-    CHARGE_MANIFEST_VERSION,
+    compute_sequence_polymer_net_charge_from_source, ensure_build_qc_passes, load_charge_manifest,
+    recompute_build_qc_report, write_polymer_prmtop_from_source, GraphEdgeSpec, GraphNodeSpec,
+    TokenJunctionSpec, CHARGE_MANIFEST_VERSION,
 };
 use warp_topology_graph::{
     AlignmentPath as TopologyGraphAlignmentPath, Angle as TopologyGraphAngle,
@@ -579,6 +579,15 @@ fn default_relax_mode() -> String {
     "graph_spring".to_string()
 }
 
+fn internal_solver_relax_spec() -> RelaxSpec {
+    RelaxSpec {
+        mode: default_relax_mode(),
+        steps: Some(64),
+        step_scale: Some(0.25),
+        clash_scale: Some(0.9),
+    }
+}
+
 fn error_severity() -> String {
     "error".to_string()
 }
@@ -815,12 +824,20 @@ struct ResolvedBuildRequest {
     seed: u64,
     seed_policy: String,
     warnings: Vec<ErrorDetail>,
+    normalization: Option<Value>,
     source_coordinates: String,
     source_charge_manifest: Option<String>,
     source_topology_ref: Option<String>,
     artifacts: ResolvedArtifacts,
     normalized_request: Value,
     resolved_inputs: Value,
+}
+
+#[derive(Clone, Debug)]
+struct NormalizeRequestResult {
+    request: BuildRequest,
+    warnings: Vec<ErrorDetail>,
+    normalization: Option<Value>,
 }
 
 fn deterministic_seed(req: &BuildRequest) -> u64 {
@@ -872,9 +889,149 @@ fn collect_warnings(req: &BuildRequest) -> Vec<ErrorDetail> {
     warnings
 }
 
+fn infer_terminal_sequence_for_homopolymer(
+    req: &BuildRequest,
+    bundle: &SourceBundle,
+) -> Result<Option<(Vec<String>, String, String)>, ErrorDetail> {
+    if req.target.mode != "linear_homopolymer" {
+        return Ok(None);
+    }
+    if !is_default_termini_policy(&req.target.termini.head)
+        || !is_default_termini_policy(&req.target.termini.tail)
+    {
+        return Ok(None);
+    }
+    let repeat_token = req
+        .target
+        .repeat_unit
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let n_repeat = req.target.n_repeat.unwrap_or(0);
+    if repeat_token.is_empty() || n_repeat == 0 {
+        return Ok(None);
+    }
+    let Some(token_support) = bundle.capabilities.sequence_token_support.as_ref() else {
+        return Ok(None);
+    };
+    if !bundle
+        .capabilities
+        .supported_target_modes
+        .iter()
+        .any(|mode| mode == "linear_sequence_polymer")
+    {
+        return Ok(None);
+    }
+    let adjacency_pairs = token_support
+        .allowed_adjacencies
+        .iter()
+        .filter(|pair| pair[0] != pair[1])
+        .collect::<Vec<_>>();
+    if adjacency_pairs.is_empty() {
+        return Ok(None);
+    }
+    let head_candidates = adjacency_pairs
+        .iter()
+        .filter(|pair| pair[1] == repeat_token)
+        .map(|pair| pair[0].clone())
+        .filter(|token| {
+            !adjacency_pairs
+                .iter()
+                .any(|pair| pair[0] == repeat_token && pair[1] == *token)
+        })
+        .filter(|token| token != &repeat_token)
+        .collect::<BTreeSet<_>>();
+    let tail_candidates = adjacency_pairs
+        .iter()
+        .filter(|pair| pair[0] == repeat_token)
+        .map(|pair| pair[1].clone())
+        .filter(|token| {
+            !adjacency_pairs
+                .iter()
+                .any(|pair| pair[1] == repeat_token && pair[0] == *token)
+        })
+        .filter(|token| token != &repeat_token)
+        .collect::<BTreeSet<_>>();
+    if head_candidates.is_empty() && tail_candidates.is_empty() {
+        return Ok(None);
+    }
+    if head_candidates.len() != 1 || tail_candidates.len() != 1 {
+        let mut suggestion = Vec::new();
+        if let Some(head) = head_candidates.iter().next() {
+            suggestion.push(head.clone());
+        }
+        suggestion.extend(std::iter::repeat_n(repeat_token.clone(), n_repeat));
+        if let Some(tail) = tail_candidates.iter().next() {
+            suggestion.push(tail.clone());
+        }
+        return Err(to_error(
+            "E_TERMINAL_SEQUENCE_REQUIRED",
+            Some("/target".into()),
+            format!(
+                "terminal-aware source bundle requires explicit sequence mode for repeat token '{}'; use linear_sequence_polymer with sequence like {:?}",
+                repeat_token,
+                suggestion
+            ),
+        ));
+    }
+    let head = head_candidates.iter().next().cloned().unwrap_or_default();
+    let tail = tail_candidates.iter().next().cloned().unwrap_or_default();
+    let mut sequence = Vec::with_capacity(n_repeat + 2);
+    sequence.push(head.clone());
+    sequence.extend(std::iter::repeat_n(repeat_token, n_repeat));
+    sequence.push(tail.clone());
+    Ok(Some((sequence, head, tail)))
+}
+
+fn normalize_request_for_execution(
+    req: &BuildRequest,
+    bundle: &SourceBundle,
+) -> Result<NormalizeRequestResult, Vec<ErrorDetail>> {
+    let mut normalized = req.clone();
+    let mut warnings = Vec::new();
+    let mut normalization = None;
+    match infer_terminal_sequence_for_homopolymer(req, bundle) {
+        Ok(Some((sequence, head, tail))) => {
+            normalized.target.mode = "linear_sequence_polymer".into();
+            normalized.target.sequence = Some(sequence.clone());
+            normalized.target.repeat_count = Some(1);
+            normalized.target.repeat_unit = None;
+            normalized.target.n_repeat = None;
+            warnings.push(to_warning(
+                "W_TERMINAL_SEQUENCE_AUTOPROMOTED",
+                Some("/target".into()),
+                format!(
+                    "terminal-aware source bundle auto-promoted linear_homopolymer to linear_sequence_polymer with explicit termini sequence [{}, ..., {}]",
+                    head, tail
+                ),
+            ));
+            normalization = Some(json!({
+                "applied": "linear_homopolymer_to_linear_sequence_polymer",
+                "reason": "terminal_aware_source_bundle",
+                "head_token": head,
+                "tail_token": tail,
+                "sequence": sequence,
+                "requested_mode": req.target.mode,
+                "requested_repeat_unit": req.target.repeat_unit,
+                "requested_n_repeat": req.target.n_repeat,
+            }));
+        }
+        Ok(None) => {}
+        Err(error) => return Err(vec![error]),
+    }
+    Ok(NormalizeRequestResult {
+        request: normalized,
+        warnings,
+        normalization,
+    })
+}
+
 fn resolve_request_state(
     req: &BuildRequest,
     bundle: &SourceBundle,
+    preflight_warnings: Vec<ErrorDetail>,
+    normalization: Option<Value>,
 ) -> Result<ResolvedBuildRequest, Vec<ErrorDetail>> {
     let errors = validate_request(req, bundle);
     if !errors.is_empty() {
@@ -936,7 +1093,8 @@ fn resolve_request_state(
             req.artifacts.ensemble_manifest.clone()
         },
     };
-    let warnings = collect_warnings(req);
+    let mut warnings = preflight_warnings;
+    warnings.extend(collect_warnings(req));
     let bundle_digest = sha256_file(Path::new(&req.source_ref.bundle_path)).ok();
     let normalized_request = json!({
         "schema_version": BUILD_SCHEMA_VERSION,
@@ -980,6 +1138,7 @@ fn resolve_request_state(
         },
         "resolved_seed": seed,
         "seed_policy": seed_policy,
+        "target_normalization": normalization.clone(),
         "resolved_artifacts": {
             "coordinates": artifacts.coordinates,
             "raw_coordinates": artifacts.raw_coordinates,
@@ -1002,6 +1161,7 @@ fn resolve_request_state(
         seed,
         seed_policy,
         warnings,
+        normalization,
         source_coordinates,
         source_charge_manifest,
         source_topology_ref,
@@ -4349,6 +4509,33 @@ fn relax_built_output(
             group.push(idx);
         }
     }
+    let edge_targets = plan
+        .edges
+        .iter()
+        .filter_map(|edge| {
+            let parent_resid = edge.parent + 1;
+            let child_resid = edge.child + 1;
+            let parent_group = parent_resid.saturating_sub(1);
+            let child_group = child_resid.saturating_sub(1);
+            let parent_idx = residue_atoms
+                .get(parent_group)?
+                .iter()
+                .copied()
+                .find(|idx| output.atoms[*idx].name.trim() == edge.parent_attach_atom.trim())?;
+            let child_idx = residue_atoms
+                .get(child_group)?
+                .iter()
+                .copied()
+                .find(|idx| output.atoms[*idx].name.trim() == edge.child_attach_atom.trim())?;
+            let target = output.atoms[child_idx]
+                .position
+                .sub(output.atoms[parent_idx].position)
+                .norm()
+                .max(0.9)
+                .min(step_length.max(1.5));
+            Some((parent_group, child_group, parent_idx, child_idx, target))
+        })
+        .collect::<Vec<_>>();
     let root_resid = plan
         .nodes
         .iter()
@@ -4373,17 +4560,19 @@ fn relax_built_output(
             })
             .collect::<Vec<_>>();
         let mut deltas = vec![warp_pack::geom::Vec3::new(0.0, 0.0, 0.0); residue_atoms.len()];
-        for edge in &plan.edges {
-            if edge.parent >= centers.len() || edge.child >= centers.len() {
+        for &(parent_group, child_group, parent_idx, child_idx, target) in &edge_targets {
+            if parent_group >= centers.len() || child_group >= centers.len() {
                 continue;
             }
-            let diff = centers[edge.child].sub(centers[edge.parent]);
+            let diff = output.atoms[child_idx]
+                .position
+                .sub(output.atoms[parent_idx].position);
             let dist = diff.norm().max(1.0e-4);
             let dir = diff.scale(1.0 / dist);
-            let stretch = dist - step_length.max(1.5);
+            let stretch = dist - target;
             let correction = dir.scale(0.18 * stretch);
-            deltas[edge.parent] = deltas[edge.parent].add(correction);
-            deltas[edge.child] = deltas[edge.child].sub(correction);
+            deltas[parent_group] = deltas[parent_group].add(correction);
+            deltas[child_group] = deltas[child_group].sub(correction);
         }
         for left in 0..output.atoms.len() {
             for right in (left + 1)..output.atoms.len() {
@@ -5765,7 +5954,27 @@ pub fn validate_request_json(text: &str) -> (i32, Value) {
             )
         }
     };
-    match resolve_request_state(&req, &bundle) {
+    let normalized = match normalize_request_for_execution(&req, &bundle) {
+        Ok(result) => result,
+        Err(errors) => {
+            return (
+                2,
+                json!({
+                    "schema_version": BUILD_SCHEMA_VERSION,
+                    "status": "error",
+                    "valid": false,
+                    "errors": errors,
+                    "warnings": [],
+                }),
+            )
+        }
+    };
+    match resolve_request_state(
+        &normalized.request,
+        &bundle,
+        normalized.warnings,
+        normalized.normalization,
+    ) {
         Ok(resolved) => (
             0,
             json!(ValidateEnvelope {
@@ -5792,7 +6001,7 @@ pub fn validate_request_json(text: &str) -> (i32, Value) {
 
 pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     let t0 = Instant::now();
-    let req: BuildRequest = match parse_json(text) {
+    let raw_req: BuildRequest = match parse_json(text) {
         Ok(req) => req,
         Err(err) => {
             return (
@@ -5809,16 +6018,16 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     };
     emit(
         &RunEvent::RunStarted {
-            request_id: req.request_id.clone(),
+            request_id: raw_req.request_id.clone(),
         },
         stream_ndjson,
     );
-    let bundle = match load_bundle(Path::new(&req.source_ref.bundle_path)) {
+    let bundle = match load_bundle(Path::new(&raw_req.source_ref.bundle_path)) {
         Ok(bundle) => bundle,
         Err(err) => {
             emit(
                 &RunEvent::RunFailed {
-                    request_id: req.request_id.clone(),
+                    request_id: raw_req.request_id.clone(),
                     error: err.clone(),
                 },
                 stream_ndjson,
@@ -5828,19 +6037,19 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 json!(ErrorEnvelope {
                     schema_version: BUILD_SCHEMA_VERSION.into(),
                     status: "error".into(),
-                    request_id: req.request_id,
+                    request_id: raw_req.request_id,
                     errors: vec![err],
                     warnings: vec![],
                 }),
             );
         }
     };
-    let resolved = match resolve_request_state(&req, &bundle) {
-        Ok(resolved) => resolved,
+    let normalized = match normalize_request_for_execution(&raw_req, &bundle) {
+        Ok(result) => result,
         Err(errors) => {
             emit(
                 &RunEvent::RunFailed {
-                    request_id: req.request_id.clone(),
+                    request_id: raw_req.request_id.clone(),
                     error: errors[0].clone(),
                 },
                 stream_ndjson,
@@ -5850,13 +6059,37 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 json!(ErrorEnvelope {
                     schema_version: BUILD_SCHEMA_VERSION.into(),
                     status: "error".into(),
-                    request_id: req.request_id,
+                    request_id: raw_req.request_id,
                     errors,
                     warnings: vec![],
                 }),
             );
         }
     };
+    let req = normalized.request;
+    let resolved =
+        match resolve_request_state(&req, &bundle, normalized.warnings, normalized.normalization) {
+            Ok(resolved) => resolved,
+            Err(errors) => {
+                emit(
+                    &RunEvent::RunFailed {
+                        request_id: req.request_id.clone(),
+                        error: errors[0].clone(),
+                    },
+                    stream_ndjson,
+                );
+                return (
+                    2,
+                    json!(ErrorEnvelope {
+                        schema_version: BUILD_SCHEMA_VERSION.into(),
+                        status: "error".into(),
+                        request_id: req.request_id,
+                        errors,
+                        warnings: vec![],
+                    }),
+                );
+            }
+        };
 
     emit(
         &RunEvent::SourceLoaded {
@@ -6085,6 +6318,40 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 );
             }
         };
+        let internal_cleanup_report = if matches!(
+            req.realization.conformation_mode.as_str(),
+            "random_walk" | "ensemble"
+        ) {
+            Some(relax_built_output(
+                &mut built.output,
+                &compiled_plan,
+                built.step_length_angstrom,
+                &internal_solver_relax_spec(),
+                None,
+            ))
+        } else {
+            None
+        };
+        if internal_cleanup_report.is_some() {
+            built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
+            if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
+                if let Some(report) = built.solver_report.as_mut() {
+                    report.termination_reason = "qc_failed".into();
+                    report.hard_fail_reason = Some(err.to_string());
+                }
+                let detail = to_error("E_RUNTIME_BUILD", None, err.to_string());
+                return (
+                    4,
+                    json!(ErrorEnvelope {
+                        schema_version: BUILD_SCHEMA_VERSION.into(),
+                        status: "error".into(),
+                        request_id: req.request_id,
+                        errors: vec![detail],
+                        warnings: vec![],
+                    }),
+                );
+            }
+        }
         let relax_report = if let Some(relax) = req.realization.relax.as_ref() {
             if let Some(raw_path) = member_raw_path.as_ref() {
                 ensure_parent(raw_path).ok();
@@ -6112,6 +6379,22 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         } else {
             None
         };
+        if relax_report.is_some() {
+            built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
+            if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
+                let detail = to_error("E_RUNTIME_BUILD", None, err.to_string());
+                return (
+                    4,
+                    json!(ErrorEnvelope {
+                        schema_version: BUILD_SCHEMA_VERSION.into(),
+                        status: "error".into(),
+                        request_id: req.request_id,
+                        errors: vec![detail],
+                        warnings: vec![],
+                    }),
+                );
+            }
+        }
         if req.realization.conformation_mode == "aligned" {
             rotate_output_along_axis(
                 &mut built.output,
@@ -6151,11 +6434,18 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 );
             }
         }
-        built_members.push((member_target_path, built, member_seed, relax_report));
+        built_members.push((
+            member_target_path,
+            built,
+            member_seed,
+            internal_cleanup_report,
+            relax_report,
+        ));
     }
     let built = built_members[0].1.clone();
     let primary_coordinates = built_members[0].0.clone();
-    let primary_relax_report = built_members[0].3.clone();
+    let primary_internal_cleanup_report = built_members[0].3.clone();
+    let primary_relax_report = built_members[0].4.clone();
     ensure_parent(&resolved.artifacts.coordinates).ok();
     if primary_coordinates != resolved.artifacts.coordinates {
         if let Err(err) = fs::copy(&primary_coordinates, &resolved.artifacts.coordinates) {
@@ -6183,6 +6473,8 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         &req.target.termini,
         Some(&compiled_plan),
         primary_relax_report
+            .as_ref()
+            .or(primary_internal_cleanup_report.as_ref())
             .as_ref()
             .map(|report| TopologyGraphRelaxMetadata {
                 mode: report.mode.clone(),
@@ -6228,7 +6520,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             "member_paths": built_members
                 .iter()
                 .enumerate()
-                .map(|(idx, (path, _, seed, _))| json!({"member_index": idx + 1, "coordinates": path, "seed": seed}))
+                .map(|(idx, (path, _, seed, _, _))| json!({"member_index": idx + 1, "coordinates": path, "seed": seed}))
                 .collect::<Vec<_>>(),
             "shared_artifacts": {
                 "topology_graph": topology_graph_path,
@@ -6453,6 +6745,34 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             .as_ref()
             .and_then(|path| sha256_file(Path::new(path)).ok()),
     });
+    let md_ready_handoff = json!({
+        "version": "warp-md.polymer-md-handoff.v1",
+        "coordinates": {
+            "path": resolved.artifacts.coordinates,
+            "format": "pdb-strict",
+            "strict_columns": true,
+            "write_conect": true,
+            "has_cryst1": false,
+        },
+        "topology_graph": topology_graph_path,
+        "topology": topology_path,
+        "charge_manifest": resolved.artifacts.charge_manifest,
+        "source_structure_path": source_coordinates,
+        "source_topology_path": source_topology_ref,
+        "source_charge_manifest_path": source_charge_manifest,
+        "sequence_tokens": built.sequence_labels,
+        "template_sequence_resnames": built.template_sequence_resnames,
+        "applied_residue_resnames": built.residue_resnames,
+        "copy_count": 1,
+        "chain_instance_mapping": [
+            {
+                "copy_index": 1,
+                "source_chain_indices": [1],
+                "packed_chain_indices": [1],
+            }
+        ],
+        "forcefield_ref": bundle.artifacts.forcefield_ref,
+    });
     let manifest = json!({
         "schema_version": BUILD_MANIFEST_VERSION,
         "request_id": req.request_id,
@@ -6482,11 +6802,20 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             "forcefield_ref": bundle.artifacts.forcefield_ref,
         },
         "artifact_digests": artifact_digests,
+        "md_ready_handoff": md_ready_handoff,
         "summary": {
             "atom_count": built.output.atoms.len(),
-            "total_repeat_units": n_repeat,
+            "total_repeat_units": resolved
+                .normalization
+                .as_ref()
+                .and_then(|value| value.get("requested_n_repeat"))
+                .cloned()
+                .unwrap_or_else(|| json!(n_repeat)),
+            "total_residues": n_repeat,
             "net_charge_e": net_charge,
             "resolved_sequence": built.sequence_labels,
+            "template_sequence_resnames": built.template_sequence_resnames,
+            "applied_residue_resnames": built.residue_resnames,
             "request_root_node_id": compiled_plan.request_root_node_id,
             "expanded_root_node_id": compiled_plan.expanded_root_node_id,
             "graph_has_cycle": compiled_plan.graph_has_cycle,
@@ -6518,6 +6847,16 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 "rms_displacement": report.rms_displacement,
                 "raw_coordinates": report.raw_coordinates,
             })),
+            "solver_cleanup": primary_internal_cleanup_report.as_ref().map(|report| json!({
+                "mode": report.mode,
+                "steps_requested": report.steps_requested,
+                "steps_executed": report.steps_executed,
+                "initial_max_clash": report.initial_max_clash,
+                "final_max_clash": report.final_max_clash,
+                "rms_displacement": report.rms_displacement,
+                "raw_coordinates": report.raw_coordinates,
+            })),
+            "solver": built.solver_report.as_ref().map(|report| json!(report)),
             "applied_junctions": token_junctions
                 .iter()
                 .map(|(token, junction)| {
@@ -6532,6 +6871,15 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     )
                 })
                 .collect::<BTreeMap<_, _>>(),
+            "qc": {
+                "inter_residue_bond_count": built.qc_report.inter_residue_bond_count,
+                "terminal_connectivity_consistent": built.qc_report.terminal_connectivity_consistent,
+                "sequence_token_template_consistent": built.qc_report.sequence_token_template_consistent,
+                "min_nonbonded_distance_angstrom": built.qc_report.min_nonbonded_distance_angstrom,
+                "severe_nonbonded_clash_count": built.qc_report.severe_nonbonded_clash_count,
+                "severe_bond_violations": built.qc_report.severe_bond_violations,
+                "severe_clash_examples": built.qc_report.severe_clash_examples,
+            },
         },
         "provenance": {
             "schema_version": BUILD_MANIFEST_VERSION,
@@ -6545,6 +6893,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             },
             "source_bundle_path": req.source_ref.bundle_path,
             "source_bundle_digest": resolved.bundle_digest,
+            "target_normalization": resolved.normalization,
             "build_metadata": {
                 "git_commit": option_env!("VERGEN_GIT_SHA"),
                 "build_timestamp": option_env!("VERGEN_BUILD_TIMESTAMP"),
@@ -6621,13 +6970,35 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             },
             summary: json!({
                 "build_mode": req.target.mode,
-                "n_repeat": n_repeat,
+                "n_repeat": resolved
+                    .normalization
+                    .as_ref()
+                    .and_then(|value| value.get("requested_n_repeat"))
+                    .cloned()
+                    .unwrap_or_else(|| json!(n_repeat)),
                 "atom_count": built.output.atoms.len(),
-                "total_repeat_units": n_repeat,
+                "total_repeat_units": resolved
+                    .normalization
+                    .as_ref()
+                    .and_then(|value| value.get("requested_n_repeat"))
+                    .cloned()
+                    .unwrap_or_else(|| json!(n_repeat)),
+                "total_residues": n_repeat,
                 "conformation_mode": req.realization.conformation_mode,
                 "seed": seed,
                 "ensemble_size": ensemble_size,
                 "topology_graph_version": TOPOLOGY_GRAPH_VERSION,
+                "qc": built.qc_report,
+                "solver": built.solver_report.as_ref().map(|report| json!(report)),
+                "solver_cleanup": primary_internal_cleanup_report.as_ref().map(|report| json!({
+                    "mode": report.mode,
+                    "steps_requested": report.steps_requested,
+                    "steps_executed": report.steps_executed,
+                    "initial_max_clash": report.initial_max_clash,
+                    "final_max_clash": report.final_max_clash,
+                    "rms_displacement": report.rms_displacement,
+                    "raw_coordinates": report.raw_coordinates,
+                })),
                 "relax": primary_relax_report.as_ref().map(|report| json!({
                     "mode": report.mode,
                     "steps_requested": report.steps_requested,

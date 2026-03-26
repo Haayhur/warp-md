@@ -1,0 +1,156 @@
+{
+  "schema_version": "polymer-param-source.bundle.v1",
+  "bundle_id": "Polyethersulfone_param_bundle_v1",
+  "training_context": {
+    "mode": "oligomer_training",
+    "training_oligomer_n": 3,
+    "notes": "RESP/gaff2 polymer parameter source"
+  },
+  "provenance": {
+    "mol_name": "Polyethersulfone",
+    "gaff_variant": "gaff2",
+    "repeat_smiles": null,
+    "repeat_residue": "PES",
+    "repeat_variant": "default"
+  },
+  "unit_library": {
+    "H": {
+      "display_name": "PES head cap",
+      "junctions": {
+        "head": "Polyethersulfone_head_cap",
+        "tail": "Polyethersulfone_head_cap"
+      },
+      "template_resname": "STA"
+    },
+    "A": {
+      "display_name": "PES repeat unit",
+      "junctions": {
+        "head": "Polyethersulfone_head",
+        "tail": "Polyethersulfone_tail"
+      },
+      "template_resname": "MID"
+    },
+    "T": {
+      "display_name": "PES tail cap",
+      "junctions": {
+        "head": "Polyethersulfone_tail_cap",
+        "tail": "Polyethersulfone_tail_cap"
+      },
+      "template_resname": "END"
+    }
+  },
+  "junction_library": {
+    "Polyethersulfone_head_cap": {
+      "attach_atom": {
+        "scope": "unit",
+        "selector": "name C8"
+      },
+      "leaving_atoms": [],
+      "bond_order": 1,
+      "anchor_atoms": [
+        {
+          "scope": "unit",
+          "selector": "name C8"
+        }
+      ]
+    },
+    "Polyethersulfone_head": {
+      "attach_atom": {
+        "scope": "unit",
+        "selector": "name O1"
+      },
+      "leaving_atoms": [],
+      "bond_order": 1,
+      "anchor_atoms": [
+        {
+          "scope": "unit",
+          "selector": "name O1"
+        }
+      ]
+    },
+    "Polyethersulfone_tail": {
+      "attach_atom": {
+        "scope": "unit",
+        "selector": "name C8"
+      },
+      "leaving_atoms": [],
+      "bond_order": 1,
+      "anchor_atoms": [
+        {
+          "scope": "unit",
+          "selector": "name C8"
+        }
+      ]
+    },
+    "Polyethersulfone_tail_cap": {
+      "attach_atom": {
+        "scope": "unit",
+        "selector": "name O1"
+      },
+      "leaving_atoms": [],
+      "bond_order": 1,
+      "anchor_atoms": [
+        {
+          "scope": "unit",
+          "selector": "name O1"
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "supported_target_modes": [
+      "linear_homopolymer",
+      "linear_sequence_polymer"
+    ],
+    "supported_conformation_modes": [
+      "extended",
+      "random_walk",
+      "aligned",
+      "ensemble"
+    ],
+    "supported_tacticity_modes": [
+      "inherit"
+    ],
+    "supported_termini_policies": [
+      "default",
+      "source_default"
+    ],
+    "sequence_token_support": {
+      "tokens": [
+        "H",
+        "A",
+        "T"
+      ],
+      "allowed_adjacencies": [
+        [
+          "H",
+          "A"
+        ],
+        [
+          "A",
+          "A"
+        ],
+        [
+          "A",
+          "T"
+        ],
+        [
+          "H",
+          "T"
+        ]
+      ]
+    },
+    "charge_transfer_supported": true
+  },
+  "artifacts": {
+    "source_coordinates": "training.pdb",
+    "source_topology_ref": null,
+    "forcefield_ref": "Polyethersulfone_polymer_buildsafe.xml",
+    "source_charge_manifest": "training_charge.json"
+  },
+  "charge_model": {
+    "kind": "resp_gaff_polymer",
+    "gaff_variant": "gaff2",
+    "per_unit_target_charge_e": 0.0
+  }
+}

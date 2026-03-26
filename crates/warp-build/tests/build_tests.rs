@@ -227,6 +227,42 @@ fn copy_fixture_dir(name: &str, label: &str) -> (PathBuf, PathBuf) {
     (dir.clone(), dir.join("bundle.json"))
 }
 
+fn max_inter_residue_bond_distance(coords: &Path, topology_graph: &Path) -> f64 {
+    let atoms = fs::read_to_string(coords)
+        .expect("read coords")
+        .lines()
+        .filter(|line| line.starts_with("ATOM  ") || line.starts_with("HETATM"))
+        .map(|line| {
+            (
+                line[12..16].trim().to_string(),
+                [
+                    line[30..38].trim().parse::<f64>().expect("x"),
+                    line[38..46].trim().parse::<f64>().expect("y"),
+                    line[46..54].trim().parse::<f64>().expect("z"),
+                ],
+            )
+        })
+        .collect::<Vec<_>>();
+    let graph: Value =
+        serde_json::from_str(&fs::read_to_string(topology_graph).expect("read graph"))
+            .expect("parse graph");
+    graph["inter_residue_bonds"]
+        .as_array()
+        .expect("inter_residue_bonds")
+        .iter()
+        .map(|bond| {
+            let a = bond["a"].as_u64().expect("bond a") as usize - 1;
+            let b = bond["b"].as_u64().expect("bond b") as usize - 1;
+            let pa = atoms[a].1;
+            let pb = atoms[b].1;
+            let dx = pa[0] - pb[0];
+            let dy = pa[1] - pb[1];
+            let dz = pa[2] - pb[2];
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        })
+        .fold(0.0, f64::max)
+}
+
 #[test]
 fn schema_and_inspect_source_work() {
     let schema = warp_build::schema_json("request").expect("schema");
@@ -235,17 +271,23 @@ fn schema_and_inspect_source_work() {
     let source_schema = warp_build::schema_json("source_bundle").expect("source schema");
     let source_schema_value: Value =
         serde_json::from_str(&source_schema).expect("parse source schema");
-    assert!(source_schema_value["properties"].get("schema_version").is_some());
+    assert!(source_schema_value["properties"]
+        .get("schema_version")
+        .is_some());
     let build_manifest_schema =
         warp_build::schema_json("build_manifest").expect("build manifest schema");
     let build_manifest_schema_value: Value =
         serde_json::from_str(&build_manifest_schema).expect("parse build manifest schema");
-    assert!(build_manifest_schema_value["properties"].get("schema_version").is_some());
+    assert!(build_manifest_schema_value["properties"]
+        .get("schema_version")
+        .is_some());
     let charge_manifest_schema =
         warp_build::schema_json("charge_manifest").expect("charge manifest schema");
     let charge_manifest_schema_value: Value =
         serde_json::from_str(&charge_manifest_schema).expect("parse charge manifest schema");
-    assert!(charge_manifest_schema_value["properties"].get("schema_version").is_some());
+    assert!(charge_manifest_schema_value["properties"]
+        .get("schema_version")
+        .is_some());
     let graph_schema = warp_build::schema_json("topology_graph").expect("graph schema");
     let graph_schema_value: Value =
         serde_json::from_str(&graph_schema).expect("parse graph schema");
@@ -450,9 +492,31 @@ fn run_build_writes_polymer_artifacts() {
             .expect("parse manifest");
     assert_eq!(manifest["schema_version"], "warp-build.manifest.v1");
     assert_eq!(manifest["summary"]["total_repeat_units"], 4);
+    assert_eq!(manifest["summary"]["total_residues"], 6);
     assert_eq!(manifest["realization"]["seed"], 12345);
     assert_eq!(manifest["realization"]["seed_policy"], "explicit");
-    assert_eq!(manifest["summary"]["bond_count"], 3);
+    assert_eq!(manifest["summary"]["bond_count"], 5);
+    assert_eq!(
+        manifest["summary"]["resolved_sequence"],
+        json!(["H", "A", "A", "A", "A", "T"])
+    );
+    assert_eq!(
+        manifest["provenance"]["target_normalization"]["applied"],
+        "linear_homopolymer_to_linear_sequence_polymer"
+    );
+    assert_eq!(
+        manifest["md_ready_handoff"]["coordinates"]["format"],
+        "pdb-strict"
+    );
+    assert_eq!(
+        manifest["summary"]["qc"]["severe_bond_violations"],
+        json!([])
+    );
+    assert_eq!(manifest["summary"]["solver"]["mode"], "torsion_solve");
+    assert_eq!(
+        manifest["summary"]["solver_cleanup"]["mode"],
+        "graph_spring"
+    );
     assert_eq!(
         manifest["artifacts"]["topology"],
         topology.to_string_lossy().to_string()
@@ -474,13 +538,140 @@ fn run_build_writes_polymer_artifacts() {
         serde_json::from_str(&fs::read_to_string(&charge_manifest).expect("read charge"))
             .expect("parse charge");
     assert_eq!(charge["schema_version"], "warp-build.charge-manifest.v1");
-    assert_eq!(charge["net_charge_e"], 3.0);
+    assert_eq!(charge["net_charge_e"], 5.0);
     assert_eq!(
         charge["target_topology_ref"],
         topology.to_string_lossy().to_string()
     );
     let topology_text = fs::read_to_string(&topology).expect("read topology");
     assert!(topology_text.contains("%FLAG BONDS_WITHOUT_HYDROGEN"));
+}
+
+#[test]
+fn run_build_with_explicit_relax_records_cleanup_and_user_relax() {
+    let (_dir, bundle) = make_bundle_dir("run_relax");
+    let coords = temp_path("coords_relax.pdb");
+    let raw_coords = temp_path("coords_relax_raw.pdb");
+    let build_manifest = temp_path("build_manifest_relax.json");
+    let charge_manifest = temp_path("charge_manifest_relax.json");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "build-relax-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "syndiotactic"},
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": 12346,
+            "relax": {
+                "mode": "graph_spring",
+                "steps": 8,
+                "step_scale": 0.2,
+                "clash_scale": 0.9
+            }
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "raw_coordinates": raw_coords.to_string_lossy(),
+            "build_manifest": build_manifest.to_string_lossy(),
+            "charge_manifest": charge_manifest.to_string_lossy(),
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert!(raw_coords.exists());
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&build_manifest).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(
+        manifest["summary"]["solver_cleanup"]["mode"],
+        "graph_spring"
+    );
+    assert_eq!(manifest["summary"]["relax"]["mode"], "graph_spring");
+    assert_eq!(
+        manifest["summary"]["relax"]["raw_coordinates"],
+        raw_coords.to_string_lossy().to_string()
+    );
+}
+
+#[test]
+fn pes_repro_build_keeps_inter_residue_bonds_below_three_angstrom() {
+    let (_dir, bundle) = copy_fixture_dir("pes_repro", "fixture_pes_repro");
+    let coords = temp_path("pes_coords.pdb");
+    let raw_coords = temp_path("pes_coords_raw.pdb");
+    let build_manifest = temp_path("pes_manifest.json");
+    let charge_manifest = temp_path("pes_charge.json");
+    let topology_graph = temp_path("pes_topology_graph.json");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "pes-build-8mer-001",
+        "source_ref": {
+            "bundle_id": "Polyethersulfone_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 8,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"},
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": 12345,
+            "relax": {
+                "mode": "graph_spring",
+                "steps": 64,
+                "step_scale": 0.25,
+                "clash_scale": 0.9
+            }
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "raw_coordinates": raw_coords.to_string_lossy(),
+            "build_manifest": build_manifest.to_string_lossy(),
+            "charge_manifest": charge_manifest.to_string_lossy(),
+            "topology_graph": topology_graph.to_string_lossy(),
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&build_manifest).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(
+        manifest["summary"]["resolved_sequence"],
+        json!(["H", "A", "A", "A", "A", "A", "A", "A", "A", "T"])
+    );
+    assert_eq!(
+        manifest["summary"]["qc"]["severe_bond_violations"],
+        json!([])
+    );
+    let max_distance = max_inter_residue_bond_distance(&coords, &topology_graph);
+    assert!(
+        max_distance < 3.0,
+        "expected PES inter-residue bond distances below 3.0 A, got {max_distance:.3}"
+    );
 }
 
 #[test]
@@ -742,7 +933,10 @@ fn validate_accepts_branched_aligned_realization() {
         serde_json::to_string_pretty(&payload).unwrap()
     );
     assert_eq!(payload["schema_version"], "warp-build.agent.v1");
-    assert_eq!(payload["resolved_inputs"]["seed_policy"], "deterministic_default");
+    assert_eq!(
+        payload["resolved_inputs"]["seed_policy"],
+        "deterministic_default"
+    );
     assert_eq!(
         payload["resolved_inputs"]["resolved_termini_policy"],
         json!({"head": "source_default", "tail": "source_default"})
@@ -921,7 +1115,7 @@ fn run_star_and_branched_builds_write_branch_metadata() {
 }
 
 #[test]
-fn run_polymer_graph_build_writes_cycle_metadata() {
+fn run_polymer_graph_build_rejects_unresolved_cycle_geometry() {
     let (_dir, bundle) = make_bundle_dir("graph_run");
     let coords = temp_path("graph_coords.pdb");
     let manifest = temp_path("graph_manifest.json");
@@ -967,26 +1161,20 @@ fn run_polymer_graph_build_writes_cycle_metadata() {
         warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
     assert_eq!(
         code,
-        0,
+        4,
         "{}",
         serde_json::to_string_pretty(&payload).unwrap()
     );
-    let graph_payload: Value =
-        serde_json::from_str(&fs::read_to_string(&graph).expect("read graph")).expect("graph");
-    assert_eq!(graph_payload["build_plan"]["target_mode"], "polymer_graph");
-    assert!(topology.exists());
-    assert_eq!(graph_payload["build_plan"]["request_root_node_id"], "n1");
-    assert_eq!(graph_payload["build_plan"]["graph_has_cycle"], true);
-    assert_eq!(graph_payload["build_plan"]["arm_count"], 2);
-    assert_eq!(
-        graph_payload["cycle_basis"]
-            .as_array()
-            .map(|items| items.len()),
-        Some(1)
-    );
-    assert_eq!(graph_payload["residues"][0]["node_id"], "graph.n1");
-    assert_eq!(graph_payload["residues"][1]["node_id"], "graph.n2");
-    assert_eq!(graph_payload["residues"][2]["node_id"], "graph.n3");
+    assert_eq!(payload["errors"][0]["code"], "E_RUNTIME_BUILD");
+    assert!(payload["errors"][0]["message"]
+        .as_str()
+        .expect("error message")
+        .contains("build QC failed"));
+    assert!(!coords.exists());
+    assert!(!manifest.exists());
+    assert!(!charge.exists());
+    assert!(!topology.exists());
+    assert!(!graph.exists());
 }
 
 #[test]

@@ -1,0 +1,11 @@
+{
+  "schema_version": "warp-build.charge-manifest.v1",
+  "solute_path": "Polyethersulfone_source_buildsafe.pdb",
+  "source_topology_ref": "Polyethersulfone_source_normalized.prmtop",
+  "forcefield_ref": "Polyethersulfone_polymer_buildsafe.xml",
+  "head_charge_e": 0.0,
+  "repeat_charge_e": 0.0,
+  "tail_charge_e": 0.0,
+  "net_charge_e": 0.0,
+  "charge_derivation": "resp_polymer_group_targets"
+}

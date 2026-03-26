@@ -101,8 +101,76 @@ pub struct PolymerBuiltArtifact {
     pub template_sequence_resnames: Vec<String>,
     pub residue_resnames: Vec<String>,
     pub output: PackOutput,
+    pub qc_context: BuildQcContext,
+    pub qc_report: BuildQcReport,
+    pub solver_report: Option<BuildSolverReport>,
     pub source_charge_manifest_path: Option<PathBuf>,
     pub topology_ref: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BondQcViolation {
+    pub edge_id: String,
+    pub parent_resid: usize,
+    pub child_resid: usize,
+    pub parent_atom: String,
+    pub child_atom: String,
+    pub measured_distance_angstrom: f32,
+    pub expected_distance_angstrom: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClashQcViolation {
+    pub atom_a: usize,
+    pub atom_b: usize,
+    pub distance_angstrom: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BuildQcReport {
+    pub inter_residue_bond_count: usize,
+    pub terminal_connectivity_consistent: bool,
+    pub sequence_token_template_consistent: bool,
+    pub min_nonbonded_distance_angstrom: Option<f32>,
+    pub severe_nonbonded_clash_count: usize,
+    pub severe_bond_violations: Vec<BondQcViolation>,
+    pub severe_clash_examples: Vec<ClashQcViolation>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct BuildSolverReport {
+    pub enabled: bool,
+    pub mode: String,
+    pub seed: u64,
+    pub passes_requested: usize,
+    pub passes_executed: usize,
+    pub rotatable_edge_count: usize,
+    pub candidate_evaluations: usize,
+    pub accepted_moves: usize,
+    pub termination_reason: String,
+    pub best_score: f32,
+    #[serde(default)]
+    pub hard_fail_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildBondExpectation {
+    pub edge_id: String,
+    pub parent_resid: usize,
+    pub child_resid: usize,
+    pub parent_atom: String,
+    pub child_atom: String,
+    pub parent_idx: usize,
+    pub child_idx: usize,
+    pub expected_distance_angstrom: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildQcContext {
+    pub inter_residue_bond_count: usize,
+    pub terminal_connectivity_consistent: bool,
+    pub sequence_token_template_consistent: bool,
+    pub bond_expectations: Vec<BuildBondExpectation>,
 }
 
 #[derive(Clone, Debug)]
@@ -476,6 +544,83 @@ fn template_atom_index_by_name(template: &ResidueTemplate) -> BTreeMap<String, u
         .collect()
 }
 
+fn template_atom_by_name<'a>(
+    template: &'a ResidueTemplate,
+    atom_name: &str,
+) -> PackResult<&'a AtomRecord> {
+    template
+        .atoms
+        .iter()
+        .find(|atom| atom.name.trim() == atom_name.trim())
+        .ok_or_else(|| {
+            PackError::Invalid(format!(
+                "attach atom '{}' missing from template '{}'",
+                atom_name, template.resname
+            ))
+        })
+}
+
+fn covalent_radius_angstrom(element: &str) -> f32 {
+    match element.trim().to_ascii_uppercase().as_str() {
+        "H" => 0.31,
+        "B" => 0.85,
+        "C" => 0.76,
+        "N" => 0.71,
+        "O" => 0.66,
+        "F" => 0.57,
+        "P" => 1.07,
+        "S" => 1.05,
+        "CL" => 1.02,
+        "BR" => 1.20,
+        "I" => 1.39,
+        "SI" => 1.11,
+        _ => 0.80,
+    }
+}
+
+fn guessed_attach_bond_distance(
+    parent_template: &ResidueTemplate,
+    child_template: &ResidueTemplate,
+    parent_attach_atom: &str,
+    child_attach_atom: &str,
+    bond_order: u8,
+) -> PackResult<f32> {
+    let parent_atom = template_atom_by_name(parent_template, parent_attach_atom)?;
+    let child_atom = template_atom_by_name(child_template, child_attach_atom)?;
+    let mut guess = covalent_radius_angstrom(&parent_atom.element)
+        + covalent_radius_angstrom(&child_atom.element);
+    if bond_order > 1 {
+        guess -= 0.10 * (bond_order.saturating_sub(1) as f32);
+    }
+    Ok(guess.clamp(0.9, 2.2))
+}
+
+fn observed_attach_distance(
+    templates: &[ResidueTemplate],
+    parent_resname: &str,
+    child_resname: &str,
+    parent_attach_atom: &str,
+    child_attach_atom: &str,
+) -> Option<f32> {
+    templates.windows(2).find_map(|window| {
+        let [parent, child] = window else {
+            return None;
+        };
+        if parent.resname != parent_resname || child.resname != child_resname {
+            return None;
+        }
+        let parent_atom = parent
+            .atoms
+            .iter()
+            .find(|atom| atom.name.trim() == parent_attach_atom.trim())?;
+        let child_atom = child
+            .atoms
+            .iter()
+            .find(|atom| atom.name.trim() == child_attach_atom.trim())?;
+        Some(child_atom.position.sub(parent_atom.position).norm())
+    })
+}
+
 fn orthonormal_basis(axis: Vec3) -> (Vec3, Vec3) {
     let axis = normalize(axis);
     let tangent = if axis.x.abs() < 0.9 {
@@ -570,6 +715,374 @@ fn resolved_torsion_angle(edge: &GraphEdgeSpec, rng: &mut StdRng) -> f32 {
         }
         _ => edge.torsion_deg.unwrap_or(180.0).to_radians(),
     }
+}
+
+fn attachment_local_position(template: &ResidueTemplate, atom_name: &str) -> PackResult<Vec3> {
+    let atom = template
+        .atoms
+        .iter()
+        .find(|atom| atom.name.trim() == atom_name.trim())
+        .ok_or_else(|| {
+            PackError::Invalid(format!(
+                "attach atom '{}' missing from template '{}'",
+                atom_name, template.resname
+            ))
+        })?;
+    Ok(atom.position.sub(template.centroid))
+}
+
+fn graph_tree(
+    node_count: usize,
+    edge_specs: &[GraphEdgeSpec],
+    root_idx: usize,
+) -> PackResult<(Vec<Option<usize>>, Vec<Option<usize>>, Vec<usize>)> {
+    if node_count == 0 {
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
+    }
+    let mut adjacency = vec![Vec::<(usize, usize)>::new(); node_count];
+    for (edge_idx, edge) in edge_specs.iter().enumerate() {
+        if edge.parent >= node_count || edge.child >= node_count {
+            return Err(PackError::Invalid(
+                "polymer graph edge references invalid node".into(),
+            ));
+        }
+        adjacency[edge.parent].push((edge.child, edge_idx));
+        adjacency[edge.child].push((edge.parent, edge_idx));
+    }
+    let mut parent_of = vec![None; node_count];
+    let mut parent_edge = vec![None; node_count];
+    let mut visit_order = Vec::with_capacity(node_count);
+    let mut queue = VecDeque::from([root_idx]);
+    let mut seen = BTreeSet::from([root_idx]);
+    while let Some(node_idx) = queue.pop_front() {
+        visit_order.push(node_idx);
+        for (neighbor, edge_idx) in adjacency[node_idx].clone() {
+            if seen.insert(neighbor) {
+                parent_of[neighbor] = Some(node_idx);
+                parent_edge[neighbor] = Some(edge_idx);
+                queue.push_back(neighbor);
+            }
+        }
+    }
+    if seen.len() != node_count {
+        return Err(PackError::Invalid("polymer graph must be connected".into()));
+    }
+    Ok((parent_of, parent_edge, visit_order))
+}
+
+fn is_descendant(parent_of: &[Option<usize>], candidate: usize, ancestor: usize) -> bool {
+    if candidate == ancestor {
+        return true;
+    }
+    let mut current = parent_of[candidate];
+    while let Some(node_idx) = current {
+        if node_idx == ancestor {
+            return true;
+        }
+        current = parent_of[node_idx];
+    }
+    false
+}
+
+#[derive(Clone, Debug)]
+struct RotatableEdge {
+    parent_attach_idx: usize,
+    child_attach_idx: usize,
+    movable_atom_indices: Vec<usize>,
+    torsion_mode: String,
+    torsion_deg: Option<f32>,
+    torsion_window_deg: Option<[f32; 2]>,
+}
+
+fn solver_score(report: &BuildQcReport, output: &PackOutput) -> f32 {
+    let severe_bond_penalty = report.severe_bond_violations.len() as f32 * 1_000_000.0;
+    let severe_clash_penalty = report.severe_nonbonded_clash_count as f32 * 100_000.0;
+    let bond_distance_penalty = report
+        .severe_bond_violations
+        .iter()
+        .map(|item| (item.measured_distance_angstrom - item.expected_distance_angstrom).abs())
+        .sum::<f32>()
+        * 1_000.0;
+    let clash_distance_penalty = report
+        .min_nonbonded_distance_angstrom
+        .map(|value| {
+            if value < 1.2 {
+                (1.2 - value) * 500.0
+            } else {
+                0.0
+            }
+        })
+        .unwrap_or(0.0);
+    let compactness = output
+        .atoms
+        .iter()
+        .map(|atom| atom.position.norm())
+        .sum::<f32>()
+        / output.atoms.len().max(1) as f32;
+    severe_bond_penalty
+        + severe_clash_penalty
+        + bond_distance_penalty
+        + clash_distance_penalty
+        + compactness * 0.01
+}
+
+fn candidate_rotation_degrees(edge: &RotatableEdge) -> Vec<f32> {
+    let mut values = match edge.torsion_mode.as_str() {
+        "trans" => vec![0.0, 180.0, 120.0, -120.0, 60.0, -60.0],
+        "cis" => vec![0.0, 30.0, -30.0, 60.0, -60.0, 180.0],
+        "gauche_plus" => vec![0.0, 60.0, 90.0, 120.0, -60.0],
+        "gauche_minus" => vec![0.0, -60.0, -90.0, -120.0, 60.0],
+        "fixed_deg" => {
+            let base = edge.torsion_deg.unwrap_or(0.0);
+            vec![0.0, base, base + 30.0, base - 30.0]
+        }
+        "sample_window" => {
+            let [start, end] = edge.torsion_window_deg.unwrap_or([-180.0, 180.0]);
+            let steps = 7usize;
+            let mut samples = vec![0.0];
+            if steps <= 1 || (end - start).abs() <= 1.0e-6 {
+                samples.push(start);
+            } else {
+                for idx in 0..steps {
+                    let fraction = idx as f32 / (steps - 1) as f32;
+                    samples.push(start + (end - start) * fraction);
+                }
+            }
+            samples
+        }
+        _ => vec![0.0, 180.0, 60.0, -60.0, 120.0, -120.0],
+    };
+    values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    values.dedup_by(|left, right| (*left - *right).abs() <= 1.0e-4);
+    values
+}
+
+fn rotate_subtree_atoms(
+    atoms: &mut [AtomRecord],
+    edge: &RotatableEdge,
+    delta_deg: f32,
+) -> PackResult<()> {
+    if delta_deg.abs() <= 1.0e-6 {
+        return Ok(());
+    }
+    let pivot = atoms
+        .get(edge.parent_attach_idx)
+        .map(|atom| atom.position)
+        .ok_or_else(|| PackError::Invalid("solver parent attach atom index out of range".into()))?;
+    let child = atoms
+        .get(edge.child_attach_idx)
+        .map(|atom| atom.position)
+        .ok_or_else(|| PackError::Invalid("solver child attach atom index out of range".into()))?;
+    let axis = child.sub(pivot);
+    if axis.norm() <= 1.0e-6 {
+        return Ok(());
+    }
+    let theta = delta_deg.to_radians();
+    for atom_idx in &edge.movable_atom_indices {
+        let Some(atom) = atoms.get_mut(*atom_idx) else {
+            continue;
+        };
+        let relative = atom.position.sub(pivot);
+        atom.position = pivot.add(rotate_about_axis(relative, axis, theta));
+    }
+    Ok(())
+}
+
+fn solve_rotatable_edges(
+    output: &mut PackOutput,
+    qc_context: &BuildQcContext,
+    rotatable_edges: &[RotatableEdge],
+    seed: u64,
+) -> PackResult<BuildSolverReport> {
+    let passes_requested = 3usize;
+    let mut passes_executed = 0usize;
+    let mut candidate_evaluations = 0usize;
+    let mut accepted_moves = 0usize;
+    let mut best_report = recompute_build_qc_report(output, qc_context);
+    let mut best_score = solver_score(&best_report, output);
+    let mut termination_reason = "pass_budget_exhausted".to_string();
+    for pass_idx in 0..passes_requested {
+        let mut improved_any = false;
+        for edge in rotatable_edges {
+            let baseline_atoms = output.atoms.clone();
+            let mut edge_best_atoms = baseline_atoms.clone();
+            let mut edge_best_report = best_report.clone();
+            let mut edge_best_score = best_score;
+            for delta_deg in candidate_rotation_degrees(edge) {
+                let mut candidate_atoms = baseline_atoms.clone();
+                rotate_subtree_atoms(&mut candidate_atoms, edge, delta_deg)?;
+                let candidate_output = PackOutput {
+                    atoms: candidate_atoms,
+                    bonds: output.bonds.clone(),
+                    box_size: output.box_size,
+                    ter_after: output.ter_after.clone(),
+                };
+                let report = recompute_build_qc_report(&candidate_output, qc_context);
+                let score = solver_score(&report, &candidate_output);
+                candidate_evaluations += 1;
+                if score + 1.0e-4 < edge_best_score {
+                    edge_best_score = score;
+                    edge_best_report = report;
+                    edge_best_atoms = candidate_output.atoms;
+                }
+            }
+            if edge_best_score + 1.0e-4 < best_score {
+                output.atoms = edge_best_atoms;
+                best_score = edge_best_score;
+                best_report = edge_best_report;
+                accepted_moves += 1;
+                improved_any = true;
+            }
+        }
+        passes_executed = pass_idx + 1;
+        if best_report.severe_bond_violations.is_empty()
+            && best_report.severe_nonbonded_clash_count == 0
+        {
+            termination_reason = "qc_passed".into();
+            break;
+        }
+        if !improved_any {
+            termination_reason = "no_improvement".into();
+            break;
+        }
+    }
+    Ok(BuildSolverReport {
+        enabled: true,
+        mode: "torsion_solve".into(),
+        seed,
+        passes_requested,
+        passes_executed,
+        rotatable_edge_count: rotatable_edges.len(),
+        candidate_evaluations,
+        accepted_moves,
+        termination_reason,
+        best_score,
+        hard_fail_reason: None,
+    })
+}
+
+fn graph_edge_ideal_distance(
+    edge: &GraphEdgeSpec,
+    templates: &[ResidueTemplate],
+    node_specs: &[GraphNodeSpec],
+    template_lookup: &BTreeMap<String, &ResidueTemplate>,
+    repeat: &ResidueTemplate,
+) -> PackResult<f32> {
+    let parent_template = template_lookup
+        .get(&node_specs[edge.parent].template_resname)
+        .copied()
+        .unwrap_or(repeat);
+    let child_template = template_lookup
+        .get(&node_specs[edge.child].template_resname)
+        .copied()
+        .unwrap_or(repeat);
+    let guessed = guessed_attach_bond_distance(
+        parent_template,
+        child_template,
+        &edge.parent_attach_atom,
+        &edge.child_attach_atom,
+        edge.bond_order,
+    )?;
+    if let Some(observed) = observed_attach_distance(
+        templates,
+        &parent_template.resname,
+        &child_template.resname,
+        &edge.parent_attach_atom,
+        &edge.child_attach_atom,
+    ) {
+        if observed >= guessed * 0.75 && observed <= guessed * 1.25 {
+            return Ok(observed.max(0.5));
+        }
+    }
+    Ok(guessed.max(0.5))
+}
+
+fn severe_bond_threshold(expected_distance: f32) -> f32 {
+    (expected_distance * 1.8).max(expected_distance + 2.0)
+}
+
+fn build_qc_report(
+    atoms: &[AtomRecord],
+    bonds: &[(usize, usize)],
+    context: &BuildQcContext,
+) -> BuildQcReport {
+    let severe_bond_violations = context
+        .bond_expectations
+        .iter()
+        .filter_map(|expectation| {
+            let parent = atoms.get(expectation.parent_idx)?;
+            let child = atoms.get(expectation.child_idx)?;
+            let measured = child.position.sub(parent.position).norm();
+            (measured > severe_bond_threshold(expectation.expected_distance_angstrom)).then(|| {
+                BondQcViolation {
+                    edge_id: expectation.edge_id.clone(),
+                    parent_resid: expectation.parent_resid,
+                    child_resid: expectation.child_resid,
+                    parent_atom: expectation.parent_atom.clone(),
+                    child_atom: expectation.child_atom.clone(),
+                    measured_distance_angstrom: measured,
+                    expected_distance_angstrom: expectation.expected_distance_angstrom,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let bonded_pairs = bonds
+        .iter()
+        .map(|&(a, b)| if a <= b { (a, b) } else { (b, a) })
+        .collect::<BTreeSet<_>>();
+    let mut min_nonbonded: Option<f32> = None;
+    let mut severe_clash_examples = Vec::new();
+    for left in 0..atoms.len() {
+        for right in (left + 1)..atoms.len() {
+            if bonded_pairs.contains(&(left, right)) {
+                continue;
+            }
+            let distance = atoms[right].position.sub(atoms[left].position).norm();
+            min_nonbonded = Some(match min_nonbonded {
+                Some(current) => current.min(distance),
+                None => distance,
+            });
+            if distance < 0.8 && severe_clash_examples.len() < 8 {
+                severe_clash_examples.push(ClashQcViolation {
+                    atom_a: left + 1,
+                    atom_b: right + 1,
+                    distance_angstrom: distance,
+                });
+            }
+        }
+    }
+
+    BuildQcReport {
+        inter_residue_bond_count: context.inter_residue_bond_count,
+        terminal_connectivity_consistent: context.terminal_connectivity_consistent,
+        sequence_token_template_consistent: context.sequence_token_template_consistent,
+        min_nonbonded_distance_angstrom: min_nonbonded,
+        severe_nonbonded_clash_count: severe_clash_examples.len(),
+        severe_bond_violations,
+        severe_clash_examples,
+    }
+}
+
+pub fn recompute_build_qc_report(output: &PackOutput, context: &BuildQcContext) -> BuildQcReport {
+    build_qc_report(&output.atoms, &output.bonds, context)
+}
+
+pub fn ensure_build_qc_passes(report: &BuildQcReport) -> PackResult<()> {
+    if !report.severe_bond_violations.is_empty() {
+        let first = &report.severe_bond_violations[0];
+        return Err(PackError::Invalid(format!(
+            "build QC failed: inter-residue bond '{}' measured {:.3} A; expected {:.3} A",
+            first.edge_id, first.measured_distance_angstrom, first.expected_distance_angstrom
+        )));
+    }
+    if report.severe_nonbonded_clash_count > 0 {
+        let first = &report.severe_clash_examples[0];
+        return Err(PackError::Invalid(format!(
+            "build QC failed: severe nonbonded clash between atoms {} and {} at {:.3} A",
+            first.atom_a, first.atom_b, first.distance_angstrom
+        )));
+    }
+    Ok(())
 }
 
 fn layout_graph_centroids(
@@ -940,6 +1453,41 @@ fn compute_sequence_polymer_net_charge(
             return NetChargeEstimate {
                 net_charge_e: Some(total),
                 source: Some("charge_manifest.atom_charges.sequence_template_map".into()),
+            };
+        }
+    }
+
+    if let (Some(head_charge), Some(repeat_charge), Some(tail_charge)) = (
+        manifest.head_charge_e,
+        manifest.repeat_charge_e,
+        manifest.tail_charge_e,
+    ) {
+        let head_template = templates.first().map(|template| template.resname.as_str());
+        let repeat_template = templates
+            .get(templates.len() / 2)
+            .map(|template| template.resname.as_str());
+        let tail_template = templates.last().map(|template| template.resname.as_str());
+        let mut total = 0.0f32;
+        let mut recognized = true;
+        for (idx, resname) in template_sequence_resnames.iter().enumerate() {
+            let charge = if idx == 0 && Some(resname.as_str()) == head_template {
+                head_charge
+            } else if idx + 1 == template_sequence_resnames.len()
+                && Some(resname.as_str()) == tail_template
+            {
+                tail_charge
+            } else if Some(resname.as_str()) == repeat_template {
+                repeat_charge
+            } else {
+                recognized = false;
+                break;
+            };
+            total += charge;
+        }
+        if recognized {
+            return NetChargeEstimate {
+                net_charge_e: Some(total),
+                source: Some("charge_manifest.repeat_scalars.sequence_roles".into()),
             };
         }
     }
@@ -2075,6 +2623,13 @@ pub fn build_linear_sequence_polymer(
         box_size: [0.0, 0.0, 0.0],
         ter_after,
     };
+    let qc_context = BuildQcContext {
+        inter_residue_bond_count: sequence_specs.len().saturating_sub(1),
+        terminal_connectivity_consistent: true,
+        sequence_token_template_consistent: true,
+        bond_expectations: Vec::new(),
+    };
+    let qc_report = recompute_build_qc_report(&output, &qc_context);
     let path = stage_polymer_output_path(final_coordinates_path);
     let path_text = path.to_string_lossy().to_string();
     if let Some(parent) = Path::new(&path_text).parent() {
@@ -2170,6 +2725,9 @@ pub fn build_linear_sequence_polymer(
             .map(|item| item.applied_resname.clone())
             .collect(),
         output,
+        qc_context,
+        qc_report,
+        solver_report: None,
         source_charge_manifest_path: resolved.charge_manifest_path,
         topology_ref: resolved.topology_ref,
     })
@@ -2234,6 +2792,7 @@ pub fn build_polymer_graph(
         .norm()
         .max(tail.centroid.sub(repeat.centroid).norm())
         .max(1.5);
+    let (parent_of, parent_edge, visit_order) = graph_tree(node_specs.len(), edge_specs, root_idx)?;
     let centroids = layout_graph_centroids(
         node_specs.len(),
         edge_specs,
@@ -2259,6 +2818,20 @@ pub fn build_polymer_graph(
     let mut tacticity_rng = StdRng::seed_from_u64(build_seed ^ 0x5eed_5eed);
     let mut edge_parent_attach = vec![None; edge_specs.len()];
     let mut edge_child_attach = vec![None; edge_specs.len()];
+    let edge_ideal_distances = edge_specs
+        .iter()
+        .map(|edge| {
+            graph_edge_ideal_distance(
+                edge,
+                &templates,
+                node_specs,
+                &template_lookup,
+                repeat,
+            )
+        })
+        .collect::<PackResult<Vec<_>>>()?;
+    let mut node_atom_indices = vec![Vec::new(); node_specs.len()];
+    let mut rotatable_edges = Vec::new();
 
     for (idx, spec) in node_specs.iter().enumerate() {
         let template = template_lookup
@@ -2297,7 +2870,9 @@ pub fn build_polymer_graph(
             built.resname = spec.applied_resname.clone();
             built.mol_id = 1;
             atoms.push(built);
-            local_to_global.insert(local_idx, residue_start + local_to_global.len());
+            let global_idx = residue_start + local_to_global.len();
+            local_to_global.insert(local_idx, global_idx);
+            node_atom_indices[idx].push(global_idx);
         }
         for &(a, b) in &template.local_bonds {
             let Some(&i) = local_to_global.get(&a) else {
@@ -2354,6 +2929,45 @@ pub fn build_polymer_graph(
         }
     }
 
+    for &node_idx in visit_order.iter().skip(1) {
+        let Some(edge_idx) = parent_edge[node_idx] else {
+            continue;
+        };
+        let Some(parent_idx) = parent_of[node_idx] else {
+            continue;
+        };
+        let Some(parent_attach_idx) = edge_parent_attach[edge_idx] else {
+            continue;
+        };
+        let Some(child_attach_idx) = edge_child_attach[edge_idx] else {
+            continue;
+        };
+        let current = atoms[child_attach_idx]
+            .position
+            .sub(atoms[parent_attach_idx].position);
+        let fallback = centroids[node_idx].sub(centroids[parent_idx]);
+        let direction = if current.norm() > 1.0e-6 {
+            normalize(current)
+        } else {
+            normalize(fallback)
+        };
+        let desired = atoms[parent_attach_idx]
+            .position
+            .add(direction.scale(edge_ideal_distances[edge_idx]));
+        let delta = desired.sub(atoms[child_attach_idx].position);
+        if delta.norm() <= 1.0e-6 {
+            continue;
+        }
+        for descendant_idx in 0..node_specs.len() {
+            if !is_descendant(&parent_of, descendant_idx, node_idx) {
+                continue;
+            }
+            for atom_idx in &node_atom_indices[descendant_idx] {
+                atoms[*atom_idx].position = atoms[*atom_idx].position.add(delta);
+            }
+        }
+    }
+
     for (edge_idx, _) in edge_specs.iter().enumerate() {
         let Some(parent_idx) = edge_parent_attach[edge_idx] else {
             continue;
@@ -2373,12 +2987,84 @@ pub fn build_polymer_graph(
     bonds.sort_unstable();
     bonds.dedup();
 
-    let output = PackOutput {
+    for &node_idx in visit_order.iter().skip(1) {
+        let Some(edge_idx) = parent_edge[node_idx] else {
+            continue;
+        };
+        let Some(parent_attach_idx) = edge_parent_attach[edge_idx] else {
+            continue;
+        };
+        let Some(child_attach_idx) = edge_child_attach[edge_idx] else {
+            continue;
+        };
+        let movable_atom_indices = (0..node_specs.len())
+            .filter(|descendant_idx| is_descendant(&parent_of, *descendant_idx, node_idx))
+            .flat_map(|descendant_idx| node_atom_indices[descendant_idx].clone())
+            .collect::<Vec<_>>();
+        if movable_atom_indices.is_empty() {
+            continue;
+        }
+        let edge = &edge_specs[edge_idx];
+        rotatable_edges.push(RotatableEdge {
+            parent_attach_idx,
+            child_attach_idx,
+            movable_atom_indices,
+            torsion_mode: edge.torsion_mode.clone(),
+            torsion_deg: edge.torsion_deg,
+            torsion_window_deg: edge.torsion_window_deg,
+        });
+    }
+
+    let mut output = PackOutput {
         atoms,
         bonds,
         box_size: [0.0, 0.0, 0.0],
         ter_after,
     };
+    let qc_context = BuildQcContext {
+        inter_residue_bond_count: edge_specs.len(),
+        terminal_connectivity_consistent: !edge_specs.is_empty() || node_specs.len() <= 1,
+        sequence_token_template_consistent: node_specs
+            .iter()
+            .all(|node| !node.template_resname.is_empty()),
+        bond_expectations: edge_specs
+            .iter()
+            .enumerate()
+            .filter_map(|(edge_idx, edge)| {
+                let parent_idx = edge_parent_attach.get(edge_idx).and_then(|item| *item)?;
+                let child_idx = edge_child_attach.get(edge_idx).and_then(|item| *item)?;
+                let parent_atom = output.atoms.get(parent_idx)?.name.clone();
+                let child_atom = output.atoms.get(child_idx)?.name.clone();
+                Some(BuildBondExpectation {
+                    edge_id: edge.edge_id.clone(),
+                    parent_resid: edge.parent + 1,
+                    child_resid: edge.child + 1,
+                    parent_atom,
+                    child_atom,
+                    parent_idx,
+                    child_idx,
+                    expected_distance_angstrom: edge_ideal_distances
+                        .get(edge_idx)
+                        .copied()
+                        .unwrap_or(1.5),
+                })
+            })
+            .collect(),
+    };
+    let solver_report = if conformation_mode == "random_walk" {
+        Some(solve_rotatable_edges(
+            &mut output,
+            &qc_context,
+            &rotatable_edges,
+            build_seed,
+        )?)
+    } else {
+        None
+    };
+    let qc_report = recompute_build_qc_report(&output, &qc_context);
+    if conformation_mode != "random_walk" {
+        ensure_build_qc_passes(&qc_report)?;
+    }
     let path = stage_polymer_output_path(final_coordinates_path);
     let path_text = path.to_string_lossy().to_string();
     if let Some(parent) = Path::new(&path_text).parent() {
@@ -2474,6 +3160,9 @@ pub fn build_polymer_graph(
             .map(|item| item.applied_resname.clone())
             .collect(),
         output,
+        qc_context,
+        qc_report,
+        solver_report,
         source_charge_manifest_path: resolved.charge_manifest_path,
         topology_ref: resolved.topology_ref,
     })
