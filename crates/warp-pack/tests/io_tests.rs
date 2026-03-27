@@ -248,7 +248,8 @@ fn pdb_strict_rejects_long_residue_names() {
         format: "pdb-strict".into(),
         scale: Some(1.0),
     };
-    let err = write_output(&out, &pdb_spec, false, 0.0, false, false).expect_err("strict pdb should reject long residue names");
+    let err = write_output(&out, &pdb_spec, false, 0.0, false, false)
+        .expect_err("strict pdb should reject long residue names");
     assert!(err
         .to_string()
         .contains("pdb-strict residue name 'pes_8mer_029' exceeds 3 characters"));

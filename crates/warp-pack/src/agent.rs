@@ -699,7 +699,10 @@ fn load_polymer_build_handoff(
     let charge_manifest_path = handoff.charge_manifest.clone().or_else(|| {
         manifest_string_path(
             &manifest,
-            &["/artifacts/charge_manifest", "/md_ready_handoff/charge_manifest"],
+            &[
+                "/artifacts/charge_manifest",
+                "/md_ready_handoff/charge_manifest",
+            ],
         )
     });
     let topology = handoff.topology.clone().or_else(|| {
@@ -711,12 +714,18 @@ fn load_polymer_build_handoff(
     let topology_graph_path = handoff.topology_graph.clone().or_else(|| {
         manifest_string_path(
             &manifest,
-            &["/artifacts/topology_graph", "/md_ready_handoff/topology_graph"],
+            &[
+                "/artifacts/topology_graph",
+                "/md_ready_handoff/topology_graph",
+            ],
         )
     });
     let forcefield_ref = manifest_string_path(
         &manifest,
-        &["/artifacts/forcefield_ref", "/md_ready_handoff/forcefield_ref"],
+        &[
+            "/artifacts/forcefield_ref",
+            "/md_ready_handoff/forcefield_ref",
+        ],
     );
     let topology_graph_path = topology_graph_path
         .as_deref()

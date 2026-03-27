@@ -2821,13 +2821,7 @@ pub fn build_polymer_graph(
     let edge_ideal_distances = edge_specs
         .iter()
         .map(|edge| {
-            graph_edge_ideal_distance(
-                edge,
-                &templates,
-                node_specs,
-                &template_lookup,
-                repeat,
-            )
+            graph_edge_ideal_distance(edge, &templates, node_specs, &template_lookup, repeat)
         })
         .collect::<PackResult<Vec<_>>>()?;
     let mut node_atom_indices = vec![Vec::new(); node_specs.len()];

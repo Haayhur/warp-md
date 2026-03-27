@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from .cli_api import (
+    BondiFfvPlan,
     BondAngleDistributionPlan,
     BondLengthDistributionPlan,
     ChainRgPlan,
@@ -254,6 +255,12 @@ def _build_free_volume(system: System, spec: Dict[str, Any]):
     return FreeVolumePlan(sel, center_sel, **kwargs)
 
 
+def _build_bondi_ffv(system: System, spec: Dict[str, Any]):
+    sel = _select(system, spec.get("selection"), "bondi_ffv.selection")
+    kwargs = _pick(spec, ["bondi_scale", "probe_radius", "seed", "ninsert_per_nm3", "length_scale"])
+    return BondiFfvPlan(sel, **kwargs)
+
+
 def _build_equipartition(system: System, spec: Dict[str, Any]):
     sel = _select(system, spec.get("selection"), "equipartition.selection")
     group_by = spec.get("group_by", "resid")
@@ -488,6 +495,7 @@ PLAN_BUILDERS = {
     "structure_factor": _build_structure_factor,
     "water_count": _build_water_count,
     "free_volume": _build_free_volume,
+    "bondi_ffv": _build_bondi_ffv,
     "equipartition": _build_equipartition,
     "hbond": _build_hbond,
     "rdf": _build_rdf,
@@ -531,6 +539,8 @@ CLI_TO_PLAN = {
     "structure-factor": "structure_factor",
     "water-count": "water_count",
     "free-volume": "free_volume",
+    "bondi-ffv": "bondi_ffv",
+    "ffv": "bondi_ffv",
     "equipartition": "equipartition",
     "hbond": "hbond",
     "rdf": "rdf",

@@ -234,6 +234,23 @@ def _spec_free_volume(args, system: System) -> Dict[str, Any]:
     return spec
 
 
+def _spec_bondi_ffv(args, system: System) -> Dict[str, Any]:
+    spec: Dict[str, Any] = {
+        "selection": args.selection,
+    }
+    if args.bondi_scale is not None:
+        spec["bondi_scale"] = args.bondi_scale
+    if args.probe_radius is not None:
+        spec["probe_radius"] = args.probe_radius
+    if args.seed is not None:
+        spec["seed"] = args.seed
+    if args.ninsert_per_nm3 is not None:
+        spec["ninsert_per_nm3"] = args.ninsert_per_nm3
+    if args.length_scale is not None:
+        spec["length_scale"] = args.length_scale
+    return spec
+
+
 def _spec_equipartition(args, system: System) -> Dict[str, Any]:
     spec: Dict[str, Any] = {
         "selection": args.selection,
@@ -318,6 +335,7 @@ SPEC_BUILDERS = {
     "structure-factor": _spec_structure_factor,
     "water-count": _spec_water_count,
     "free-volume": _spec_free_volume,
+    "bondi-ffv": _spec_bondi_ffv,
     "equipartition": _spec_equipartition,
     "hbond": _spec_hbond,
     "rdf": _spec_rdf,

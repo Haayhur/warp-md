@@ -158,6 +158,8 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
     let mut screen = Vec::new();
     let mut bonds = Vec::new();
     let mut bond_type_indices = Vec::new();
+    let mut bonds_inc_hydrogen_count = 0usize;
+    let mut bonds_without_hydrogen_count = 0usize;
     let mut bond_force_constants = Vec::new();
     let mut bond_equil_values = Vec::new();
     let mut angles = Vec::new();
@@ -295,6 +297,7 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
                 }
             }
             "BONDS_INC_HYDROGEN" | "BONDS_WITHOUT_HYDROGEN" => {
+                let include_hydrogen = matches!(flag, "BONDS_INC_HYDROGEN");
                 let values = tokens
                     .filter_map(|tok| tok.parse::<usize>().ok())
                     .collect::<Vec<_>>();
@@ -308,6 +311,11 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
                     if i != j {
                         bonds.push((i, j));
                         bond_type_indices.push(chunk.get(2).copied().unwrap_or(1));
+                        if include_hydrogen {
+                            bonds_inc_hydrogen_count += 1;
+                        } else {
+                            bonds_without_hydrogen_count += 1;
+                        }
                     }
                 }
             }
@@ -628,32 +636,8 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
             atom_type_indices.iter().copied().max().unwrap_or(0),
             expect(1),
         )?;
-        check(
-            "NBONH",
-            bond_type_indices
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| {
-                    let (a, b) = bonds[*idx];
-                    atomic_numbers.get(a).copied().unwrap_or_default() == 1
-                        || atomic_numbers.get(b).copied().unwrap_or_default() == 1
-                })
-                .count(),
-            expect(2),
-        )?;
-        check(
-            "MBONA",
-            bond_type_indices
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| {
-                    let (a, b) = bonds[*idx];
-                    atomic_numbers.get(a).copied().unwrap_or_default() != 1
-                        && atomic_numbers.get(b).copied().unwrap_or_default() != 1
-                })
-                .count(),
-            expect(3),
-        )?;
+        check("NBONH", bonds_inc_hydrogen_count, expect(2))?;
+        check("MBONA", bonds_without_hydrogen_count, expect(3))?;
         check("NRES", residue_labels.len(), expect(11))?;
         check("NUMBND", bond_force_constants.len(), expect(15))?;
         check("NUMANG", angle_force_constants.len(), expect(16))?;

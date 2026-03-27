@@ -17,7 +17,7 @@ use traj_engine::plans::analysis::rotacf::OrientationSpec;
 use traj_engine::{
     AlignPlan, AlignPrincipalAxisPlan, AnalyzeModesPlan, AnglePlan, AtomMapPlan, AtomicCorrPlan,
     AtomicFluctPlan, AutoImagePlan, AverageFramePlan, BfactorsPlan, BondAngleDistributionPlan,
-    BondLengthDistributionPlan, CenterMode, CenterOfGeometryPlan, CenterOfMassPlan,
+    BondLengthDistributionPlan, BondiFfvPlan, CenterMode, CenterOfGeometryPlan, CenterOfMassPlan,
     CenterTrajectoryPlan, ChainRgPlan, CheckChiralityPlan, CheckStructurePlan, ClosestAtomPlan,
     ClosestPlan, ClusterMethod, ConductivityPlan, ContourLengthPlan, CountInVoxelPlan, DensityPlan,
     DielectricPlan, DihedralPlan, DihedralRmsPlan, DipoleAlignmentPlan, DistancePlan,

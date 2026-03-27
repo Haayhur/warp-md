@@ -31,6 +31,7 @@ def test_list_plans_json() -> None:
     assert "plans" in payload
     assert "rg" in payload["plans"]
     assert "free_volume" in payload["plans"]
+    assert "bondi_ffv" in payload["plans"]
 
 
 def test_list_plans_json_alias() -> None:

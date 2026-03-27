@@ -1038,6 +1038,7 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDensityPlan>()?;
     m.add_class::<PyVolmapPlan>()?;
     m.add_class::<PyFreeVolumePlan>()?;
+    m.add_class::<PyBondiFfvPlan>()?;
     m.add_class::<PyEquipartitionPlan>()?;
     m.add_class::<PyHbondPlan>()?;
     m.add_class::<PyRdfPlan>()?;
@@ -1461,6 +1462,109 @@ fn grid_to_py(py: Python<'_>, output: traj_engine::GridOutput) -> PyResult<PyObj
     dict.set_item("last", PyArray1::from_vec_bound(py, output.last))?;
     dict.set_item("min", PyArray1::from_vec_bound(py, output.min))?;
     dict.set_item("max", PyArray1::from_vec_bound(py, output.max))?;
+    Ok(dict.into_py(py))
+}
+
+fn bondi_ffv_to_py(
+    py: Python<'_>,
+    time: Vec<f32>,
+    data: Vec<f32>,
+    rows: usize,
+    cols: usize,
+    bondi_scale: f64,
+    molar_mass_dalton: f64,
+    probe_radius: f64,
+    ninsert_per_nm3: usize,
+    seed: i64,
+) -> PyResult<PyObject> {
+    if cols != 6 || rows * cols != data.len() {
+        return Err(PyRuntimeError::new_err("invalid bondi_ffv shape"));
+    }
+    let mut total_volume_a3 = Vec::with_capacity(rows);
+    let mut vdw_volume_a3 = Vec::with_capacity(rows);
+    let mut raw_free_volume_a3 = Vec::with_capacity(rows);
+    let mut raw_free_volume_fraction = Vec::with_capacity(rows);
+    let mut fractional_free_volume = Vec::with_capacity(rows);
+    let mut density_g_cm3 = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let base = row * cols;
+        total_volume_a3.push(data[base]);
+        vdw_volume_a3.push(data[base + 1]);
+        raw_free_volume_a3.push(data[base + 2]);
+        raw_free_volume_fraction.push(data[base + 3]);
+        fractional_free_volume.push(data[base + 4]);
+        density_g_cm3.push(data[base + 5]);
+    }
+
+    let dict = PyDict::new_bound(py);
+    dict.set_item("time", PyArray1::from_vec_bound(py, time))?;
+    dict.set_item(
+        "total_volume_a3",
+        PyArray1::from_vec_bound(py, total_volume_a3.clone()),
+    )?;
+    dict.set_item(
+        "total_volume_nm3",
+        PyArray1::from_vec_bound(
+            py,
+            total_volume_a3
+                .iter()
+                .map(|value| *value / 1000.0)
+                .collect::<Vec<f32>>(),
+        ),
+    )?;
+    dict.set_item(
+        "vdw_volume_a3",
+        PyArray1::from_vec_bound(py, vdw_volume_a3.clone()),
+    )?;
+    dict.set_item(
+        "vdw_volume_nm3",
+        PyArray1::from_vec_bound(
+            py,
+            vdw_volume_a3
+                .iter()
+                .map(|value| *value / 1000.0)
+                .collect::<Vec<f32>>(),
+        ),
+    )?;
+    dict.set_item(
+        "raw_free_volume_a3",
+        PyArray1::from_vec_bound(py, raw_free_volume_a3),
+    )?;
+    dict.set_item(
+        "raw_free_volume_fraction",
+        PyArray1::from_vec_bound(py, raw_free_volume_fraction.clone()),
+    )?;
+    dict.set_item(
+        "raw_free_volume_percent",
+        PyArray1::from_vec_bound(
+            py,
+            raw_free_volume_fraction
+                .iter()
+                .map(|value| *value * 100.0)
+                .collect::<Vec<f32>>(),
+        ),
+    )?;
+    dict.set_item(
+        "fractional_free_volume",
+        PyArray1::from_vec_bound(py, fractional_free_volume.clone()),
+    )?;
+    dict.set_item(
+        "fractional_free_volume_percent",
+        PyArray1::from_vec_bound(
+            py,
+            fractional_free_volume
+                .iter()
+                .map(|value| *value * 100.0)
+                .collect::<Vec<f32>>(),
+        ),
+    )?;
+    dict.set_item("density_g_cm3", PyArray1::from_vec_bound(py, density_g_cm3))?;
+    dict.set_item("bondi_scale", bondi_scale)?;
+    dict.set_item("molar_mass_dalton", molar_mass_dalton)?;
+    dict.set_item("probe_radius", probe_radius)?;
+    dict.set_item("ninsert_per_nm3", ninsert_per_nm3)?;
+    dict.set_item("seed", seed)?;
+    dict.set_item("reference", "Bondi 1964; Lourenco et al. 2013")?;
     Ok(dict.into_py(py))
 }
 

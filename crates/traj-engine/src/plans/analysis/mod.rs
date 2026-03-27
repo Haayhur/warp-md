@@ -1,4 +1,5 @@
 pub mod atomiccorr;
+pub mod bondi_ffv;
 pub mod clustering;
 pub mod common;
 pub mod conductivity;
@@ -26,6 +27,7 @@ pub mod wavelet;
 pub mod xcorr;
 
 pub use atomiccorr::AtomicCorrPlan;
+pub use bondi_ffv::BondiFfvPlan;
 pub use clustering::{ClusterMethod, TrajectoryClusterPlan};
 pub use conductivity::ConductivityPlan;
 pub use dielectric::DielectricPlan;

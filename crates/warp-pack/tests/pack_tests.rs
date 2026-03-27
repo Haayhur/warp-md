@@ -243,6 +243,19 @@ fn prmtop_parse_rejects_pointer_length_mismatch() {
 }
 
 #[test]
+fn prmtop_parse_accepts_hydrogen_bond_counts_without_atomic_numbers() {
+    let prmtop_path = temp_path("missing_atomic_numbers.prmtop");
+    write_text(
+        &prmtop_path,
+        "%VERSION  VERSION_STAMP = V0001.000\n%FLAG POINTERS\n%FORMAT(10I8)\n       2       1       1       0       0       0       0       0       0       0\n       0       1       0       0       0       1       0       0       1       0\n       0       0       0       0       0       0       0       0       2       0\n       0       0\n%FLAG ATOM_NAME\n%FORMAT(20a4)\nH1  C1\n%FLAG RESIDUE_LABEL\n%FORMAT(20a4)\nMOL\n%FLAG RESIDUE_POINTER\n%FORMAT(10I8)\n1\n%FLAG MASS\n%FORMAT(5E16.8)\n  1.00800000E+00  1.20000000E+01\n%FLAG CHARGE\n%FORMAT(5E16.8)\n  0.00000000E+00  0.00000000E+00\n%FLAG ATOM_TYPE_INDEX\n%FORMAT(10I8)\n       1       1\n%FLAG AMBER_ATOM_TYPE\n%FORMAT(20a4)\nHC  CT\n%FLAG BOND_FORCE_CONSTANT\n%FORMAT(5E16.8)\n  3.00000000E+02\n%FLAG BONDS_INC_HYDROGEN\n%FORMAT(10I8)\n       0       3       1\n",
+    );
+    let parsed = read_prmtop_topology(&prmtop_path).expect("missing atomic number prmtop");
+    assert_eq!(parsed.bonds, vec![(0, 1)]);
+    assert_eq!(parsed.bond_type_indices, vec![1]);
+    let _ = fs::remove_file(&prmtop_path);
+}
+
+#[test]
 fn restart_from_places_molecule() {
     let pdb_path = temp_path("restart_input.pdb");
     write_text(

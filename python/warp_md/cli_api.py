@@ -8,6 +8,7 @@ from .io import open_trajectory_auto
 _API_IMPORT_ERROR: Optional[Exception]
 try:
     from . import (
+        BondiFfvPlan,
         BondAngleDistributionPlan,
         BondLengthDistributionPlan,
         ChainRgPlan,
@@ -35,6 +36,7 @@ try:
 except Exception as exc:  # pragma: no cover - import guard for help/metadata usage
     BondAngleDistributionPlan = None  # type: ignore[assignment]
     BondLengthDistributionPlan = None  # type: ignore[assignment]
+    BondiFfvPlan = None  # type: ignore[assignment]
     ChainRgPlan = None  # type: ignore[assignment]
     ConductivityPlan = None  # type: ignore[assignment]
     ContourLengthPlan = None  # type: ignore[assignment]

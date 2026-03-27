@@ -265,6 +265,15 @@ def setup_free_volume_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--length-scale", type=float, help="Length scale")
 
 
+def setup_bondi_ffv_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Selection used for Bondi van der Waals volume")
+    parser.add_argument("--bondi-scale", type=float, help="Homogeneity scale factor applied to Bondi vdW volume (default 1.3)")
+    parser.add_argument("--probe-radius", type=float, help="Probe radius in Angstroms (default 0.0)")
+    parser.add_argument("--seed", type=int, help="Deterministic Monte Carlo seed")
+    parser.add_argument("--ninsert-per-nm3", type=int, help="Probe insertions per cubic nm (default 1000)")
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+
+
 def setup_equipartition_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--selection", required=True, help="Selection string")
     parser.add_argument(
@@ -344,6 +353,7 @@ REGISTRY = {
     "structure-factor": setup_structure_factor_args,
     "water-count": setup_water_count_args,
     "free-volume": setup_free_volume_args,
+    "bondi-ffv": setup_bondi_ffv_args,
     "equipartition": setup_equipartition_args,
     "hbond": setup_hbond_args,
     "rdf": setup_rdf_args,

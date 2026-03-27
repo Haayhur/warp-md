@@ -222,6 +222,80 @@ impl PyFreeVolumePlan {
 
 
 #[pyclass]
+struct PyBondiFfvPlan {
+    plan: RefCell<BondiFfvPlan>,
+}
+
+#[pymethods]
+impl PyBondiFfvPlan {
+    #[new]
+    #[pyo3(signature = (selection, bondi_scale=None, probe_radius=None, seed=None, ninsert_per_nm3=None, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        bondi_scale: Option<f64>,
+        probe_radius: Option<f64>,
+        seed: Option<i64>,
+        ninsert_per_nm3: Option<usize>,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let mut plan = BondiFfvPlan::new(selection.selection.clone());
+        if let Some(scale) = bondi_scale {
+            plan = plan.with_bondi_scale(scale);
+        }
+        if let Some(radius) = probe_radius {
+            plan = plan.with_probe_radius(radius);
+        }
+        if let Some(seed) = seed {
+            plan = plan.with_seed(seed);
+        }
+        if let Some(ninsert) = ninsert_per_nm3 {
+            plan = plan.with_ninsert_per_nm3(ninsert);
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
+        match output {
+            PlanOutput::TimeSeries {
+                time,
+                data,
+                rows,
+                cols,
+            } => bondi_ffv_to_py(
+                py,
+                time,
+                data,
+                rows,
+                cols,
+                plan.bondi_scale(),
+                plan.molar_mass_dalton(),
+                plan.probe_radius(),
+                plan.ninsert_per_nm3(),
+                plan.seed(),
+            ),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+
+#[pyclass]
 struct PyEquipartitionPlan {
     plan: RefCell<EquipartitionPlan>,
 }

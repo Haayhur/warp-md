@@ -326,7 +326,7 @@ fn fibonacci_sphere(n_points: usize) -> Vec<[f64; 3]> {
     points
 }
 
-fn resolve_radii(
+pub(crate) fn resolve_radii(
     system: &System,
     selection: &[u32],
     radii: Option<&Vec<f32>>,
@@ -346,7 +346,7 @@ fn resolve_radii(
     Ok(out)
 }
 
-fn default_radius(system: &System, atom_idx: usize) -> f64 {
+pub(crate) fn default_radius(system: &System, atom_idx: usize) -> f64 {
     let default = 1.7f64;
     let atoms = &system.atoms;
     if atom_idx >= atoms.name_id.len() {
@@ -374,7 +374,7 @@ fn default_radius(system: &System, atom_idx: usize) -> f64 {
     radius_from_symbol(&symbol).unwrap_or(default)
 }
 
-fn radius_from_symbol(symbol: &str) -> Option<f64> {
+pub(crate) fn radius_from_symbol(symbol: &str) -> Option<f64> {
     match symbol {
         "H" => Some(1.20),
         "C" => Some(1.70),

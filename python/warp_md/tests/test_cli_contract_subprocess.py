@@ -97,6 +97,9 @@ def test_subprocess_list_plans_json_details() -> None:
     ffv_plan = next(item for item in payload["plans"] if item["name"] == "free_volume")
     assert ffv_plan["plan"] == "free-volume"
     assert any("--probe-radius" in arg["flags"] for arg in ffv_plan["arguments"])
+    bondi_plan = next(item for item in payload["plans"] if item["name"] == "bondi_ffv")
+    assert bondi_plan["plan"] == "bondi-ffv"
+    assert any("--bondi-scale" in arg["flags"] for arg in bondi_plan["arguments"])
 
 
 def test_subprocess_list_plans_json_alias_details() -> None:

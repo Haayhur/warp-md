@@ -978,20 +978,15 @@ fn free_volume_basic_and_probe_effect() {
     let mut exec = Executor::new(system);
     let out_probe = exec.run_plan(&mut plan_probe, &mut traj).unwrap();
 
-    match out_no_probe {
-        PlanOutput::Grid(grid) => {
-            assert_eq!(grid.dims, [2, 2, 2]);
-            assert_eq!(grid.mean.len(), 8);
-            assert!(grid.mean.iter().all(|v| *v >= 0.0 && *v <= 1.0));
-        }
-        _ => panic!("unexpected output"),
-    }
-    match out_probe {
-        PlanOutput::Grid(grid) => {
-            assert_eq!(grid.dims, [2, 2, 2]);
-            assert!(grid.mean.iter().all(|v| *v >= 0.0 && *v <= 1.0));
-            // With a probe radius > voxel size, all voxels should be occupied => free fraction 0.
-            assert!(grid.mean.iter().all(|v| *v <= 1.0e-6));
+    match (out_no_probe, out_probe) {
+        (PlanOutput::Grid(no_probe), PlanOutput::Grid(probe)) => {
+            assert_eq!(no_probe.dims, [2, 2, 2]);
+            assert_eq!(probe.dims, [2, 2, 2]);
+            assert_eq!(no_probe.mean.len(), 8);
+            assert!(no_probe.mean.iter().all(|v| *v >= 0.0 && *v <= 1.0));
+            assert!(probe.mean.iter().all(|v| *v >= 0.0 && *v <= 1.0));
+            assert!(probe.mean.iter().sum::<f32>() < no_probe.mean.iter().sum::<f32>());
+            assert!(probe.mean.iter().any(|v| *v <= 1.0e-6));
         }
         _ => panic!("unexpected output"),
     }
@@ -1042,6 +1037,103 @@ fn free_volume_auto_detect_box_unit_only() {
             // should have fewer voxels than with default 1.0 Å
             assert!(grid.dims[0] > 0);
             assert!(grid.mean.iter().all(|v| *v >= 0.0 && *v <= 1.0));
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn free_volume_defaults_to_centered_region_when_shift_unspecified() {
+    let mut system = build_system();
+    system.positions0 = Some(vec![[10.0, 10.0, 10.0, 1.0], [11.0, 10.0, 10.0, 1.0]]);
+    let sel = system.select("name CA").unwrap();
+    let center_sel = system.select("name CA").unwrap();
+    let frames = vec![system.positions0.clone().unwrap()];
+
+    let mut plan_plain = FreeVolumePlan::new(
+        sel.clone(),
+        center_sel.clone(),
+        Some([1.0, 1.0, 1.0]),
+        Some([4.0, 4.0, 4.0]),
+    );
+    let mut traj_plain = InMemoryTraj::new(frames.clone());
+    let mut exec_plain = Executor::new(system.clone());
+    let out_plain = exec_plain.run_plan(&mut plan_plain, &mut traj_plain).unwrap();
+
+    let mut plan_centered = FreeVolumePlan::new(
+        sel,
+        center_sel,
+        Some([1.0, 1.0, 1.0]),
+        Some([4.0, 4.0, 4.0]),
+    )
+    .with_shift([2.0, 2.0, 2.0]);
+    let mut traj_centered = InMemoryTraj::new(frames);
+    let mut exec_centered = Executor::new(system);
+    let out_centered = exec_centered
+        .run_plan(&mut plan_centered, &mut traj_centered)
+        .unwrap();
+
+    match (out_plain, out_centered) {
+        (PlanOutput::Grid(plain), PlanOutput::Grid(centered)) => {
+            assert_eq!(plain.dims, centered.dims);
+            assert_eq!(plain.mean, centered.mean);
+            assert_eq!(plain.first, centered.first);
+            assert!(plain.mean.iter().any(|value| *value < 1.0));
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn bondi_ffv_matches_bondi_formula_for_single_carbon() {
+    let mut interner = StringInterner::new();
+    let name = interner.intern_upper("CA");
+    let res = interner.intern_upper("ALA");
+    let elem = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![name],
+        resname_id: vec![res],
+        resid: vec![1],
+        chain_id: vec![0],
+        element_id: vec![elem],
+        mass: vec![12.011],
+    };
+    let positions0 = Some(vec![[5.0, 5.0, 5.0, 1.0]]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("name CA").unwrap();
+    let mut plan = BondiFfvPlan::new(sel).with_probe_radius(7.5);
+    let frames = vec![vec![[5.0, 5.0, 5.0, 1.0]]];
+    let mut traj = InMemoryTrajWithBox::new(
+        frames,
+        Box3::Orthorhombic {
+            lx: 10.0,
+            ly: 10.0,
+            lz: 10.0,
+        },
+    );
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+
+    match out {
+        PlanOutput::TimeSeries {
+            time,
+            data,
+            rows,
+            cols,
+        } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 6);
+            assert_eq!(time.len(), 1);
+            let expected_vdw = 1000.0f32;
+            let expected_raw_frac = 0.0f32;
+            let expected_ffv = -0.3f32;
+            let expected_density = 12.011f32 * 1.660_539_1 / 1000.0;
+            assert!((data[0] - 1000.0).abs() < 1.0e-4);
+            assert!((data[1] - expected_vdw).abs() < 1.0e-4);
+            assert!(data[2].abs() < 1.0e-4);
+            assert!((data[3] - expected_raw_frac).abs() < 1.0e-5);
+            assert!((data[4] - expected_ffv).abs() < 1.0e-5);
+            assert!((data[5] - expected_density).abs() < 1.0e-6);
         }
         _ => panic!("unexpected output"),
     }

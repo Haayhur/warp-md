@@ -13,6 +13,7 @@ pub struct FreeVolumePlan {
     box_unit: Option<[f64; 3]>,
     region_size: Option<[f64; 3]>,
     shift: [f64; 3],
+    shift_explicit: bool,
     length_scale: f64,
     probe_radius: f64,
     dims: [usize; 3],
@@ -39,6 +40,7 @@ impl FreeVolumePlan {
             box_unit,
             region_size,
             shift: [0.0, 0.0, 0.0],
+            shift_explicit: false,
             length_scale: 1.0,
             probe_radius: 0.0,
             dims: [1, 1, 1],
@@ -106,6 +108,7 @@ impl FreeVolumePlan {
 
     pub fn with_shift(mut self, shift: [f64; 3]) -> Self {
         self.shift = shift;
+        self.shift_explicit = true;
         self
     }
 
@@ -231,6 +234,14 @@ impl Plan for FreeVolumePlan {
         // Store computed values
         self.box_unit = Some(box_unit);
         self.region_size = Some(region_size);
+        if !self.shift_explicit {
+            // By default the free-volume region is centered on center_selection.
+            self.shift = [
+                region_size[0] * 0.5,
+                region_size[1] * 0.5,
+                region_size[2] * 0.5,
+            ];
+        }
         self.dims = dims;
 
         // Reallocate if size changed
