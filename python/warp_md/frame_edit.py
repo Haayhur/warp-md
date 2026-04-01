@@ -99,6 +99,8 @@ def _infer_format(path: str) -> str:
 
 
 def _count_frames(traj: Any, chunk_frames: int | None) -> int:
+    if hasattr(traj, "count_frames"):
+        return int(traj.count_frames(chunk_frames))
     total = 0
     while True:
         chunk = traj.read_chunk(
@@ -163,6 +165,21 @@ def _iter_selected_frames(
     frame_indices: list[int],
     chunk_frames: int | None,
 ) -> Iterator[_FrameRecord]:
+    if hasattr(traj, "read_frames"):
+        payload = traj.read_frames(frame_indices, chunk_frames, True, True, False)
+        if payload is None:
+            raise ValueError("requested frames could not be read from trajectory")
+        coords = np.asarray(payload["coords"], dtype=np.float32)
+        source_indices = payload.get("source_indices", frame_indices)
+        for local_index, absolute_index in enumerate(source_indices):
+            yield _FrameRecord(
+                index=int(absolute_index),
+                coords=np.array(coords[local_index], copy=True),
+                box_lengths=_copy_optional_frame(payload.get("box"), local_index),
+                box_matrix=_copy_optional_frame(payload.get("box_matrix"), local_index),
+            )
+        return
+
     current_frame = 0
     target_idx = 0
     while target_idx < len(frame_indices):

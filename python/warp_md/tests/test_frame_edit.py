@@ -47,6 +47,40 @@ class FakeTrajectory:
         self._cursor = 0
 
 
+class FakeRustTrajectory(FakeTrajectory):
+    def __init__(self, frames: list[np.ndarray]) -> None:
+        super().__init__(frames)
+        self.read_chunk_calls = 0
+        self.count_frames_calls = 0
+        self.read_frames_calls = 0
+
+    def read_chunk(self, *args, **kwargs):
+        self.read_chunk_calls += 1
+        return super().read_chunk(*args, **kwargs)
+
+    def count_frames(self, chunk_frames=None) -> int:
+        self.count_frames_calls += 1
+        return len(self._frames)
+
+    def read_frames(
+        self,
+        frame_indices,
+        chunk_frames=None,
+        include_box=True,
+        include_box_matrix=True,
+        include_time=False,
+    ):
+        self.read_frames_calls += 1
+        coords = np.stack([self._frames[int(index)] for index in frame_indices], axis=0)
+        return {
+            "coords": coords,
+            "box": None,
+            "box_matrix": None,
+            "source_indices": list(frame_indices),
+            "frames": len(frame_indices),
+        }
+
+
 class FakeTrajectorySink:
     def __init__(self, written: list[int]) -> None:
         self._written = written
@@ -199,3 +233,42 @@ def test_run_frame_edit_writes_single_frame_to_trajectory(monkeypatch, tmp_path:
     assert payload["selection"] == {"mode": "single", "index": 2}
     assert payload["outputs"] == [str(out_path)]
     assert created[0].trajectory_writes[str(out_path)] == [2]
+
+
+def test_run_frame_edit_prefers_rust_count_and_read_methods(monkeypatch, tmp_path: Path) -> None:
+    system = FakeSystem(n_atoms=2)
+    traj = FakeRustTrajectory(
+        [
+            np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+            np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
+            np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
+        ]
+    )
+    created: list[FakeWriter] = []
+
+    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
+    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
+    monkeypatch.setattr(
+        frame_edit,
+        "_make_writer",
+        lambda topology_path, *, topology_format, n_atoms: created.append(
+            FakeWriter(topology_path, topology_format=topology_format, n_atoms=n_atoms)
+        )
+        or created[-1],
+    )
+
+    exit_code, payload = frame_edit.run_frame_edit(
+        _args(
+            tmp_path,
+            out=str(tmp_path / "single.xtc"),
+            begin=0,
+            end=3,
+            step=2,
+        )
+    )
+
+    assert exit_code == 0
+    assert payload["written_frames"] == 2
+    assert traj.count_frames_calls == 1
+    assert traj.read_frames_calls == 1
+    assert traj.read_chunk_calls == 0
