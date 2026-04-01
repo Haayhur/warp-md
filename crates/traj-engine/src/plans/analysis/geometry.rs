@@ -18,16 +18,24 @@ pub fn dot_product(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 pub fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let len = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if len > 0.0 {
-        [v[0]/len, v[1]/len, v[2]/len]
+        [v[0] / len, v[1] / len, v[2] / len]
     } else {
         [0.0, 0.0, 0.0]
     }
 }
 
-pub fn project_point_onto_plane(point: [f32; 3], plane_center: [f32; 3], plane_normal: [f32; 3]) -> [f32; 3] {
-    let v = [point[0] - plane_center[0], point[1] - plane_center[1], point[2] - plane_center[2]];
+pub fn project_point_onto_plane(
+    point: [f32; 3],
+    plane_center: [f32; 3],
+    plane_normal: [f32; 3],
+) -> [f32; 3] {
+    let v = [
+        point[0] - plane_center[0],
+        point[1] - plane_center[1],
+        point[2] - plane_center[2],
+    ];
     let dist = dot_product(v, plane_normal);
     [
         point[0] - dist * plane_normal[0],
@@ -35,4 +43,3 @@ pub fn project_point_onto_plane(point: [f32; 3], plane_center: [f32; 3], plane_n
         point[2] - dist * plane_normal[2],
     ]
 }
-

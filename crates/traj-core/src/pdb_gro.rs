@@ -21,6 +21,11 @@ pub struct PdbAtom {
     pub element: String,
     pub segid: String,
     pub position: [f32; 3],
+    pub occupancy: f32,
+    pub temp_factor: f32,
+    pub altloc: char,
+    pub icode: char,
+    pub charge: String,
 }
 
 #[derive(Clone, Debug)]
@@ -122,8 +127,11 @@ pub fn parse_pdb_reader<R: BufRead>(
         let x = parse_float(slice_trim_opt(&line, 30, 38), "x")?;
         let y = parse_float(slice_trim_opt(&line, 38, 46), "y")?;
         let z = parse_float(slice_trim_opt(&line, 46, 54), "z")?;
+        let occupancy = parse_float_opt(slice_trim_opt(&line, 54, 60)).unwrap_or(1.0);
+        let temp_factor = parse_float_opt(slice_trim_opt(&line, 60, 66)).unwrap_or(0.0);
         let element_str = slice_trim_opt(&line, 76, 78).unwrap_or("");
         let segid = slice_required(&line, 72, 76, "segid", false)?;
+        let charge = slice_trim_opt(&line, 78, 80).unwrap_or("").to_string();
         let element = normalize_element(element_str)
             .or_else(|| infer_element_from_atom_name(name.trim()))
             .unwrap_or_else(|| "".to_string());
@@ -139,6 +147,11 @@ pub fn parse_pdb_reader<R: BufRead>(
             element,
             segid,
             position: [x, y, z],
+            occupancy,
+            temp_factor,
+            altloc: alt_loc,
+            icode: slice_char(&line, 26).unwrap_or(' '),
+            charge,
         });
         last_atom_idx = Some(atoms.len() - 1);
     }
@@ -306,6 +319,14 @@ fn parse_float(value: Option<&str>, label: &str) -> TrajResult<f32> {
     };
     raw.parse::<f32>()
         .map_err(|_| TrajError::Parse(format!("invalid {label} '{raw}'")))
+}
+
+fn parse_float_opt(value: Option<&str>) -> Option<f32> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    value.parse::<f32>().ok()
 }
 
 fn parse_conect(

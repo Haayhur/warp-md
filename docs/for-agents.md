@@ -42,7 +42,7 @@ warp-md run config.json --stream ndjson
 warp-build run build_request.json --stream
 
 # Packing
-warp-pack --config pack.yaml --stream --output packed.pdb
+warp-pack run pack_request.json --stream ndjson
 
 # Peptide building
 warp-pep build -s ACDEFG --preset alpha-helix --output helix.pdb --stream
@@ -90,17 +90,14 @@ print(f"Mean Rg: {rg.mean():.2f} Å")
 Enable real-time progress updates with `--stream`:
 
 ```bash
-warp-pack --config pack.yaml --stream
+warp-pack run pack_request.json --stream ndjson
 ```
 
-**Output:**
+**Output (NDJSON on stderr):**
 ```
-📦 Packing 150 molecules...
-  → Placing molecules...
-    Placed 50/150 (33.3%)
-  → Optimizing...
-    Iter 100: f=2.1e-03 (10.0%)
-  ✓ Complete: 4500 atoms in 52s
+{"event":"run_started","schema_version":"warp-pack.agent.v1","run_id":"pack-001","elapsed_ms":0}
+{"event":"phase_progress","schema_version":"warp-pack.agent.v1","run_id":"pack-001","phase":"solvation","progress_pct":33.3,"elapsed_ms":1200}
+{"event":"run_completed","schema_version":"warp-pack.agent.v1","run_id":"pack-001","elapsed_ms":52000,"final_envelope":{"schema_version":"warp-pack.agent.v1","status":"ok"}}
 ```
 
 See [Streaming Progress API](streaming-progress.md) for complete event reference.

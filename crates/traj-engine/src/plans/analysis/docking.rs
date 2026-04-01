@@ -6,7 +6,9 @@ use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use crate::executor::{Device, Plan, PlanOutput};
-use crate::plans::analysis::geometry::{cross_product, distance_sq as fast_distance_sq, normalize, project_point_onto_plane};
+use crate::plans::analysis::geometry::{
+    cross_product, distance_sq as fast_distance_sq, normalize, project_point_onto_plane,
+};
 
 const INTERACTION_HYDROGEN_BOND: u8 = 1;
 const INTERACTION_HYDROPHOBIC: u8 = 2;
@@ -253,15 +255,11 @@ impl Plan for DockingAnalysisPlan {
             ));
         }
         self.atom_flags = build_atom_flags(system);
-        let (rings, charge_centers) = build_rings_and_charge_centers(
-            system,
-            &self.atom_flags,
-            &self.receptor,
-            &self.ligand,
-        );
+        let (rings, charge_centers) =
+            build_rings_and_charge_centers(system, &self.atom_flags, &self.receptor, &self.ligand);
         self.rings = rings;
         self.charge_centers = charge_centers;
-        
+
         self.hydrogens_by_residue.clear();
         for (idx, flags) in self.atom_flags.iter().copied().enumerate() {
             if flags.hydrogen {
@@ -304,7 +302,7 @@ impl Plan for DockingAnalysisPlan {
         let n_atoms = chunk.n_atoms;
         for local_frame in 0..chunk.n_frames {
             let base = local_frame * n_atoms;
-            
+
             // 1. Update geometric properties
             for ring in self.rings.iter_mut() {
                 let mut sum = [0.0; 3];
@@ -316,20 +314,20 @@ impl Plan for DockingAnalysisPlan {
                 }
                 let len = ring.indices.len() as f32;
                 ring.center = [sum[0] / len, sum[1] / len, sum[2] / len];
-                
+
                 // compute normal and max radius
                 if ring.indices.len() > 2 {
                     let p0 = chunk.coords[base + ring.indices[0]];
                     let p1 = chunk.coords[base + ring.indices[1]];
                     let p2 = chunk.coords[base + ring.indices[2]];
-                    
+
                     let v1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
                     let v2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
-                    
+
                     let n = cross_product(v1, v2);
                     ring.normal = normalize(n);
                 }
-                
+
                 let mut max_r2 = 0.0f32;
                 for &idx in &ring.indices {
                     let coord = chunk.coords[base + idx];
@@ -340,7 +338,7 @@ impl Plan for DockingAnalysisPlan {
                 }
                 ring.radius = max_r2.sqrt();
             }
-            
+
             for chg in self.charge_centers.iter_mut() {
                 let mut sum = [0.0; 3];
                 for &idx in &chg.indices {
@@ -476,8 +474,16 @@ impl Plan for DockingAnalysisPlan {
                             None,
                         );
                         // Report using the first atom in the group
-                        let rec_idx = if chg1.is_receptor { chg1.indices[0] } else { chg2.indices[0] };
-                        let lig_idx = if chg1.is_receptor { chg2.indices[0] } else { chg1.indices[0] };
+                        let rec_idx = if chg1.is_receptor {
+                            chg1.indices[0]
+                        } else {
+                            chg2.indices[0]
+                        };
+                        let lig_idx = if chg1.is_receptor {
+                            chg2.indices[0]
+                        } else {
+                            chg1.indices[0]
+                        };
                         self.rows.push(frame_index as f32);
                         self.rows.push(rec_idx as f32);
                         self.rows.push(lig_idx as f32);
@@ -497,7 +503,7 @@ impl Plan for DockingAnalysisPlan {
                         continue;
                     }
                     if !chg.positive {
-                        continue; // pi-cation only 
+                        continue; // pi-cation only
                     }
                     let dist2 = fast_distance_sq(ring.center, chg.center);
                     if dist2 as f64 <= cation_pi2 {
@@ -522,8 +528,16 @@ impl Plan for DockingAnalysisPlan {
                                 self.pi_pi_cutoff,
                                 None,
                             );
-                            let rec_idx = if ring.is_receptor { ring.indices[0] } else { chg.indices[0] };
-                            let lig_idx = if ring.is_receptor { chg.indices[0] } else { ring.indices[0] };
+                            let rec_idx = if ring.is_receptor {
+                                ring.indices[0]
+                            } else {
+                                chg.indices[0]
+                            };
+                            let lig_idx = if ring.is_receptor {
+                                chg.indices[0]
+                            } else {
+                                ring.indices[0]
+                            };
                             self.rows.push(frame_index as f32);
                             self.rows.push(rec_idx as f32);
                             self.rows.push(lig_idx as f32);
@@ -561,8 +575,16 @@ impl Plan for DockingAnalysisPlan {
                             self.pi_pi_cutoff,
                             None,
                         );
-                        let rec_idx = if r1.is_receptor { r1.indices[0] } else { r2.indices[0] };
-                        let lig_idx = if r1.is_receptor { r2.indices[0] } else { r1.indices[0] };
+                        let rec_idx = if r1.is_receptor {
+                            r1.indices[0]
+                        } else {
+                            r2.indices[0]
+                        };
+                        let lig_idx = if r1.is_receptor {
+                            r2.indices[0]
+                        } else {
+                            r1.indices[0]
+                        };
                         self.rows.push(frame_index as f32);
                         self.rows.push(rec_idx as f32);
                         self.rows.push(lig_idx as f32);
@@ -573,7 +595,6 @@ impl Plan for DockingAnalysisPlan {
                     }
                 }
             }
-
         }
         self.frame_cursor += chunk.n_frames;
         Ok(())
@@ -677,7 +698,7 @@ fn build_rings_and_charge_centers(
             continue;
         }
         atoms.sort();
-        
+
         let first_idx = atoms[0];
         let is_rec = receptor.indices.contains(&(first_idx as u32));
         let resname_id = system.atoms.resname_id.get(first_idx).copied().unwrap_or(0);
@@ -693,7 +714,11 @@ fn build_rings_and_charge_centers(
             "PHE" | "TYR" => {
                 for &idx in &atoms {
                     let name_id = system.atoms.name_id.get(idx).copied().unwrap_or(0);
-                    let name = system.interner.resolve(name_id).unwrap_or("").to_ascii_uppercase();
+                    let name = system
+                        .interner
+                        .resolve(name_id)
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
                     if matches!(name.as_str(), "CG" | "CD1" | "CD2" | "CE1" | "CE2" | "CZ") {
                         ring_atoms.push(idx);
                     }
@@ -704,7 +729,11 @@ fn build_rings_and_charge_centers(
                 let mut ring2 = Vec::new();
                 for &idx in &atoms {
                     let name_id = system.atoms.name_id.get(idx).copied().unwrap_or(0);
-                    let name = system.interner.resolve(name_id).unwrap_or("").to_ascii_uppercase();
+                    let name = system
+                        .interner
+                        .resolve(name_id)
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
                     if matches!(name.as_str(), "CG" | "CD1" | "CD2" | "NE1" | "CE2") {
                         ring1.push(idx);
                     }
@@ -728,7 +757,11 @@ fn build_rings_and_charge_centers(
             "HIS" | "HID" | "HIE" | "HIP" => {
                 for &idx in &atoms {
                     let name_id = system.atoms.name_id.get(idx).copied().unwrap_or(0);
-                    let name = system.interner.resolve(name_id).unwrap_or("").to_ascii_uppercase();
+                    let name = system
+                        .interner
+                        .resolve(name_id)
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
                     if matches!(name.as_str(), "CG" | "ND1" | "CD2" | "CE1" | "NE2") {
                         ring_atoms.push(idx);
                     }
@@ -764,12 +797,16 @@ fn build_rings_and_charge_centers(
         // 2. Map Protein Charge Centers
         let mut pos_atoms = Vec::new();
         let mut neg_atoms = Vec::new();
-        
+
         match resname.as_str() {
             "ASP" => {
                 for &idx in &atoms {
                     let name_id = system.atoms.name_id.get(idx).copied().unwrap_or(0);
-                    let name = system.interner.resolve(name_id).unwrap_or("").to_ascii_uppercase();
+                    let name = system
+                        .interner
+                        .resolve(name_id)
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
                     if matches!(name.as_str(), "OD1" | "OD2") {
                         neg_atoms.push(idx);
                     }
@@ -778,7 +815,11 @@ fn build_rings_and_charge_centers(
             "GLU" => {
                 for &idx in &atoms {
                     let name_id = system.atoms.name_id.get(idx).copied().unwrap_or(0);
-                    let name = system.interner.resolve(name_id).unwrap_or("").to_ascii_uppercase();
+                    let name = system
+                        .interner
+                        .resolve(name_id)
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
                     if matches!(name.as_str(), "OE1" | "OE2") {
                         neg_atoms.push(idx);
                     }
@@ -787,7 +828,11 @@ fn build_rings_and_charge_centers(
             "ARG" => {
                 for &idx in &atoms {
                     let name_id = system.atoms.name_id.get(idx).copied().unwrap_or(0);
-                    let name = system.interner.resolve(name_id).unwrap_or("").to_ascii_uppercase();
+                    let name = system
+                        .interner
+                        .resolve(name_id)
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
                     if matches!(name.as_str(), "NH1" | "NH2") {
                         pos_atoms.push(idx);
                     }
@@ -796,7 +841,11 @@ fn build_rings_and_charge_centers(
             "LYS" | "LYN" => {
                 for &idx in &atoms {
                     let name_id = system.atoms.name_id.get(idx).copied().unwrap_or(0);
-                    let name = system.interner.resolve(name_id).unwrap_or("").to_ascii_uppercase();
+                    let name = system
+                        .interner
+                        .resolve(name_id)
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
                     if name.starts_with("NZ") {
                         pos_atoms.push(idx);
                     }
@@ -816,13 +865,21 @@ fn build_rings_and_charge_centers(
                     if flags[idx].negative {
                         // Check if it's OXT
                         let name_id = system.atoms.name_id.get(idx).copied().unwrap_or(0);
-                        let name = system.interner.resolve(name_id).unwrap_or("").to_ascii_uppercase();
+                        let name = system
+                            .interner
+                            .resolve(name_id)
+                            .unwrap_or("")
+                            .to_ascii_uppercase();
                         if name == "OXT" {
                             // Find corresponding O
                             let mut has_o = false;
                             for &idx2 in &atoms {
                                 let name_id2 = system.atoms.name_id.get(idx2).copied().unwrap_or(0);
-                                let name2 = system.interner.resolve(name_id2).unwrap_or("").to_ascii_uppercase();
+                                let name2 = system
+                                    .interner
+                                    .resolve(name_id2)
+                                    .unwrap_or("")
+                                    .to_ascii_uppercase();
                                 if name2 == "O" {
                                     neg_atoms.push(idx2);
                                     has_o = true;
@@ -851,24 +908,23 @@ fn build_rings_and_charge_centers(
                 }
             }
         }
-        
+
         if !pos_atoms.is_empty() {
-             charge_centers.push(ChargeCenter {
-                 indices: pos_atoms,
-                 center: [0.0; 3],
-                 positive: true,
-                 is_receptor: is_rec,
-             });
+            charge_centers.push(ChargeCenter {
+                indices: pos_atoms,
+                center: [0.0; 3],
+                positive: true,
+                is_receptor: is_rec,
+            });
         }
         if !neg_atoms.is_empty() {
-             charge_centers.push(ChargeCenter {
-                 indices: neg_atoms,
-                 center: [0.0; 3],
-                 positive: false,
-                 is_receptor: is_rec,
-             });
+            charge_centers.push(ChargeCenter {
+                indices: neg_atoms,
+                center: [0.0; 3],
+                positive: false,
+                is_receptor: is_rec,
+            });
         }
-
     }
 
     (rings, charge_centers)
@@ -1131,7 +1187,7 @@ fn classify_interaction(
     }
     // Salt, Cation-Pi, and Pi-Pi are removed from atom-level iteration to prevent double-counting.
     // They will be handled in the group-based geometric loops
-    
+
     if heavy_atom_pair && receptor.hydrophobic && ligand.hydrophobic && r2 <= hydrophobic2 {
         return INTERACTION_HYDROPHOBIC;
     }
