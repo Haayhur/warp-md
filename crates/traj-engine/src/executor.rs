@@ -664,8 +664,8 @@ pub struct ClusteringOutput {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_selected_frames, collect_strided_frames_with_requirements,
-        normalize_frame_indices, Device, Executor, Plan, PlanOutput, PlanRequirements,
+        collect_selected_frames, collect_strided_frames_with_requirements, normalize_frame_indices,
+        Device, Executor, Plan, PlanOutput, PlanRequirements,
     };
     use traj_core::frame::{Box3, FrameChunkBuilder};
     use traj_core::interner::StringInterner;

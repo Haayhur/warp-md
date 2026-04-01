@@ -192,6 +192,9 @@ fn replicate_cell_plan_basic() {
             lz: 10.0,
         }],
         time_ps: None,
+        velocities: None,
+        forces: None,
+        lambda_values: None,
     };
     let device = Device::cpu();
     plan.init(&system, &device).unwrap();
@@ -222,6 +225,9 @@ fn replicate_cell_plan_triclinic() {
             m: [2.0, 0.0, 0.0, 0.5, 3.0, 0.0, 0.0, 0.0, 4.0],
         }],
         time_ps: None,
+        velocities: None,
+        forces: None,
+        lambda_values: None,
     };
     let device = Device::cpu();
     plan.init(&system, &device).unwrap();

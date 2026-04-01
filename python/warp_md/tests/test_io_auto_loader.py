@@ -11,6 +11,10 @@ class _FakeTrajectory:
         return ("xtc", path, system, None)
 
     @staticmethod
+    def open_trr(path, system):
+        return ("trr", path, system, None)
+
+    @staticmethod
     def open_pdb(path, system):
         return ("pdb", path, system, None)
 
@@ -33,6 +37,15 @@ def test_open_trajectory_auto_uses_explicit_format():
         trajectory_cls=_FakeTrajectory,
     )
     assert out == ("xtc", "traj.unknown", "sys", None)
+
+
+def test_open_trajectory_auto_infers_trr():
+    out = open_trajectory_auto(
+        "traj.trr",
+        system="sys",
+        trajectory_cls=_FakeTrajectory,
+    )
+    assert out == ("trr", "traj.trr", "sys", None)
 
 
 def test_open_trajectory_auto_rejects_unknown_format():

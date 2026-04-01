@@ -81,11 +81,13 @@ def test_frames_help() -> None:
     assert result.returncode == 0
     assert "--index" in result.stdout
     assert "--outfile" in result.stdout
+    assert ".trr" in result.stdout
 
 
 def test_rg_help() -> None:
     result = _run("rg", "--help")
     assert result.returncode == 0
+    assert "trr" in result.stdout
 
 
 def test_version_flag() -> None:

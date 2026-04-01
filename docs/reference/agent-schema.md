@@ -106,7 +106,7 @@ Every batch run starts with a `RunRequest` — a Pydantic-validated JSON documen
 | `run_id` | `str?` | `null` | Agent-assigned correlation ID |
 | `system` | `str` or `{path}` | required* | Topology file (PDB/GRO/PDBQT) |
 | `topology` | `str` or `{path}` | required* | Alias for `system` |
-| `trajectory` | `str` or `{path}` | required* | Trajectory file (DCD/XTC or PDB/PDBQT for docking poses) |
+| `trajectory` | `str` or `{path}` | required* | Trajectory file (DCD/XTC/TRR or PDB/PDBQT for docking poses) |
 | `traj` | `str` or `{path}` | required* | Alias for `trajectory` |
 | `device` | `str` | `"auto"` | `"auto"`, `"cpu"`, `"cuda"`, `"cuda:N"` |
 | `stream` | `str` | `"none"` | `"none"` or `"ndjson"` |

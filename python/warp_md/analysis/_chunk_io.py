@@ -10,6 +10,9 @@ def read_chunk_fields(
     include_box: bool = False,
     include_box_matrix: bool = False,
     include_time: bool = False,
+    include_velocities: bool = False,
+    include_forces: bool = False,
+    include_lambda: bool = False,
 ):
     """Read a chunk requesting only needed metadata fields when supported.
 
@@ -20,6 +23,9 @@ def read_chunk_fields(
         "include_box": include_box,
         "include_box_matrix": include_box_matrix,
         "include_time": include_time,
+        "include_velocities": include_velocities,
+        "include_forces": include_forces,
+        "include_lambda": include_lambda,
     }
     try:
         if max_frames is None:

@@ -52,7 +52,7 @@ warp-md <analysis> --topology PATH --traj PATH [options]
 | Option | What It Does |
 |--------|--------------|
 | `--topology PATH` | Topology file (PDB/GRO) |
-| `--traj PATH` | Trajectory file (DCD/XTC) |
+| `--traj PATH` | Trajectory file (DCD/XTC/TRR) |
 | `--selection EXPR` | Atom selection |
 | `--out PATH` | Output file (.npz/.npy/.csv/.json) |
 | `--device DEV` | `auto`, `cpu`, `cuda` |
@@ -168,6 +168,9 @@ warp-md frames -p min.pdb -t eq_npt.dcd -o md_new.dcd -b 100 -e 500 -s 10
 
 # Single frame extraction
 warp-md frames -p min.pdb -t eq_npt.dcd -o frame_250.pdb -i 250
+
+# TRR subset preserving time/velocities/forces/lambda
+warp-md frames -p min.pdb -t eq_npt.trr -o subset.trr -b 100 -e 200 -s 5
 ```
 
 ### Run Config

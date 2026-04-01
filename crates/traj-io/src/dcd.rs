@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 use traj_core::error::{TrajError, TrajResult};
@@ -106,6 +106,11 @@ impl DcdReader {
         self.file.seek(SeekFrom::Start(self.data_start))?;
         Ok(())
     }
+}
+
+pub struct DcdWriter {
+    file: BufWriter<File>,
+    n_atoms: usize,
 }
 
 impl TrajReader for DcdReader {
@@ -562,6 +567,44 @@ impl DcdReader {
     }
 }
 
+impl DcdWriter {
+    pub fn create(path: impl Into<PathBuf>, n_atoms: usize, n_frames: usize) -> TrajResult<Self> {
+        let path = path.into();
+        let file = File::create(path)?;
+        let mut file = BufWriter::with_capacity(DCD_IO_BUFFER_BYTES, file);
+        write_dcd_header(&mut file, n_atoms, n_frames)?;
+        Ok(Self { file, n_atoms })
+    }
+
+    pub fn write_frame(&mut self, coords: &[[f32; 3]], box_: Box3) -> TrajResult<()> {
+        if coords.len() != self.n_atoms {
+            return Err(TrajError::Mismatch(format!(
+                "frame atom count {} does not match writer atom count {}",
+                coords.len(),
+                self.n_atoms
+            )));
+        }
+        write_dcd_record(&mut self.file, &box_to_dcd_payload(box_))?;
+        let mut x = Vec::with_capacity(self.n_atoms);
+        let mut y = Vec::with_capacity(self.n_atoms);
+        let mut z = Vec::with_capacity(self.n_atoms);
+        for atom in coords.iter() {
+            x.push(atom[0]);
+            y.push(atom[1]);
+            z.push(atom[2]);
+        }
+        write_dcd_f32_record(&mut self.file, &x)?;
+        write_dcd_f32_record(&mut self.file, &y)?;
+        write_dcd_f32_record(&mut self.file, &z)?;
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> TrajResult<()> {
+        self.file.flush()?;
+        Ok(())
+    }
+}
+
 fn read_axis_payload_into_buffer(
     file: &mut impl Read,
     endian: Endian,
@@ -603,6 +646,108 @@ fn read_axis_payload_into_buffer(
         return Err(TrajError::Parse("float record length mismatch".into()));
     }
     Ok(())
+}
+
+fn write_dcd_header(file: &mut impl Write, n_atoms: usize, n_frames: usize) -> TrajResult<()> {
+    let mut header = Vec::with_capacity(84);
+    header.extend_from_slice(b"CORD");
+    let mut icntrl = [0i32; 20];
+    icntrl[0] = i32::try_from(n_frames)
+        .map_err(|_| TrajError::Invalid("too many frames for DCD header".into()))?;
+    icntrl[10] = 1;
+    for value in icntrl {
+        header.extend_from_slice(&value.to_le_bytes());
+    }
+    write_dcd_record(file, &header)?;
+
+    let mut title = Vec::with_capacity(84);
+    title.extend_from_slice(&1i32.to_le_bytes());
+    let mut line = [b' '; 80];
+    let text = b"WARP_MD_DCD";
+    line[..text.len()].copy_from_slice(text);
+    title.extend_from_slice(&line);
+    write_dcd_record(file, &title)?;
+
+    let natoms = i32::try_from(n_atoms)
+        .map_err(|_| TrajError::Invalid("too many atoms for DCD header".into()))?;
+    write_dcd_record(file, &natoms.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_dcd_record(file: &mut impl Write, payload: &[u8]) -> TrajResult<()> {
+    let len = u32::try_from(payload.len())
+        .map_err(|_| TrajError::Invalid("DCD record payload too large".into()))?;
+    file.write_all(&len.to_le_bytes())?;
+    file.write_all(payload)?;
+    file.write_all(&len.to_le_bytes())?;
+    Ok(())
+}
+
+fn write_dcd_f32_record(file: &mut impl Write, values: &[f32]) -> TrajResult<()> {
+    let mut payload = Vec::with_capacity(values.len() * 4);
+    for value in values {
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    write_dcd_record(file, &payload)
+}
+
+fn box_to_dcd_payload(box_: Box3) -> [u8; 48] {
+    let values = box_to_dcd_unitcell_values(box_);
+    let mut payload = [0u8; 48];
+    for (i, value) in values.iter().enumerate() {
+        let start = i * 8;
+        payload[start..start + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    payload
+}
+
+fn box_to_dcd_unitcell_values(box_: Box3) -> [f64; 6] {
+    let (a, b, c, alpha, beta, gamma) = box_to_lengths_and_angles(box_);
+    if a <= 0.0 || b <= 0.0 || c <= 0.0 {
+        return [0.0; 6];
+    }
+    [
+        a as f64,
+        (gamma.to_radians().cos()) as f64,
+        b as f64,
+        (beta.to_radians().cos()) as f64,
+        (alpha.to_radians().cos()) as f64,
+        c as f64,
+    ]
+}
+
+fn box_to_lengths_and_angles(box_: Box3) -> (f32, f32, f32, f32, f32, f32) {
+    match box_ {
+        Box3::None => (0.0, 0.0, 0.0, 90.0, 90.0, 90.0),
+        Box3::Orthorhombic { lx, ly, lz } => (lx, ly, lz, 90.0, 90.0, 90.0),
+        Box3::Triclinic { m } => {
+            let a_vec = [m[0], m[1], m[2]];
+            let b_vec = [m[3], m[4], m[5]];
+            let c_vec = [m[6], m[7], m[8]];
+            (
+                vec_len(a_vec),
+                vec_len(b_vec),
+                vec_len(c_vec),
+                angle_deg(b_vec, c_vec),
+                angle_deg(a_vec, c_vec),
+                angle_deg(a_vec, b_vec),
+            )
+        }
+    }
+}
+
+fn vec_len(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+fn angle_deg(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let denom = vec_len(a) * vec_len(b);
+    if denom <= 0.0 {
+        return 90.0;
+    }
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cosine = (dot / denom).clamp(-1.0, 1.0);
+    cosine.acos().to_degrees()
 }
 
 #[inline]
@@ -1001,6 +1146,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::path::Path;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn reject_invalid_header() {
@@ -1303,5 +1449,77 @@ mod tests {
             payload.extend_from_slice(&value.to_le_bytes());
         }
         write_record(file, &payload);
+    }
+
+    #[test]
+    fn write_dcd_simple() {
+        let tempfile = NamedTempFile::new().unwrap();
+        let path = tempfile.path();
+
+        let mut writer = DcdWriter::create(path, 2, 1).unwrap();
+        writer
+            .write_frame(
+                &[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                Box3::Orthorhombic {
+                    lx: 10.0,
+                    ly: 20.0,
+                    lz: 30.0,
+                },
+            )
+            .unwrap();
+        writer.flush().unwrap();
+
+        let mut reader = DcdReader::open(path, 1.0).unwrap();
+        let mut builder = FrameChunkBuilder::new(2, 1);
+        builder.set_requirements(true, false);
+        let read = reader.read_chunk(1, &mut builder).unwrap();
+        assert_eq!(read, 1);
+        let chunk = builder.finish_take().unwrap();
+        assert_eq!(chunk.coords[0][0], 1.0);
+        assert_eq!(chunk.coords[0][1], 2.0);
+        assert_eq!(chunk.coords[0][2], 3.0);
+        assert_eq!(chunk.coords[1][0], 4.0);
+        assert_eq!(chunk.coords[1][1], 5.0);
+        assert_eq!(chunk.coords[1][2], 6.0);
+        assert_eq!(
+            chunk.box_[0],
+            Box3::Orthorhombic {
+                lx: 10.0,
+                ly: 20.0,
+                lz: 30.0,
+            }
+        );
+    }
+
+    #[test]
+    fn dcd_unitcell_payload_uses_namd_vmd_cosine_convention() {
+        let gamma = 60.0f32;
+        let beta = 70.0f32;
+        let alpha = 80.0f32;
+        let a = 10.0f32;
+        let b = 20.0f32;
+        let c = 30.0f32;
+        let gamma_rad = gamma.to_radians();
+        let beta_rad = beta.to_radians();
+        let alpha_rad = alpha.to_radians();
+        let ax = a;
+        let bx = b * gamma_rad.cos();
+        let by = b * gamma_rad.sin();
+        let cx = c * beta_rad.cos();
+        let cy = c * (alpha_rad.cos() - beta_rad.cos() * gamma_rad.cos()) / gamma_rad.sin();
+        let cz = (c * c - cx * cx - cy * cy).sqrt();
+        let payload = box_to_dcd_payload(Box3::Triclinic {
+            m: [ax, 0.0, 0.0, bx, by, 0.0, cx, cy, cz],
+        });
+        let values = std::array::from_fn::<_, 6, _>(|i| {
+            let start = i * 8;
+            f64::from_le_bytes(payload[start..start + 8].try_into().unwrap())
+        });
+        assert!((values[0] - a as f64).abs() < 1e-6);
+        assert!((values[1] - gamma_rad.cos() as f64).abs() < 1e-6);
+        assert!((values[2] - b as f64).abs() < 1e-6);
+        assert!((values[3] - beta_rad.cos() as f64).abs() < 1e-6);
+        assert!((values[4] - alpha_rad.cos() as f64).abs() < 1e-6);
+        assert!((values[5] - c as f64).abs() < 1e-6);
     }
 }

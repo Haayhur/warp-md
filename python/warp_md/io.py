@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-_SUPPORTED_TRAJ_FORMATS = {"dcd", "xtc", "pdb", "pdbqt"}
+_SUPPORTED_TRAJ_FORMATS = {"dcd", "xtc", "trr", "pdb", "pdbqt"}
 
 
 def _resolve_traj_format(path: str, fmt: Optional[str]) -> str:
@@ -13,11 +13,11 @@ def _resolve_traj_format(path: str, fmt: Optional[str]) -> str:
         token = Path(path).suffix.lower().lstrip(".")
     if not token:
         raise ValueError(
-            "trajectory format could not be inferred; set format explicitly (dcd/xtc/pdb/pdbqt)"
+            "trajectory format could not be inferred; set format explicitly (dcd/xtc/trr/pdb/pdbqt)"
         )
     if token not in _SUPPORTED_TRAJ_FORMATS:
         raise ValueError(
-            f"unsupported trajectory format '{token}'; expected one of: dcd, xtc, pdb, pdbqt"
+            f"unsupported trajectory format '{token}'; expected one of: dcd, xtc, trr, pdb, pdbqt"
         )
     return token
 
@@ -42,6 +42,8 @@ def open_trajectory_auto(
         return trajectory_cls.open_dcd(path, system, length_scale=length_scale)
     if fmt == "xtc":
         return trajectory_cls.open_xtc(path, system)
+    if fmt == "trr":
+        return trajectory_cls.open_trr(path, system)
     if fmt in {"pdb", "pdbqt"}:
         return trajectory_cls.open_pdb(path, system)
     raise ValueError(f"unsupported trajectory format '{fmt}'")

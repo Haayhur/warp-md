@@ -1,147 +1,26 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+import warp_md as wmd
 from warp_md import frame_edit
-
-
-class FakeSystem:
-    def __init__(self, n_atoms: int) -> None:
-        self._n_atoms = n_atoms
-
-    def n_atoms(self) -> int:
-        return self._n_atoms
-
-
-class FakeTrajectory:
-    def __init__(self, frames: list[np.ndarray]) -> None:
-        self._frames = [np.asarray(frame, dtype=np.float32) for frame in frames]
-        self._cursor = 0
-
-    def read_chunk(
-        self,
-        max_frames=None,
-        include_box=True,
-        include_box_matrix=True,
-        include_time=False,
-    ):
-        if self._cursor >= len(self._frames):
-            return None
-        size = len(self._frames) - self._cursor if max_frames is None else max(1, int(max_frames))
-        chunk = self._frames[self._cursor : self._cursor + size]
-        self._cursor += len(chunk)
-        payload = {
-            "coords": np.stack(chunk, axis=0),
-            "frames": len(chunk),
-        }
-        payload["box"] = None
-        payload["box_matrix"] = None
-        return payload
-
-    def reset(self) -> None:
-        self._cursor = 0
-
-
-class FakeRustTrajectory(FakeTrajectory):
-    def __init__(self, frames: list[np.ndarray]) -> None:
-        super().__init__(frames)
-        self.read_chunk_calls = 0
-        self.count_frames_calls = 0
-        self.read_frames_calls = 0
-        self.read_frame_range_calls = 0
-
-    def read_chunk(self, *args, **kwargs):
-        self.read_chunk_calls += 1
-        return super().read_chunk(*args, **kwargs)
-
-    def count_frames(self, chunk_frames=None) -> int:
-        self.count_frames_calls += 1
-        return len(self._frames)
-
-    def read_frames(
-        self,
-        frame_indices,
-        chunk_frames=None,
-        include_box=True,
-        include_box_matrix=True,
-        include_time=False,
-    ):
-        self.read_frames_calls += 1
-        coords = np.stack([self._frames[int(index)] for index in frame_indices], axis=0)
-        return {
-            "coords": coords,
-            "box": None,
-            "box_matrix": None,
-            "source_indices": list(frame_indices),
-            "frames": len(frame_indices),
-        }
-
-    def read_frame_range(
-        self,
-        begin,
-        end,
-        step,
-        chunk_frames=None,
-        include_box=True,
-        include_box_matrix=True,
-        include_time=False,
-    ):
-        self.read_frame_range_calls += 1
-        indices = list(range(begin, min(end, len(self._frames)), step))
-        if not indices:
-            return None
-        coords = np.stack([self._frames[int(index)] for index in indices], axis=0)
-        return {
-            "coords": coords,
-            "box": None,
-            "box_matrix": None,
-            "source_indices": indices,
-            "frames": len(indices),
-        }
-
-
-class FakeTrajectorySink:
-    def __init__(self, written: list[int]) -> None:
-        self._written = written
-
-    def write_frame(self, frame) -> None:
-        self._written.append(frame.index)
-
-
-class FakeWriter:
-    def __init__(self, topology_path: str, *, topology_format: str | None, n_atoms: int) -> None:
-        self.topology_path = topology_path
-        self.topology_format = topology_format
-        self.n_atoms = n_atoms
-        self.structure_writes: list[tuple[str, int]] = []
-        self.trajectory_writes: dict[str, list[int]] = {}
-
-    def write_structure(self, path: str, frame) -> None:
-        self.structure_writes.append((path, frame.index))
-
-    @contextmanager
-    def open_trajectory(self, path: str):
-        written: list[int] = []
-        self.trajectory_writes[path] = written
-        yield FakeTrajectorySink(written)
 
 
 def _args(tmp_path: Path, **overrides) -> Namespace:
     values = {
         "topology": str(tmp_path / "min.pdb"),
-        "traj": str(tmp_path / "eq_npt.dcd"),
-        "out": str(tmp_path / "md_new.dcd"),
+        "traj": str(tmp_path / "eq_npt.xtc"),
+        "out": str(tmp_path / "md_new.xtc"),
         "begin": 0,
         "end": None,
         "step": 1,
         "index": None,
         "topology_format": "pdb",
-        "traj_format": "dcd",
+        "traj_format": None,
         "traj_length_scale": None,
         "chunk_frames": 2,
     }
@@ -149,62 +28,89 @@ def _args(tmp_path: Path, **overrides) -> Namespace:
     return Namespace(**values)
 
 
-def test_resolve_frame_indices_matches_script_behavior() -> None:
-    frame_indices, selection = frame_edit._resolve_frame_indices(
-        total_frames=10,
-        begin=2,
-        end=9,
-        step=3,
-        index=None,
+def _write_pdb(path: Path) -> None:
+    path.write_text(
+        "HETATM    1 CA   GLY A   7      10.000  11.000  12.000  0.50 22.00      TEST C  \n"
+        "ATOM      2 CB   GLY A   7      13.000  14.000  15.000  1.00 11.00      TEST C  \n"
+        "END\n",
+        encoding="ascii",
     )
 
-    assert frame_indices == [2, 5, 8]
-    assert selection == {"mode": "range", "begin": 2, "end": 9, "step": 3}
+
+def _write_xtc(path: Path, frames: list[np.ndarray], times: list[float] | None = None) -> None:
+    writer = wmd.TrajectoryWriter.open(str(path), "xtc", 2, None)
+    try:
+        for index, coords in enumerate(frames):
+            writer.write_frame(
+                np.asarray(coords, dtype=np.float32),
+                box_lengths=np.array([20.0, 20.0, 20.0], dtype=np.float32),
+                step=index,
+                time_ps=None if times is None else float(times[index]),
+            )
+    finally:
+        writer.flush()
 
 
-def test_resolve_frame_indices_rejects_out_of_range_single_index() -> None:
-    with pytest.raises(ValueError, match="out of range"):
-        frame_edit._resolve_frame_indices(
-            total_frames=4,
-            begin=0,
-            end=None,
-            step=1,
-            index=4,
-        )
+def _write_trr(
+    path: Path,
+    frames: list[np.ndarray],
+    times: list[float],
+    velocities: list[np.ndarray],
+    forces: list[np.ndarray],
+    lambdas: list[float],
+) -> None:
+    writer = wmd.TrajectoryWriter.open(str(path), "trr", 2, None)
+    try:
+        for index, coords in enumerate(frames):
+            writer.write_frame(
+                np.asarray(coords, dtype=np.float32),
+                box_lengths=np.array([20.0, 20.0, 20.0], dtype=np.float32),
+                step=index,
+                time_ps=float(times[index]),
+                velocities=np.asarray(velocities[index], dtype=np.float32),
+                forces=np.asarray(forces[index], dtype=np.float32),
+                lambda_value=float(lambdas[index]),
+            )
+    finally:
+        writer.flush()
 
 
-def test_resolve_single_index_rejects_negative_index() -> None:
-    with pytest.raises(ValueError, match="must be >= 0"):
-        frame_edit._resolve_single_index(-1)
-
-
-def test_resolve_bounded_range_rejects_empty_span() -> None:
-    with pytest.raises(ValueError, match="greater than or equal to end frame"):
-        frame_edit._resolve_bounded_range(4, 4, 1)
-
-
-def test_run_frame_edit_writes_structure_series(monkeypatch, tmp_path: Path) -> None:
-    system = FakeSystem(n_atoms=2)
-    traj = FakeTrajectory(
-        [
-            np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
-            np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
-            np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
-            np.array([[6.0, 6.0, 6.0], [7.0, 7.0, 7.0]], dtype=np.float32),
-        ]
+def _open_chunk(
+    topology: Path,
+    traj_path: Path,
+    *,
+    include_time: bool = False,
+    include_velocities: bool = False,
+    include_forces: bool = False,
+    include_lambda: bool = False,
+):
+    system = wmd.System.from_pdb(str(topology))
+    suffix = traj_path.suffix.lower()
+    if suffix == ".xtc":
+        traj = wmd.Trajectory.open_xtc(str(traj_path), system)
+    elif suffix == ".trr":
+        traj = wmd.Trajectory.open_trr(str(traj_path), system)
+    else:
+        raise AssertionError(f"unsupported test trajectory suffix {suffix}")
+    return traj.read_chunk(
+        include_time=include_time,
+        include_velocities=include_velocities,
+        include_forces=include_forces,
+        include_lambda=include_lambda,
     )
-    created: list[FakeWriter] = []
 
-    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
-    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
-    monkeypatch.setattr(
-        frame_edit,
-        "_make_writer",
-        lambda topology_path, *, topology_format, n_atoms: created.append(
-            FakeWriter(topology_path, topology_format=topology_format, n_atoms=n_atoms)
-        )
-        or created[-1],
-    )
+
+def test_run_frame_edit_writes_structure_series(tmp_path: Path) -> None:
+    topology = tmp_path / "min.pdb"
+    traj = tmp_path / "eq_npt.xtc"
+    _write_pdb(topology)
+    frames = [
+        np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+        np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
+        np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
+        np.array([[6.0, 6.0, 6.0], [7.0, 7.0, 7.0]], dtype=np.float32),
+    ]
+    _write_xtc(traj, frames)
 
     exit_code, payload = frame_edit.run_frame_edit(
         _args(
@@ -223,201 +129,165 @@ def test_run_frame_edit_writes_structure_series(monkeypatch, tmp_path: Path) -> 
         str(tmp_path / "frames_1.pdb"),
         str(tmp_path / "frames_3.pdb"),
     ]
-    assert created[0].structure_writes == [
-        (str(tmp_path / "frames_1.pdb"), 1),
-        (str(tmp_path / "frames_3.pdb"), 3),
+    assert (tmp_path / "frames_1.pdb").exists()
+    assert (tmp_path / "frames_3.pdb").exists()
+
+
+def test_run_frame_edit_writes_single_frame_to_trajectory(tmp_path: Path) -> None:
+    topology = tmp_path / "min.pdb"
+    traj = tmp_path / "eq_npt.xtc"
+    _write_pdb(topology)
+    frames = [
+        np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+        np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
+        np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
     ]
-
-
-def test_run_frame_edit_writes_single_frame_to_trajectory(monkeypatch, tmp_path: Path) -> None:
-    system = FakeSystem(n_atoms=2)
-    traj = FakeTrajectory(
-        [
-            np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
-            np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
-            np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
-        ]
-    )
-    created: list[FakeWriter] = []
-
-    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
-    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
-    monkeypatch.setattr(
-        frame_edit,
-        "_make_writer",
-        lambda topology_path, *, topology_format, n_atoms: created.append(
-            FakeWriter(topology_path, topology_format=topology_format, n_atoms=n_atoms)
-        )
-        or created[-1],
-    )
+    _write_xtc(traj, frames, times=[0.5, 1.5, 2.5])
 
     out_path = tmp_path / "single.xtc"
-    exit_code, payload = frame_edit.run_frame_edit(
-        _args(
-            tmp_path,
-            out=str(out_path),
-            index=2,
-            begin=0,
-            end=3,
-            step=1,
-        )
-    )
+    exit_code, payload = frame_edit.run_frame_edit(_args(tmp_path, out=str(out_path), index=2))
 
     assert exit_code == 0
     assert payload["selection"] == {"mode": "single", "index": 2}
     assert payload["outputs"] == [str(out_path)]
     assert payload["trajectory"]["total_frames"] is None
-    assert created[0].trajectory_writes[str(out_path)] == [2]
+    chunk = _open_chunk(topology, out_path, include_time=True)
+    assert chunk["frames"] == 1
+    assert np.allclose(chunk["coords"][0], frames[2])
+    assert np.allclose(chunk["time_ps"], [2.5])
 
 
-def test_run_frame_edit_prefers_rust_count_and_read_methods(monkeypatch, tmp_path: Path) -> None:
-    system = FakeSystem(n_atoms=2)
-    traj = FakeRustTrajectory(
-        [
-            np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
-            np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
-            np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
-        ]
-    )
-    created: list[FakeWriter] = []
+def test_run_frame_edit_open_ended_range_counts(tmp_path: Path) -> None:
+    topology = tmp_path / "min.pdb"
+    traj = tmp_path / "eq_npt.xtc"
+    _write_pdb(topology)
+    frames = [
+        np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+        np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
+        np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
+    ]
+    _write_xtc(traj, frames)
 
-    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
-    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
-    monkeypatch.setattr(
-        frame_edit,
-        "_make_writer",
-        lambda topology_path, *, topology_format, n_atoms: created.append(
-            FakeWriter(topology_path, topology_format=topology_format, n_atoms=n_atoms)
-        )
-        or created[-1],
-    )
-
+    out_path = tmp_path / "subset.xtc"
     exit_code, payload = frame_edit.run_frame_edit(
-        _args(
-            tmp_path,
-            out=str(tmp_path / "single.xtc"),
-            begin=0,
-            end=3,
-            step=2,
-        )
+        _args(tmp_path, out=str(out_path), begin=0, end=None, step=2)
     )
 
     assert exit_code == 0
     assert payload["written_frames"] == 2
-    assert payload["trajectory"]["total_frames"] is None
-    assert traj.count_frames_calls == 0
-    assert traj.read_frames_calls == 0
-    assert traj.read_frame_range_calls == 1
-    assert traj.read_chunk_calls == 0
+    assert payload["trajectory"]["total_frames"] == 3
+    chunk = _open_chunk(topology, out_path)
+    assert chunk["frames"] == 2
+    assert np.allclose(chunk["coords"][0], frames[0])
+    assert np.allclose(chunk["coords"][1], frames[2])
 
 
-def test_run_frame_edit_open_ended_range_still_counts(monkeypatch, tmp_path: Path) -> None:
-    system = FakeSystem(n_atoms=2)
-    traj = FakeRustTrajectory(
+def test_run_frame_edit_single_index_reports_out_of_range(tmp_path: Path) -> None:
+    topology = tmp_path / "min.pdb"
+    traj = tmp_path / "eq_npt.xtc"
+    _write_pdb(topology)
+    _write_xtc(
+        traj,
         [
             np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
             np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
-            np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
-        ]
-    )
-    created: list[FakeWriter] = []
-
-    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
-    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
-    monkeypatch.setattr(
-        frame_edit,
-        "_make_writer",
-        lambda topology_path, *, topology_format, n_atoms: created.append(
-            FakeWriter(topology_path, topology_format=topology_format, n_atoms=n_atoms)
-        )
-        or created[-1],
-    )
-
-    exit_code, payload = frame_edit.run_frame_edit(
-        _args(
-            tmp_path,
-            out=str(tmp_path / "single.xtc"),
-            begin=0,
-            end=None,
-            step=2,
-        )
-    )
-
-    assert exit_code == 0
-    assert payload["written_frames"] == 2
-    assert traj.count_frames_calls == 1
-    assert traj.read_frames_calls == 1
-    assert traj.read_frame_range_calls == 0
-    assert traj.read_chunk_calls == 0
-
-
-def test_run_frame_edit_single_index_skips_full_count(monkeypatch, tmp_path: Path) -> None:
-    system = FakeSystem(n_atoms=2)
-    traj = FakeRustTrajectory(
-        [
-            np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
-            np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
-            np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
-        ]
-    )
-    created: list[FakeWriter] = []
-
-    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
-    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
-    monkeypatch.setattr(
-        frame_edit,
-        "_make_writer",
-        lambda topology_path, *, topology_format, n_atoms: created.append(
-            FakeWriter(topology_path, topology_format=topology_format, n_atoms=n_atoms)
-        )
-        or created[-1],
-    )
-
-    out_path = tmp_path / "single.xtc"
-    exit_code, payload = frame_edit.run_frame_edit(
-        _args(
-            tmp_path,
-            out=str(out_path),
-            index=2,
-        )
-    )
-
-    assert exit_code == 0
-    assert payload["selection"] == {"mode": "single", "index": 2}
-    assert payload["trajectory"]["total_frames"] is None
-    assert traj.count_frames_calls == 0
-    assert traj.read_frames_calls == 1
-    assert traj.read_chunk_calls == 0
-    assert created[0].trajectory_writes[str(out_path)] == [2]
-
-
-def test_run_frame_edit_single_index_reports_out_of_range_without_count(
-    monkeypatch, tmp_path: Path
-) -> None:
-    system = FakeSystem(n_atoms=2)
-    traj = FakeRustTrajectory(
-        [
-            np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
-            np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
-        ]
-    )
-
-    def _read_frames(*args, **kwargs):
-        traj.read_frames_calls += 1
-        return {"coords": np.zeros((0, 2, 3), dtype=np.float32), "source_indices": []}
-
-    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
-    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
-    monkeypatch.setattr(traj, "read_frames", _read_frames)
-    monkeypatch.setattr(
-        frame_edit,
-        "_make_writer",
-        lambda topology_path, *, topology_format, n_atoms: FakeWriter(
-            topology_path, topology_format=topology_format, n_atoms=n_atoms
-        ),
+        ],
     )
 
     with pytest.raises(ValueError, match="frame index 5 is out of range"):
-        frame_edit.run_frame_edit(_args(tmp_path, out=str(tmp_path / "single.xtc"), index=5))
+        frame_edit.run_frame_edit(_args(tmp_path, index=5))
 
-    assert traj.count_frames_calls == 0
+
+def test_run_frame_edit_writes_native_pdb_without_mdanalysis(tmp_path: Path) -> None:
+    topology = tmp_path / "min.pdb"
+    traj = tmp_path / "eq_npt.xtc"
+    _write_pdb(topology)
+    _write_xtc(
+        traj,
+        [np.array([[12.0, 13.5, 14.25], [15.0, 16.5, 17.25]], dtype=np.float32)],
+        times=[0.75],
+    )
+
+    out_path = tmp_path / "frame.pdb"
+    exit_code, payload = frame_edit.run_frame_edit(_args(tmp_path, out=str(out_path), index=0))
+
+    assert exit_code == 0
+    assert payload["outputs"] == [str(out_path)]
+    text = out_path.read_text(encoding="ascii")
+    assert "HEADER    GENERATED BY WARP-MD FRAMES" in text
+    assert "TITLE     warp-md frame 0 time_ps=0.75" in text
+    assert "REMARK     Generated by warp-md frames" in text
+    assert "HETATM    1 CA   GLY A   7" in text
+    assert "ATOM      2 CB   GLY A   7" in text
+    assert text.rstrip().endswith("END")
+
+
+def test_run_frame_edit_preserves_time_ps_for_trajectory_output(tmp_path: Path) -> None:
+    topology = tmp_path / "min.pdb"
+    traj = tmp_path / "eq_npt.xtc"
+    _write_pdb(topology)
+    frames = [
+        np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+        np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
+        np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
+    ]
+    _write_xtc(traj, frames, times=[1.25, 2.5, 3.75])
+
+    out_path = tmp_path / "subset.xtc"
+    exit_code, payload = frame_edit.run_frame_edit(
+        _args(tmp_path, out=str(out_path), begin=0, end=3, step=2)
+    )
+
+    assert exit_code == 0
+    assert payload["written_frames"] == 2
+    chunk = _open_chunk(topology, out_path, include_time=True)
+    assert np.allclose(chunk["time_ps"], [1.25, 3.75])
+
+
+def test_run_frame_edit_preserves_trr_extras_for_trr_output(tmp_path: Path) -> None:
+    topology = tmp_path / "min.pdb"
+    traj = tmp_path / "eq_npt.trr"
+    _write_pdb(topology)
+    frames = [
+        np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+        np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
+    ]
+    velocities = [
+        np.array([[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=np.float32),
+        np.array([[10.0, 11.0, 12.0], [13.0, 14.0, 15.0]], dtype=np.float32),
+    ]
+    forces = [
+        np.array([[0.4, 0.5, 0.6], [0.7, 0.8, 0.9]], dtype=np.float32),
+        np.array([[1.0, 1.1, 1.2], [1.3, 1.4, 1.5]], dtype=np.float32),
+    ]
+    _write_trr(traj, frames, [1.0, 2.0], velocities, forces, [0.25, 0.5])
+
+    out_path = tmp_path / "subset.trr"
+    exit_code, payload = frame_edit.run_frame_edit(
+        _args(
+            tmp_path,
+            traj=str(traj),
+            traj_format="trr",
+            out=str(out_path),
+            begin=0,
+            end=2,
+            step=1,
+        )
+    )
+
+    assert exit_code == 0
+    assert payload["written_frames"] == 2
+    chunk = _open_chunk(
+        topology,
+        out_path,
+        include_time=True,
+        include_velocities=True,
+        include_forces=True,
+        include_lambda=True,
+    )
+    assert np.allclose(chunk["time_ps"], [1.0, 2.0])
+    assert np.allclose(chunk["lambda_value"], [0.25, 0.5])
+    assert np.allclose(chunk["velocities"][0], velocities[0])
+    assert np.allclose(chunk["velocities"][1], velocities[1])
+    assert np.allclose(chunk["forces"][0], forces[0])
+    assert np.allclose(chunk["forces"][1], forces[1])

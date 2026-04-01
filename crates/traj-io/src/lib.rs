@@ -2,6 +2,7 @@ pub mod dcd;
 pub mod gro;
 pub mod pdb;
 pub mod pdb_traj;
+pub mod trr;
 pub mod xtc;
 
 use traj_core::error::{TrajError, TrajResult};
@@ -50,6 +51,11 @@ pub trait TrajReader {
         let max_frames = max_frames.max(1);
         let mut full = FrameChunkBuilder::new(n_atoms, max_frames);
         full.set_requirements(out.needs_box(), out.needs_time());
+        full.set_optional_requirements(
+            out.needs_velocities(),
+            out.needs_forces(),
+            out.needs_lambda(),
+        );
         let read = self.read_chunk(max_frames, &mut full)?;
         if read == 0 {
             out.reset(selection.len(), max_frames);
@@ -63,12 +69,31 @@ pub trait TrajReader {
                 .time_ps
                 .as_ref()
                 .and_then(|time| time.get(frame).copied());
+            let lambda_value = chunk
+                .lambda_values
+                .as_ref()
+                .and_then(|values| values.get(frame).copied());
             let box_ = chunk.box_.get(frame).copied().unwrap_or(Box3::None);
             let dst = out.start_frame(box_, time_ps);
             let src_base = frame * chunk.n_atoms;
             for (dst_atom, &src_idx) in dst.iter_mut().zip(selection.iter()) {
                 *dst_atom = chunk.coords[src_base + src_idx as usize];
             }
+            let velocities = chunk.velocities.as_ref().map(|data| {
+                selection
+                    .iter()
+                    .map(|&src_idx| data[src_base + src_idx as usize])
+                    .collect::<Vec<_>>()
+            });
+            let forces = chunk.forces.as_ref().map(|data| {
+                selection
+                    .iter()
+                    .map(|&src_idx| data[src_base + src_idx as usize])
+                    .collect::<Vec<_>>()
+            });
+            let velocities_ref = velocities.as_deref();
+            let forces_ref = forces.as_deref();
+            out.set_frame_extras(velocities_ref, forces_ref, lambda_value)?;
         }
         Ok(chunk.n_frames)
     }

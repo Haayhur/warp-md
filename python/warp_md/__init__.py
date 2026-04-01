@@ -9,6 +9,9 @@ try:
         PySystem as System,
         PySelection as Selection,
         PyTrajectory as Trajectory,
+        PyTrajectoryWriter as TrajectoryWriter,
+        PyStructureWriter as StructureWriter,
+        PyFrameEditor as FrameEditor,
         PyRgPlan as RgPlan,
         PyRadgyrTensorPlan as RadgyrTensorPlan,
         PyRmsdPlan as RmsdPlan,
@@ -165,6 +168,9 @@ except Exception as exc:  # pragma: no cover - allow CLI help without bindings
     System = _Missing
     Selection = _Missing
     Trajectory = _Missing
+    TrajectoryWriter = _Missing
+    StructureWriter = _Missing
+    FrameEditor = _Missing
     RgPlan = _Missing
     RadgyrTensorPlan = _Missing
     RmsdPlan = _Missing

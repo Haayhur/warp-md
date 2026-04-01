@@ -2,7 +2,10 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use numpy::ndarray::{Array2, Array3, Array4};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayDyn, PyReadonlyArrayDyn};
+use numpy::{
+    IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayDyn, PyReadonlyArray1, PyReadonlyArray2,
+    PyReadonlyArrayDyn,
+};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
@@ -10,6 +13,7 @@ use warp_pack::PackConfig as PackConfigInput;
 
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::{Box3, FrameChunkBuilder};
+use traj_core::pdb_gro::{parse_gro_reader, parse_pdb_reader, PdbParseOptions, PdbRecordKind};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 use traj_engine::plans::analysis::msd::{DtDecimation, FrameDecimation, TimeBinning};
@@ -37,11 +41,12 @@ use traj_engine::{
     TranslatePlan, VectorPlan, VelocityAutoCorrPlan, VolmapPlan, VolumePlan, WaterCountPlan,
     WatershellPlan, WaveletPlan, XcorrPlan, XtalSymmPlan,
 };
-use traj_io::dcd::DcdReader;
+use traj_io::dcd::{DcdReader, DcdWriter};
 use traj_io::gro::GroReader;
 use traj_io::pdb::{PdbReader, PdbqtReader};
 use traj_io::pdb_traj::PdbTrajReader;
-use traj_io::xtc::XtcReader;
+use traj_io::trr::{TrrReader, TrrWriter};
+use traj_io::xtc::{XtcReader, XtcWriter};
 use traj_io::{TopologyReader, TrajReader};
 
 include!("py_part1.rs");
@@ -53,3 +58,4 @@ include!("py_part6.rs");
 include!("py_part7.rs");
 include!("py_part8.rs");
 include!("py_part9.rs");
+include!("py_part10.rs");

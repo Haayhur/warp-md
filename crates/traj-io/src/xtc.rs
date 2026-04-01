@@ -16,6 +16,11 @@ pub struct XtcReader {
     selection_cache_usize: Vec<usize>,
 }
 
+pub struct XtcWriter {
+    traj: XTCTrajectory,
+    frame: Frame,
+}
+
 impl XtcReader {
     pub fn open(path: impl Into<PathBuf>) -> TrajResult<Self> {
         let path = path.into();
@@ -121,6 +126,46 @@ impl XtcReader {
             }
         }
         Ok(frames)
+    }
+}
+
+impl XtcWriter {
+    pub fn create(path: impl Into<PathBuf>, n_atoms: usize) -> TrajResult<Self> {
+        let path = path.into();
+        let traj = XTCTrajectory::open_write(&path).map_err(map_xtc_err)?;
+        Ok(Self {
+            traj,
+            frame: Frame::with_len(n_atoms),
+        })
+    }
+
+    pub fn write_frame(
+        &mut self,
+        coords: &[[f32; 3]],
+        box_: Box3,
+        step: usize,
+        time_ps: Option<f32>,
+    ) -> TrajResult<()> {
+        if coords.len() != self.frame.coords.len() {
+            return Err(TrajError::Mismatch(format!(
+                "frame atom count {} does not match writer atom count {}",
+                coords.len(),
+                self.frame.coords.len()
+            )));
+        }
+        self.frame.step = step;
+        self.frame.time = time_ps.unwrap_or(step as f32);
+        self.frame.box_vector = box_to_xtc(box_);
+        for (dst, src) in self.frame.coords.iter_mut().zip(coords.iter()) {
+            dst[0] = src[0] * 0.1;
+            dst[1] = src[1] * 0.1;
+            dst[2] = src[2] * 0.1;
+        }
+        self.traj.write(&self.frame).map_err(map_xtc_err)
+    }
+
+    pub fn flush(&mut self) -> TrajResult<()> {
+        self.traj.flush().map_err(map_xtc_err)
     }
 }
 
@@ -502,6 +547,55 @@ mod tests {
         let read = reader.read_chunk_into_coords3(1, &mut out).unwrap();
         assert_eq!(read, 1);
         assert!((out[0] - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn write_xtc_simple() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("write.xtc");
+
+        let mut writer = XtcWriter::create(&path, 2).unwrap();
+        writer
+            .write_frame(
+                &[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                Box3::Orthorhombic {
+                    lx: 10.0,
+                    ly: 20.0,
+                    lz: 30.0,
+                },
+                7,
+                Some(2.5),
+            )
+            .unwrap();
+        writer.flush().unwrap();
+
+        let mut traj = XTCTrajectory::open_read(path).unwrap();
+        let mut frame = Frame::with_len(2);
+        traj.read(&mut frame).unwrap();
+        assert_eq!(frame.step, 7);
+        assert_eq!(frame.time, 2.5);
+        assert_eq!(
+            frame.box_vector,
+            [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]
+        );
+        assert_eq!(frame.coords[0], [0.1, 0.2, 0.3]);
+        assert_eq!(frame.coords[1], [0.4, 0.5, 0.6]);
+    }
+}
+
+fn box_to_xtc(box_: Box3) -> [[f32; 3]; 3] {
+    match box_ {
+        Box3::None => [[0.0; 3]; 3],
+        Box3::Orthorhombic { lx, ly, lz } => [
+            [lx * 0.1, 0.0, 0.0],
+            [0.0, ly * 0.1, 0.0],
+            [0.0, 0.0, lz * 0.1],
+        ],
+        Box3::Triclinic { m } => [
+            [m[0] * 0.1, m[1] * 0.1, m[2] * 0.1],
+            [m[3] * 0.1, m[4] * 0.1, m[5] * 0.1],
+            [m[6] * 0.1, m[7] * 0.1, m[8] * 0.1],
+        ],
     }
 }
 

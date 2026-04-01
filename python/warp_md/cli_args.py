@@ -5,7 +5,7 @@ import argparse
 
 def add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--topology", required=True, help="Topology file (.pdb or .gro)")
-    parser.add_argument("--traj", required=True, help="Trajectory file (.dcd or .xtc)")
+    parser.add_argument("--traj", required=True, help="Trajectory file (.dcd, .xtc, or .trr)")
     parser.add_argument(
         "--topology-format",
         choices=["pdb", "gro"],
@@ -13,7 +13,7 @@ def add_shared_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--traj-format",
-        choices=["dcd", "xtc"],
+        choices=["dcd", "xtc", "trr"],
         help="Override trajectory format",
     )
     parser.add_argument(

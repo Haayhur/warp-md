@@ -948,6 +948,9 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySystem>()?;
     m.add_class::<PySelection>()?;
     m.add_class::<PyTrajectory>()?;
+    m.add_class::<PyTrajectoryWriter>()?;
+    m.add_class::<PyStructureWriter>()?;
+    m.add_class::<PyFrameEditor>()?;
     m.add_class::<PyRgPlan>()?;
     m.add_class::<PyRadgyrTensorPlan>()?;
     m.add_class::<PyRmsdPlan>()?;
@@ -1111,6 +1114,7 @@ fn run_plan<P: Plan>(
     let output = match traj {
         TrajKind::Dcd { reader, .. } => exec.run_plan(plan, reader),
         TrajKind::Xtc { reader, .. } => exec.run_plan(plan, reader),
+        TrajKind::Trr { reader, .. } => exec.run_plan(plan, reader),
         TrajKind::Pdb { reader, .. } => exec.run_plan(plan, reader),
     }
     .map_err(to_py_err)?;
@@ -1121,6 +1125,7 @@ fn reset_traj(traj: &mut TrajKind) -> TrajResult<()> {
     match traj {
         TrajKind::Dcd { reader, .. } => reader.reset(),
         TrajKind::Xtc { reader, .. } => reader.reset(),
+        TrajKind::Trr { reader, .. } => reader.reset(),
         TrajKind::Pdb { reader, .. } => {
             reader.reset();
             Ok(())
@@ -1168,6 +1173,7 @@ fn run_plan_with_frame_subset<P: Plan>(
             let counted = match traj {
                 TrajKind::Dcd { reader, .. } => traj_engine::count_frames(reader, max_frames),
                 TrajKind::Xtc { reader, .. } => traj_engine::count_frames(reader, max_frames),
+                TrajKind::Trr { reader, .. } => traj_engine::count_frames(reader, max_frames),
                 TrajKind::Pdb { reader, .. } => traj_engine::count_frames(reader, max_frames),
             }
             .map_err(to_py_err)?;
@@ -1191,6 +1197,9 @@ fn run_plan_with_frame_subset<P: Plan>(
             exec.run_plan_on_selected_frames(plan, reader, &source_indices)
         }
         TrajKind::Xtc { reader, .. } => {
+            exec.run_plan_on_selected_frames(plan, reader, &source_indices)
+        }
+        TrajKind::Trr { reader, .. } => {
             exec.run_plan_on_selected_frames(plan, reader, &source_indices)
         }
         TrajKind::Pdb { reader, .. } => {
@@ -1262,6 +1271,7 @@ fn traj_n_atoms(traj: &TrajKind) -> usize {
     match traj {
         TrajKind::Dcd { reader, .. } => reader.n_atoms(),
         TrajKind::Xtc { reader, .. } => reader.n_atoms(),
+        TrajKind::Trr { reader, .. } => reader.n_atoms(),
         TrajKind::Pdb { reader, .. } => reader.n_atoms(),
     }
 }
@@ -1270,6 +1280,7 @@ fn traj_n_frames_hint(traj: &TrajKind) -> Option<usize> {
     match traj {
         TrajKind::Dcd { reader, .. } => reader.n_frames_hint(),
         TrajKind::Xtc { reader, .. } => reader.n_frames_hint(),
+        TrajKind::Trr { reader, .. } => reader.n_frames_hint(),
         TrajKind::Pdb { reader, .. } => reader.n_frames_hint(),
     }
 }
@@ -1326,6 +1337,17 @@ fn bench_chunk_frames(
                 }
             }
             TrajKind::Xtc { reader, .. } => {
+                if let Some(selection) = preferred_selection {
+                    if use_selected {
+                        reader.read_chunk_selected(chunk_frames, selection, &mut builder)
+                    } else {
+                        reader.read_chunk(chunk_frames, &mut builder)
+                    }
+                } else {
+                    reader.read_chunk(chunk_frames, &mut builder)
+                }
+            }
+            TrajKind::Trr { reader, .. } => {
                 if let Some(selection) = preferred_selection {
                     if use_selected {
                         reader.read_chunk_selected(chunk_frames, selection, &mut builder)
