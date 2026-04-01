@@ -864,7 +864,7 @@ struct PyDockingPlan {
 #[pymethods]
 impl PyDockingPlan {
     #[new]
-    #[pyo3(signature = (receptor, ligand, close_contact_cutoff=4.0, hydrophobic_cutoff=4.0, hydrogen_bond_cutoff=3.5, clash_cutoff=2.5, salt_bridge_cutoff=5.5, halogen_bond_cutoff=5.5, metal_coordination_cutoff=3.5, cation_pi_cutoff=6.0, pi_pi_cutoff=7.5, hbond_min_angle_deg=120.0, donor_hydrogen_cutoff=1.25, allow_missing_hydrogen=true, length_scale=1.0, max_events_per_frame=20000))]
+    #[pyo3(signature = (receptor, ligand, close_contact_cutoff=4.0, hydrophobic_cutoff=4.0, hydrogen_bond_cutoff=3.5, clash_cutoff=2.5, salt_bridge_cutoff=5.5, halogen_bond_cutoff=5.5, metal_coordination_cutoff=3.5, cation_pi_cutoff=6.0, pi_pi_cutoff=7.5, hbond_min_angle_deg=120.0, donor_hydrogen_cutoff=1.25, allow_missing_hydrogen=false, length_scale=1.0, max_events_per_frame=20000))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         receptor: &PySelection,

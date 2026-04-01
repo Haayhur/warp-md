@@ -53,3 +53,4 @@ pub use voxel::{CountInVoxelPlan, DensityPlan, VolmapPlan};
 pub use water_count::WaterCountPlan;
 pub use wavelet::WaveletPlan;
 pub use xcorr::XcorrPlan;
+pub mod geometry;

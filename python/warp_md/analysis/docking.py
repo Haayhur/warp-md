@@ -74,7 +74,7 @@ def docking(
     pi_pi_cutoff: float = 7.5,
     hbond_min_angle_deg: float = 120.0,
     donor_hydrogen_cutoff: float = 1.25,
-    allow_missing_hydrogen: bool = True,
+    allow_missing_hydrogen: bool = False,
     length_scale: float = 1.0,
     max_events_per_frame: int = 20_000,
     frame_indices: Optional[Sequence[int]] = None,

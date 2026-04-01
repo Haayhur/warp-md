@@ -26,7 +26,6 @@ from .cli_config import _default_out, _load_config, example_config
 from .cli_output import _artifact_metadata, _save_output, _summary_from_output
 from .cli_parse import _load_system_from_args, _load_traj_from_args
 from .cli_specs import SPEC_BUILDERS
-from .frame_edit import add_frame_edit_args, run_frame_edit
 from .pack.data import available_water_models, water_pdb
 from .atlas_api import (
     DEFAULT_ATLAS_API_BASE_URL,
@@ -1152,11 +1151,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="resume from partial .part file when possible",
     )
-    frames_cmd = sub.add_parser(
-        "frames",
-        help="extract or stride trajectory frames into a new trajectory or structure file",
-    )
-    add_frame_edit_args(frames_cmd)
     sub.add_parser("example", help="print example config")
     schema = sub.add_parser("schema", help="print run-config JSON schema for agents")
     schema.add_argument(
@@ -1355,10 +1349,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
     if args.cmd == "atlas-fetch":
         exit_code, payload = run_atlas_fetch(args)
-        print(json.dumps(payload, indent=2))
-        return exit_code
-    if args.cmd == "frames":
-        exit_code, payload = run_frame_edit(args)
         print(json.dumps(payload, indent=2))
         return exit_code
     if args.cmd == "example":

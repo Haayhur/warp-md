@@ -32,13 +32,6 @@ def test_build_binary_uses_warp_build_env(monkeypatch) -> None:
     assert build_contract._binary() == "/tmp/warp-build-bin"
 
 
-def test_build_binary_falls_back_to_legacy_env(monkeypatch) -> None:
-    monkeypatch.delenv("WARP_BUILD_BINARY", raising=False)
-    monkeypatch.setenv("POLYMER_BUILD_BINARY", "/tmp/polymer-build-bin")
-
-    assert build_contract._binary() == "/tmp/polymer-build-bin"
-
-
 def test_build_cli_example_bundle_out_uses_writer(monkeypatch, capsys, tmp_path) -> None:
     out = tmp_path / "source.bundle.json"
     called = {"path": None}
