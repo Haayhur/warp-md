@@ -1,10 +1,26 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from . import FrameEditor
 
 _INPUT_TRAJECTORY_FORMATS = ["dcd", "xtc", "trr", "pdb", "pdbqt"]
+
+
+def _validate_frame_edit_paths(args: argparse.Namespace) -> None:
+    topology_path = Path(args.topology).expanduser()
+    if not topology_path.is_file():
+        raise FileNotFoundError(f"topology file not found: {topology_path}")
+
+    traj_path = Path(args.traj).expanduser()
+    if not traj_path.is_file():
+        raise FileNotFoundError(f"trajectory file not found: {traj_path}")
+
+    out_path = Path(args.out).expanduser()
+    parent = out_path.parent
+    if parent and not parent.exists():
+        raise FileNotFoundError(f"output directory not found: {parent}")
 
 
 def add_frame_edit_args(parser: argparse.ArgumentParser) -> None:
@@ -58,6 +74,7 @@ def add_frame_edit_args(parser: argparse.ArgumentParser) -> None:
 
 
 def run_frame_edit(args: argparse.Namespace) -> tuple[int, dict]:
+    _validate_frame_edit_paths(args)
     payload = FrameEditor.run(
         topology_path=args.topology,
         traj_path=args.traj,

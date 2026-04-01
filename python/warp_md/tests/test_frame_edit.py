@@ -198,6 +198,49 @@ def test_run_frame_edit_single_index_reports_out_of_range(tmp_path: Path) -> Non
         frame_edit.run_frame_edit(_args(tmp_path, index=5))
 
 
+def test_run_frame_edit_reports_missing_topology_path(tmp_path: Path) -> None:
+    traj = tmp_path / "eq_npt.xtc"
+    _write_xtc(
+        traj,
+        [np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32)],
+    )
+
+    with pytest.raises(FileNotFoundError, match="topology file not found"):
+        frame_edit.run_frame_edit(
+            _args(tmp_path, topology=str(tmp_path / "missing.pdb"), traj=str(traj))
+        )
+
+
+def test_run_frame_edit_reports_missing_trajectory_path(tmp_path: Path) -> None:
+    topology = tmp_path / "min.pdb"
+    _write_pdb(topology)
+
+    with pytest.raises(FileNotFoundError, match="trajectory file not found"):
+        frame_edit.run_frame_edit(
+            _args(tmp_path, topology=str(topology), traj=str(tmp_path / "missing.xtc"))
+        )
+
+
+def test_run_frame_edit_reports_missing_output_directory(tmp_path: Path) -> None:
+    topology = tmp_path / "min.pdb"
+    traj = tmp_path / "eq_npt.xtc"
+    _write_pdb(topology)
+    _write_xtc(
+        traj,
+        [np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32)],
+    )
+
+    with pytest.raises(FileNotFoundError, match="output directory not found"):
+        frame_edit.run_frame_edit(
+            _args(
+                tmp_path,
+                topology=str(topology),
+                traj=str(traj),
+                out=str(tmp_path / "missing-dir" / "out.xtc"),
+            )
+        )
+
+
 def test_run_frame_edit_writes_native_pdb_without_mdanalysis(tmp_path: Path) -> None:
     topology = tmp_path / "min.pdb"
     traj = tmp_path / "eq_npt.xtc"
