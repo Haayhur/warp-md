@@ -108,6 +108,107 @@ impl PySelection {
     }
 }
 
+fn selected_frames_to_py<'py>(
+    py: Python<'py>,
+    selected: &[traj_engine::executor::SelectedFrame],
+    source_indices: &[usize],
+    include_box: bool,
+    include_box_matrix: bool,
+    include_time: bool,
+) -> PyResult<PyObject> {
+    let n_frames = selected.len();
+    let n_atoms = selected[0].coords.len();
+    let mut coord_data4 = Vec::with_capacity(n_frames * n_atoms * 4);
+    for frame in selected.iter() {
+        for atom in frame.coords.iter() {
+            coord_data4.extend_from_slice(atom);
+        }
+    }
+    let coords4 = Array3::from_shape_vec((n_frames, n_atoms, 4), coord_data4)
+        .map_err(|_| PyRuntimeError::new_err("failed to build coords array"))?;
+    let coords = coords4.slice_move(numpy::ndarray::s![.., .., 0..3]);
+    let coords_py = coords.into_pyarray_bound(py);
+
+    let mut box_data = if include_box {
+        Some(Vec::with_capacity(n_frames * 3))
+    } else {
+        None
+    };
+    let mut box_matrix_data = if include_box_matrix {
+        Some(Vec::with_capacity(n_frames * 9))
+    } else {
+        None
+    };
+    let mut box_ok = include_box;
+    let mut box_matrix_ok = include_box_matrix;
+    if include_box || include_box_matrix {
+        for frame in selected.iter() {
+            match frame.box_ {
+                Box3::Orthorhombic { lx, ly, lz } => {
+                    if let Some(data) = box_data.as_mut() {
+                        data.push(lx);
+                        data.push(ly);
+                        data.push(lz);
+                    }
+                    if let Some(data) = box_matrix_data.as_mut() {
+                        data.extend_from_slice(&[
+                            lx, 0.0, 0.0, //
+                            0.0, ly, 0.0, //
+                            0.0, 0.0, lz,
+                        ]);
+                    }
+                }
+                Box3::None => {
+                    box_ok = false;
+                    box_matrix_ok = false;
+                    break;
+                }
+                Box3::Triclinic { m } => {
+                    box_ok = false;
+                    if let Some(data) = box_matrix_data.as_mut() {
+                        data.extend_from_slice(&m);
+                    }
+                    if !box_ok && !box_matrix_ok {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let box_py = if include_box && box_ok {
+        let box_arr = Array2::from_shape_vec((n_frames, 3), box_data.unwrap_or_default())
+            .map_err(|_| PyRuntimeError::new_err("failed to build box array"))?;
+        box_arr.into_pyarray_bound(py).into_py(py)
+    } else {
+        py.None()
+    };
+    let box_matrix_py = if include_box_matrix && box_matrix_ok {
+        let box_arr = Array3::from_shape_vec((n_frames, 3, 3), box_matrix_data.unwrap_or_default())
+            .map_err(|_| PyRuntimeError::new_err("failed to build box matrix array"))?;
+        box_arr.into_pyarray_bound(py).into_py(py)
+    } else {
+        py.None()
+    };
+    let time_py = if include_time {
+        let mut times = Vec::with_capacity(n_frames);
+        for frame in selected.iter() {
+            times.push(frame.time_ps.unwrap_or(0.0));
+        }
+        PyArray1::from_vec_bound(py, times).into_py(py)
+    } else {
+        py.None()
+    };
+
+    let dict = PyDict::new_bound(py);
+    dict.set_item("coords", coords_py)?;
+    dict.set_item("box", box_py)?;
+    dict.set_item("box_matrix", box_matrix_py)?;
+    dict.set_item("time_ps", time_py)?;
+    dict.set_item("frames", n_frames)?;
+    dict.set_item("source_indices", source_indices)?;
+    Ok(dict.into_py(py))
+}
+
 enum TrajKind {
     Dcd { reader: DcdReader },
     Xtc { reader: XtcReader },
@@ -314,100 +415,91 @@ impl PyTrajectory {
             return Ok(py.None());
         }
 
-        let n_frames = selected.len();
-        let n_atoms = selected[0].coords.len();
-        let mut coord_data4 = Vec::with_capacity(n_frames * n_atoms * 4);
-        for frame in selected.iter() {
-            for atom in frame.coords.iter() {
-                coord_data4.extend_from_slice(atom);
+        selected_frames_to_py(
+            py,
+            &selected,
+            &source_indices,
+            include_box,
+            include_box_matrix,
+            include_time,
+        )
+    }
+
+    #[pyo3(signature = (begin, end, step, chunk_frames=None, include_box=true, include_box_matrix=true, include_time=false))]
+    fn read_frame_range<'py>(
+        &self,
+        py: Python<'py>,
+        begin: usize,
+        end: usize,
+        step: usize,
+        chunk_frames: Option<usize>,
+        include_box: bool,
+        include_box_matrix: bool,
+        include_time: bool,
+    ) -> PyResult<PyObject> {
+        if begin >= end {
+            return Ok(py.None());
+        }
+        if step == 0 {
+            return Err(PyRuntimeError::new_err("step must be >= 1"));
+        }
+
+        let mut inner = self.inner.borrow_mut();
+        let chunk_frames = if let Some(frames) = chunk_frames {
+            frames.max(1)
+        } else {
+            resolve_chunk_frames_for_streaming(&inner)?
+        };
+        let requirements = traj_engine::executor::PlanRequirements::new(
+            include_box || include_box_matrix,
+            include_time,
+        );
+        let (selected, source_indices) = match &mut *inner {
+            TrajKind::Dcd { reader, .. } => {
+                traj_engine::executor::collect_strided_frames_with_requirements(
+                    reader,
+                    begin,
+                    end,
+                    step,
+                    chunk_frames,
+                    requirements,
+                )
+            }
+            TrajKind::Xtc { reader, .. } => {
+                traj_engine::executor::collect_strided_frames_with_requirements(
+                    reader,
+                    begin,
+                    end,
+                    step,
+                    chunk_frames,
+                    requirements,
+                )
+            }
+            TrajKind::Pdb { reader, .. } => {
+                traj_engine::executor::collect_strided_frames_with_requirements(
+                    reader,
+                    begin,
+                    end,
+                    step,
+                    chunk_frames,
+                    requirements,
+                )
             }
         }
-        let coords4 = Array3::from_shape_vec((n_frames, n_atoms, 4), coord_data4)
-            .map_err(|_| PyRuntimeError::new_err("failed to build coords array"))?;
-        let coords = coords4.slice_move(numpy::ndarray::s![.., .., 0..3]);
-        let coords_py = coords.into_pyarray_bound(py);
+        .map_err(to_py_err)?;
 
-        let mut box_data = if include_box {
-            Some(Vec::with_capacity(n_frames * 3))
-        } else {
-            None
-        };
-        let mut box_matrix_data = if include_box_matrix {
-            Some(Vec::with_capacity(n_frames * 9))
-        } else {
-            None
-        };
-        let mut box_ok = include_box;
-        let mut box_matrix_ok = include_box_matrix;
-        if include_box || include_box_matrix {
-            for frame in selected.iter() {
-                match frame.box_ {
-                    Box3::Orthorhombic { lx, ly, lz } => {
-                        if let Some(data) = box_data.as_mut() {
-                            data.push(lx);
-                            data.push(ly);
-                            data.push(lz);
-                        }
-                        if let Some(data) = box_matrix_data.as_mut() {
-                            data.extend_from_slice(&[
-                                lx, 0.0, 0.0, //
-                                0.0, ly, 0.0, //
-                                0.0, 0.0, lz,
-                            ]);
-                        }
-                    }
-                    Box3::None => {
-                        box_ok = false;
-                        box_matrix_ok = false;
-                        break;
-                    }
-                    Box3::Triclinic { m } => {
-                        box_ok = false;
-                        if let Some(data) = box_matrix_data.as_mut() {
-                            data.extend_from_slice(&m);
-                        }
-                        if !box_ok && !box_matrix_ok {
-                            break;
-                        }
-                    }
-                }
-            }
+        if selected.is_empty() {
+            return Ok(py.None());
         }
-        let box_py = if include_box && box_ok {
-            let box_arr = Array2::from_shape_vec((n_frames, 3), box_data.unwrap_or_default())
-                .map_err(|_| PyRuntimeError::new_err("failed to build box array"))?;
-            box_arr.into_pyarray_bound(py).into_py(py)
-        } else {
-            py.None()
-        };
-        let box_matrix_py = if include_box_matrix && box_matrix_ok {
-            let box_arr = Array3::from_shape_vec(
-                (n_frames, 3, 3),
-                box_matrix_data.unwrap_or_default(),
-            )
-            .map_err(|_| PyRuntimeError::new_err("failed to build box matrix array"))?;
-            box_arr.into_pyarray_bound(py).into_py(py)
-        } else {
-            py.None()
-        };
-        let time_py = if include_time {
-            let mut times = Vec::with_capacity(n_frames);
-            for frame in selected.iter() {
-                times.push(frame.time_ps.unwrap_or(0.0));
-            }
-            PyArray1::from_vec_bound(py, times).into_py(py)
-        } else {
-            py.None()
-        };
 
-        let dict = PyDict::new_bound(py);
-        dict.set_item("coords", coords_py)?;
-        dict.set_item("box", box_py)?;
-        dict.set_item("box_matrix", box_matrix_py)?;
-        dict.set_item("time_ps", time_py)?;
-        dict.set_item("frames", n_frames)?;
-        dict.set_item("source_indices", source_indices)?;
-        Ok(dict.into_py(py))
+        selected_frames_to_py(
+            py,
+            &selected,
+            &source_indices,
+            include_box,
+            include_box_matrix,
+            include_time,
+        )
     }
 
     #[pyo3(signature = (max_frames=None, include_box=true, include_box_matrix=true, include_time=true, atom_indices=None))]

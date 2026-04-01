@@ -101,6 +101,13 @@ impl TrajReader for PdbTrajReader {
         }
         Ok(frames_read)
     }
+
+    fn skip_frames(&mut self, n_frames: usize) -> TrajResult<usize> {
+        let remaining = self.frames.len().saturating_sub(self.index);
+        let skipped = remaining.min(n_frames);
+        self.index += skipped;
+        Ok(skipped)
+    }
 }
 
 fn parse_pdb_frames<R: BufRead>(reader: R) -> TrajResult<(Vec<Vec<[f32; 3]>>, Vec<Box3>)> {

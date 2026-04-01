@@ -216,6 +216,22 @@ impl TrajReader for XtcReader {
         }
         Ok(frames)
     }
+
+    fn skip_frames(&mut self, n_frames: usize) -> TrajResult<usize> {
+        let mut skipped = 0usize;
+        while skipped < n_frames {
+            match self.traj.read(&mut self.frame) {
+                Ok(()) => skipped += 1,
+                Err(err) => {
+                    if err.is_eof() {
+                        break;
+                    }
+                    return Err(map_xtc_err(err));
+                }
+            }
+        }
+        Ok(skipped)
+    }
 }
 
 #[inline(always)]
@@ -459,6 +475,33 @@ mod tests {
         assert!((out[3] - 1.0).abs() < 1e-6);
         assert!((out[4] - 2.0).abs() < 1e-6);
         assert!((out[5] - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn skip_frames_advances_xtc_reader_without_copying_output() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test_skip.xtc");
+        let mut traj = XTCTrajectory::open(path.clone(), FileMode::Write).unwrap();
+        let mut frame = Frame::with_len(1);
+        frame.step = 0;
+        frame.time = 0.0;
+        frame.box_vector = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        frame.coords[0] = [0.1, 0.0, 0.0];
+        traj.write(&frame).unwrap();
+        frame.step = 1;
+        frame.coords[0] = [0.2, 0.0, 0.0];
+        traj.write(&frame).unwrap();
+        frame.step = 2;
+        frame.coords[0] = [0.3, 0.0, 0.0];
+        traj.write(&frame).unwrap();
+        traj.flush().unwrap();
+
+        let mut reader = XtcReader::open(&path).unwrap();
+        assert_eq!(reader.skip_frames(2).unwrap(), 2);
+        let mut out = vec![0.0f32; 3];
+        let read = reader.read_chunk_into_coords3(1, &mut out).unwrap();
+        assert_eq!(read, 1);
+        assert!((out[0] - 3.0).abs() < 1e-6);
     }
 }
 

@@ -146,9 +146,57 @@ impl TrajReader for DcdReader {
         }
         Ok(frames)
     }
+
+    fn skip_frames(&mut self, n_frames: usize) -> TrajResult<usize> {
+        let mut skipped = 0usize;
+        while skipped < n_frames {
+            match self.skip_frame()? {
+                true => skipped += 1,
+                false => break,
+            }
+        }
+        Ok(skipped)
+    }
 }
 
 impl DcdReader {
+    fn skip_frame(&mut self) -> TrajResult<bool> {
+        let expected_len = (self.n_atoms * 4) as u64;
+        let mut len = match read_marker_opt(&mut self.file, self.endian, self.marker_size)? {
+            Some(l) => l,
+            None => return Ok(false),
+        };
+
+        if len != expected_len && is_unitcell_len(len) {
+            skip_record_with_len(&mut self.file, self.endian, self.marker_size, len)?;
+            len = match read_marker_opt(&mut self.file, self.endian, self.marker_size)? {
+                Some(l) => l,
+                None => return Ok(false),
+            };
+        }
+        if len != expected_len {
+            return Err(TrajError::Parse(
+                "unexpected DCD coordinate record length".into(),
+            ));
+        }
+        skip_record_with_len(&mut self.file, self.endian, self.marker_size, len)?;
+        let len_b = read_marker(&mut self.file, self.endian, self.marker_size)?;
+        if len_b != expected_len {
+            return Err(TrajError::Parse(
+                "unexpected DCD coordinate record length".into(),
+            ));
+        }
+        skip_record_with_len(&mut self.file, self.endian, self.marker_size, len_b)?;
+        let len_c = read_marker(&mut self.file, self.endian, self.marker_size)?;
+        if len_c != expected_len {
+            return Err(TrajError::Parse(
+                "unexpected DCD coordinate record length".into(),
+            ));
+        }
+        skip_record_with_len(&mut self.file, self.endian, self.marker_size, len_c)?;
+        Ok(true)
+    }
+
     fn read_frame(&mut self, out: &mut FrameChunkBuilder) -> TrajResult<bool> {
         let expected_len = (self.n_atoms * 4) as u64;
         let needs_box = out.needs_box();
@@ -1052,6 +1100,29 @@ mod tests {
     }
 
     #[test]
+    fn skip_frames_advances_dcd_reader_without_decoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skip_no_box.dcd");
+        write_test_dcd_multi(
+            &path,
+            1,
+            &[
+                (None, vec![1.0], vec![2.0], vec![3.0]),
+                (None, vec![4.0], vec![5.0], vec![6.0]),
+                (None, vec![7.0], vec![8.0], vec![9.0]),
+            ],
+            false,
+        );
+
+        let mut reader = DcdReader::open(&path, 1.0).unwrap();
+        assert_eq!(reader.skip_frames(2).unwrap(), 2);
+        let mut out = vec![0.0f32; 3];
+        let read = reader.read_chunk_into_coords3(1, &mut out).unwrap();
+        assert_eq!(read, 1);
+        assert_eq!(out, vec![7.0, 8.0, 9.0]);
+    }
+
+    #[test]
     fn read_frame_with_zero_unitcell_treated_as_none() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("zero_box.dcd");
@@ -1169,6 +1240,54 @@ mod tests {
         write_f32_record(&mut file, x);
         write_f32_record(&mut file, y);
         write_f32_record(&mut file, z);
+    }
+
+    fn write_test_dcd_multi(
+        path: &Path,
+        n_atoms: usize,
+        frames: &[(Option<[f64; 6]>, Vec<f32>, Vec<f32>, Vec<f32>)],
+        set_unitcell_flag: bool,
+    ) {
+        let mut file = File::create(path).unwrap();
+
+        let mut header = Vec::with_capacity(84);
+        header.extend_from_slice(b"CORD");
+        let mut icntrl = [0i32; 20];
+        icntrl[0] = frames.len() as i32;
+        if set_unitcell_flag {
+            icntrl[10] = 1;
+        }
+        for value in icntrl {
+            header.extend_from_slice(&value.to_le_bytes());
+        }
+        assert_eq!(header.len(), 84);
+        write_record(&mut file, &header);
+
+        let mut title = Vec::with_capacity(84);
+        title.extend_from_slice(&1i32.to_le_bytes());
+        let mut line = [b' '; 80];
+        let text = b"WARP_MD_TEST_DCD";
+        line[..text.len()].copy_from_slice(text);
+        title.extend_from_slice(&line);
+        write_record(&mut file, &title);
+
+        write_record(&mut file, &(n_atoms as i32).to_le_bytes());
+
+        for (unitcell, x, y, z) in frames {
+            assert_eq!(x.len(), n_atoms);
+            assert_eq!(y.len(), n_atoms);
+            assert_eq!(z.len(), n_atoms);
+            if let Some(cell) = unitcell {
+                let mut payload = Vec::with_capacity(48);
+                for value in cell {
+                    payload.extend_from_slice(&value.to_le_bytes());
+                }
+                write_record(&mut file, &payload);
+            }
+            write_f32_record(&mut file, x);
+            write_f32_record(&mut file, y);
+            write_f32_record(&mut file, z);
+        }
     }
 
     fn write_record(file: &mut File, payload: &[u8]) {

@@ -16,6 +16,21 @@ pub trait TrajReader {
     fn n_atoms(&self) -> usize;
     fn n_frames_hint(&self) -> Option<usize>;
     fn read_chunk(&mut self, max_frames: usize, out: &mut FrameChunkBuilder) -> TrajResult<usize>;
+    fn skip_frames(&mut self, n_frames: usize) -> TrajResult<usize> {
+        let chunk_frames = n_frames.min(256).max(1);
+        let mut builder = FrameChunkBuilder::new(self.n_atoms(), chunk_frames);
+        builder.set_requirements(false, false);
+        let mut skipped = 0usize;
+        while skipped < n_frames {
+            let target = (n_frames - skipped).min(chunk_frames);
+            let read = self.read_chunk(target, &mut builder)?;
+            if read == 0 {
+                break;
+            }
+            skipped += read;
+        }
+        Ok(skipped)
+    }
 
     fn read_chunk_selected(
         &mut self,

@@ -195,6 +195,16 @@ impl<R: TrajReader> TrajReader for FrameLimitReader<'_, R> {
         self.remaining = self.remaining.saturating_sub(read);
         Ok(read)
     }
+
+    fn skip_frames(&mut self, n_frames: usize) -> TrajResult<usize> {
+        if self.remaining == 0 {
+            return Ok(0);
+        }
+        let capped = n_frames.min(self.remaining);
+        let skipped = self.inner.skip_frames(capped)?;
+        self.remaining = self.remaining.saturating_sub(skipped);
+        Ok(skipped)
+    }
 }
 
 pub fn normalize_frame_indices(frame_indices: Vec<i64>, n_frames: usize) -> Vec<usize> {
@@ -285,62 +295,149 @@ pub fn collect_selected_frames_with_requirements<R: TrajReader>(
     let mut target_cursor = 0usize;
     let target_len = targets.len();
     let mut global = 0usize;
-    loop {
-        if target_cursor >= target_len {
-            break;
-        }
-        let read = reader.read_chunk(chunk_frames, &mut builder)?;
-        if read == 0 {
-            break;
-        }
-        let chunk = builder.finish_take()?;
-        let mut done = false;
-        for frame in 0..chunk.n_frames {
-            if target_cursor >= target_len {
-                done = true;
+    'outer: while target_cursor < target_len {
+        let target_frame = targets[target_cursor].0;
+        if target_frame > global {
+            let skipped = reader.skip_frames(target_frame - global)?;
+            global += skipped;
+            if global < target_frame {
                 break;
             }
-            let frame_idx = global;
-            global += 1;
+        }
 
-            // Fast forward in case requested frame indices include stale values
-            // (for example duplicated/unsorted sources already passed).
-            while target_cursor < target_len && targets[target_cursor].0 < frame_idx {
-                target_cursor += 1;
-            }
-            if target_cursor >= target_len {
-                done = true;
+        let run_start = target_cursor;
+        let mut run_end = run_start;
+        let mut next_frame = targets[run_start].0;
+        while run_end < target_len {
+            let frame_idx = targets[run_end].0;
+            if frame_idx != next_frame {
                 break;
             }
-            if targets[target_cursor].0 != frame_idx {
-                continue;
+            while run_end < target_len && targets[run_end].0 == frame_idx {
+                run_end += 1;
             }
+            next_frame += 1;
+        }
 
-            let selected = extract_chunk_frame(&chunk, frame);
-            let mut end = target_cursor + 1;
-            while end < target_len && targets[end].0 == frame_idx {
-                end += 1;
+        let mut remaining = next_frame - targets[run_start].0;
+        while remaining > 0 {
+            let wanted = remaining.min(chunk_frames);
+            let read = reader.read_chunk(wanted, &mut builder)?;
+            if read == 0 {
+                break 'outer;
             }
-
-            if end == target_cursor + 1 {
-                let out_pos = targets[target_cursor].1;
-                ordered[out_pos] = Some(selected);
-            } else {
-                for &(.., out_pos) in &targets[target_cursor..end - 1] {
-                    ordered[out_pos] = Some(selected.clone());
+            let chunk = builder.finish_take()?;
+            for frame in 0..chunk.n_frames {
+                let frame_idx = global;
+                global += 1;
+                while target_cursor < target_len && targets[target_cursor].0 < frame_idx {
+                    target_cursor += 1;
                 }
-                let out_pos = targets[end - 1].1;
-                ordered[out_pos] = Some(selected);
+                if target_cursor >= target_len || targets[target_cursor].0 != frame_idx {
+                    continue;
+                }
+                let selected = extract_chunk_frame(&chunk, frame);
+                let mut end = target_cursor + 1;
+                while end < target_len && targets[end].0 == frame_idx {
+                    end += 1;
+                }
+                if end == target_cursor + 1 {
+                    let out_pos = targets[target_cursor].1;
+                    ordered[out_pos] = Some(selected);
+                } else {
+                    for &(.., out_pos) in &targets[target_cursor..end - 1] {
+                        ordered[out_pos] = Some(selected.clone());
+                    }
+                    let out_pos = targets[end - 1].1;
+                    ordered[out_pos] = Some(selected);
+                }
+                target_cursor = end;
             }
-            target_cursor = end;
-        }
-        builder.reclaim(chunk);
-        if done {
-            break;
+            remaining -= chunk.n_frames;
+            builder.reclaim(chunk);
+            if read < wanted {
+                break 'outer;
+            }
         }
     }
 
     Ok(ordered.into_iter().flatten().collect())
+}
+
+pub fn collect_strided_frames_with_requirements<R: TrajReader>(
+    reader: &mut R,
+    begin: usize,
+    end: usize,
+    step: usize,
+    chunk_frames: usize,
+    requirements: PlanRequirements,
+) -> TrajResult<(Vec<SelectedFrame>, Vec<usize>)> {
+    if begin >= end {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    if step == 0 {
+        return Err(TrajError::Parse("step must be >= 1".into()));
+    }
+
+    let chunk_frames = chunk_frames.max(1);
+    let mut limited = FrameLimitReader::new(reader, end);
+    let mut builder = FrameChunkBuilder::new(limited.n_atoms(), chunk_frames);
+    builder.set_requirements(requirements.needs_box, requirements.needs_time);
+
+    let expected = 1 + (end - begin - 1) / step;
+    let mut selected = Vec::with_capacity(expected);
+    let mut source_indices = Vec::with_capacity(expected);
+    let mut global = 0usize;
+
+    if begin > 0 {
+        let skipped = limited.skip_frames(begin)?;
+        global += skipped;
+        if global < begin {
+            return Ok((selected, source_indices));
+        }
+    }
+
+    if step == 1 {
+        loop {
+            let read = limited.read_chunk(chunk_frames, &mut builder)?;
+            if read == 0 {
+                break;
+            }
+            let chunk = builder.finish_take()?;
+            for frame in 0..chunk.n_frames {
+                selected.push(extract_chunk_frame(&chunk, frame));
+                source_indices.push(global);
+                global += 1;
+            }
+            builder.reclaim(chunk);
+        }
+        return Ok((selected, source_indices));
+    }
+
+    let mut single = FrameChunkBuilder::new(limited.n_atoms(), 1);
+    single.set_requirements(requirements.needs_box, requirements.needs_time);
+    while global < end {
+        let read = limited.read_chunk(1, &mut single)?;
+        if read == 0 {
+            break;
+        }
+        let chunk = single.finish_take()?;
+        selected.push(extract_chunk_frame(&chunk, 0));
+        source_indices.push(global);
+        single.reclaim(chunk);
+        global += 1;
+        if global >= end {
+            break;
+        }
+        let gap = (step - 1).min(end - global);
+        let skipped = limited.skip_frames(gap)?;
+        global += skipped;
+        if skipped < gap {
+            break;
+        }
+    }
+
+    Ok((selected, source_indices))
 }
 
 fn is_contiguous_prefix(source_indices: &[usize]) -> bool {
@@ -567,8 +664,8 @@ pub struct ClusteringOutput {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_selected_frames, normalize_frame_indices, Device, Executor, Plan, PlanOutput,
-        PlanRequirements,
+        collect_selected_frames, collect_strided_frames_with_requirements,
+        normalize_frame_indices, Device, Executor, Plan, PlanOutput, PlanRequirements,
     };
     use traj_core::frame::{Box3, FrameChunkBuilder};
     use traj_core::interner::StringInterner;
@@ -650,6 +747,7 @@ mod tests {
             n_frames: usize,
             cursor: usize,
             read_calls: usize,
+            skip_calls: usize,
         }
 
         impl CountingReader {
@@ -659,6 +757,7 @@ mod tests {
                     n_frames,
                     cursor: 0,
                     read_calls: 0,
+                    skip_calls: 0,
                 }
             }
         }
@@ -693,13 +792,21 @@ mod tests {
                 }
                 Ok(written)
             }
+
+            fn skip_frames(&mut self, n_frames: usize) -> traj_core::error::TrajResult<usize> {
+                self.skip_calls += 1;
+                let skipped = (self.n_frames - self.cursor).min(n_frames);
+                self.cursor += skipped;
+                Ok(skipped)
+            }
         }
 
         let mut reader = CountingReader::new(1, 100);
-        let selected = collect_selected_frames(&mut reader, &[0], 10).unwrap();
+        let selected = collect_selected_frames(&mut reader, &[50], 10).unwrap();
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].coords[0][0], 0.0);
+        assert_eq!(selected[0].coords[0][0], 50.0);
         assert_eq!(reader.read_calls, 1);
+        assert_eq!(reader.skip_calls, 1);
     }
 
     struct NoMetaPlan {
@@ -788,6 +895,7 @@ mod tests {
         cursor: usize,
         read_chunk_calls: usize,
         read_chunk_selected_calls: usize,
+        skip_calls: usize,
     }
 
     impl SelectedCountingReader {
@@ -798,6 +906,7 @@ mod tests {
                 cursor: 0,
                 read_chunk_calls: 0,
                 read_chunk_selected_calls: 0,
+                skip_calls: 0,
             }
         }
     }
@@ -854,6 +963,13 @@ mod tests {
                 written += 1;
             }
             Ok(written)
+        }
+
+        fn skip_frames(&mut self, n_frames: usize) -> traj_core::error::TrajResult<usize> {
+            self.skip_calls += 1;
+            let skipped = (self.n_frames - self.cursor).min(n_frames);
+            self.cursor += skipped;
+            Ok(skipped)
         }
     }
 
@@ -947,5 +1063,45 @@ mod tests {
         }
         assert!(reader.read_chunk_calls > 0);
         assert_eq!(reader.read_chunk_selected_calls, 0);
+    }
+
+    #[test]
+    fn collect_strided_frames_stops_at_end_bound() {
+        let mut reader = SelectedCountingReader::new(1, 64);
+        let (selected, source_indices) = collect_strided_frames_with_requirements(
+            &mut reader,
+            3,
+            11,
+            3,
+            4,
+            PlanRequirements::new(false, true),
+        )
+        .unwrap();
+        assert_eq!(source_indices, vec![3, 6, 9]);
+        let times: Vec<f32> = selected
+            .iter()
+            .map(|frame| frame.time_ps.expect("time"))
+            .collect();
+        assert_eq!(times, vec![3.0, 6.0, 9.0]);
+        assert_eq!(reader.read_chunk_calls, 3);
+        assert_eq!(reader.skip_calls, 4);
+    }
+
+    #[test]
+    fn collect_strided_frames_truncates_cleanly_at_eof() {
+        let mut reader = SelectedCountingReader::new(1, 5);
+        let (selected, source_indices) = collect_strided_frames_with_requirements(
+            &mut reader,
+            2,
+            10,
+            2,
+            4,
+            PlanRequirements::new(false, true),
+        )
+        .unwrap();
+        assert_eq!(source_indices, vec![2, 4]);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(reader.read_chunk_calls, 2);
+        assert_eq!(reader.skip_calls, 3);
     }
 }

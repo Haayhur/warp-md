@@ -53,6 +53,7 @@ class FakeRustTrajectory(FakeTrajectory):
         self.read_chunk_calls = 0
         self.count_frames_calls = 0
         self.read_frames_calls = 0
+        self.read_frame_range_calls = 0
 
     def read_chunk(self, *args, **kwargs):
         self.read_chunk_calls += 1
@@ -78,6 +79,29 @@ class FakeRustTrajectory(FakeTrajectory):
             "box_matrix": None,
             "source_indices": list(frame_indices),
             "frames": len(frame_indices),
+        }
+
+    def read_frame_range(
+        self,
+        begin,
+        end,
+        step,
+        chunk_frames=None,
+        include_box=True,
+        include_box_matrix=True,
+        include_time=False,
+    ):
+        self.read_frame_range_calls += 1
+        indices = list(range(begin, min(end, len(self._frames)), step))
+        if not indices:
+            return None
+        coords = np.stack([self._frames[int(index)] for index in indices], axis=0)
+        return {
+            "coords": coords,
+            "box": None,
+            "box_matrix": None,
+            "source_indices": indices,
+            "frames": len(indices),
         }
 
 
@@ -147,6 +171,16 @@ def test_resolve_frame_indices_rejects_out_of_range_single_index() -> None:
             step=1,
             index=4,
         )
+
+
+def test_resolve_single_index_rejects_negative_index() -> None:
+    with pytest.raises(ValueError, match="must be >= 0"):
+        frame_edit._resolve_single_index(-1)
+
+
+def test_resolve_bounded_range_rejects_empty_span() -> None:
+    with pytest.raises(ValueError, match="greater than or equal to end frame"):
+        frame_edit._resolve_bounded_range(4, 4, 1)
 
 
 def test_run_frame_edit_writes_structure_series(monkeypatch, tmp_path: Path) -> None:
@@ -232,6 +266,7 @@ def test_run_frame_edit_writes_single_frame_to_trajectory(monkeypatch, tmp_path:
     assert exit_code == 0
     assert payload["selection"] == {"mode": "single", "index": 2}
     assert payload["outputs"] == [str(out_path)]
+    assert payload["trajectory"]["total_frames"] is None
     assert created[0].trajectory_writes[str(out_path)] == [2]
 
 
@@ -269,6 +304,120 @@ def test_run_frame_edit_prefers_rust_count_and_read_methods(monkeypatch, tmp_pat
 
     assert exit_code == 0
     assert payload["written_frames"] == 2
+    assert payload["trajectory"]["total_frames"] is None
+    assert traj.count_frames_calls == 0
+    assert traj.read_frames_calls == 0
+    assert traj.read_frame_range_calls == 1
+    assert traj.read_chunk_calls == 0
+
+
+def test_run_frame_edit_open_ended_range_still_counts(monkeypatch, tmp_path: Path) -> None:
+    system = FakeSystem(n_atoms=2)
+    traj = FakeRustTrajectory(
+        [
+            np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+            np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
+            np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
+        ]
+    )
+    created: list[FakeWriter] = []
+
+    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
+    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
+    monkeypatch.setattr(
+        frame_edit,
+        "_make_writer",
+        lambda topology_path, *, topology_format, n_atoms: created.append(
+            FakeWriter(topology_path, topology_format=topology_format, n_atoms=n_atoms)
+        )
+        or created[-1],
+    )
+
+    exit_code, payload = frame_edit.run_frame_edit(
+        _args(
+            tmp_path,
+            out=str(tmp_path / "single.xtc"),
+            begin=0,
+            end=None,
+            step=2,
+        )
+    )
+
+    assert exit_code == 0
+    assert payload["written_frames"] == 2
     assert traj.count_frames_calls == 1
     assert traj.read_frames_calls == 1
+    assert traj.read_frame_range_calls == 0
     assert traj.read_chunk_calls == 0
+
+
+def test_run_frame_edit_single_index_skips_full_count(monkeypatch, tmp_path: Path) -> None:
+    system = FakeSystem(n_atoms=2)
+    traj = FakeRustTrajectory(
+        [
+            np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+            np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
+            np.array([[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]], dtype=np.float32),
+        ]
+    )
+    created: list[FakeWriter] = []
+
+    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
+    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
+    monkeypatch.setattr(
+        frame_edit,
+        "_make_writer",
+        lambda topology_path, *, topology_format, n_atoms: created.append(
+            FakeWriter(topology_path, topology_format=topology_format, n_atoms=n_atoms)
+        )
+        or created[-1],
+    )
+
+    out_path = tmp_path / "single.xtc"
+    exit_code, payload = frame_edit.run_frame_edit(
+        _args(
+            tmp_path,
+            out=str(out_path),
+            index=2,
+        )
+    )
+
+    assert exit_code == 0
+    assert payload["selection"] == {"mode": "single", "index": 2}
+    assert payload["trajectory"]["total_frames"] is None
+    assert traj.count_frames_calls == 0
+    assert traj.read_frames_calls == 1
+    assert traj.read_chunk_calls == 0
+    assert created[0].trajectory_writes[str(out_path)] == [2]
+
+
+def test_run_frame_edit_single_index_reports_out_of_range_without_count(
+    monkeypatch, tmp_path: Path
+) -> None:
+    system = FakeSystem(n_atoms=2)
+    traj = FakeRustTrajectory(
+        [
+            np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+            np.array([[2.0, 2.0, 2.0], [3.0, 3.0, 3.0]], dtype=np.float32),
+        ]
+    )
+
+    def _read_frames(*args, **kwargs):
+        traj.read_frames_calls += 1
+        return {"coords": np.zeros((0, 2, 3), dtype=np.float32), "source_indices": []}
+
+    monkeypatch.setattr(frame_edit, "_load_system", lambda spec: system)
+    monkeypatch.setattr(frame_edit, "_load_trajectory", lambda spec, loaded_system: traj)
+    monkeypatch.setattr(traj, "read_frames", _read_frames)
+    monkeypatch.setattr(
+        frame_edit,
+        "_make_writer",
+        lambda topology_path, *, topology_format, n_atoms: FakeWriter(
+            topology_path, topology_format=topology_format, n_atoms=n_atoms
+        ),
+    )
+
+    with pytest.raises(ValueError, match="frame index 5 is out of range"):
+        frame_edit.run_frame_edit(_args(tmp_path, out=str(tmp_path / "single.xtc"), index=5))
+
+    assert traj.count_frames_calls == 0
