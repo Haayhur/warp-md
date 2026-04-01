@@ -17,20 +17,12 @@ impl PdbReader {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
-}
 
-pub struct PdbqtReader {
-    path: PathBuf,
-}
-
-impl PdbqtReader {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+    pub fn read_system_permissive(&self) -> TrajResult<System> {
+        self.read_system_with_strict(false)
     }
-}
 
-impl TopologyReader for PdbReader {
-    fn read_system(&mut self) -> TrajResult<System> {
+    fn read_system_with_strict(&self, strict: bool) -> TrajResult<System> {
         let file = File::open(&self.path)?;
         let reader = BufReader::new(file);
         let mut system = System::new();
@@ -40,7 +32,7 @@ impl TopologyReader for PdbReader {
             include_conect: false,
             include_ter: false,
             non_standard_conect: false,
-            strict: true,
+            strict,
             only_first_model: true,
         };
         let parsed = parse_pdb_reader(reader, &options)?;
@@ -71,6 +63,22 @@ impl TopologyReader for PdbReader {
         system.positions0 = Some(positions);
         system.validate_positions0()?;
         Ok(system)
+    }
+}
+
+pub struct PdbqtReader {
+    path: PathBuf,
+}
+
+impl PdbqtReader {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl TopologyReader for PdbReader {
+    fn read_system(&mut self) -> TrajResult<System> {
+        self.read_system_with_strict(true)
     }
 }
 
@@ -140,5 +148,23 @@ TER\n";
         let pos = system.positions0.unwrap();
         assert_eq!(pos.len(), 2);
         assert!((pos[0][0] - 11.104).abs() < 1e-3);
+    }
+
+    #[test]
+    fn read_alphanumeric_resid_pdb_permissively() {
+        let content =
+            "ATOM      1  N   ALA AA000      11.104  13.207  14.099  1.00 20.00           N\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("alpha_resid.pdb");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let mut strict_reader = PdbReader::new(&path);
+        let strict_error = strict_reader.read_system().unwrap_err();
+        assert!(strict_error.to_string().contains("invalid resid"));
+
+        let permissive_reader = PdbReader::new(&path);
+        let system = permissive_reader.read_system_permissive().unwrap();
+        assert_eq!(system.n_atoms(), 1);
     }
 }

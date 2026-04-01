@@ -15,6 +15,15 @@ impl PySystem {
     }
 
     #[staticmethod]
+    fn from_pdb_permissive(path: &str) -> PyResult<Self> {
+        let reader = PdbReader::new(path);
+        let system = reader.read_system_permissive().map_err(to_py_err)?;
+        Ok(Self {
+            system: RefCell::new(system),
+        })
+    }
+
+    #[staticmethod]
     fn from_pdbqt(path: &str) -> PyResult<Self> {
         let mut reader = PdbqtReader::new(path);
         let system = reader.read_system().map_err(to_py_err)?;

@@ -76,7 +76,13 @@ def _load_system(spec: Dict[str, Any]) -> System:
     if fmt is None:
         fmt = Path(path).suffix.lower().lstrip(".")
     if fmt == "pdb":
-        return System.from_pdb(path)
+        try:
+            return System.from_pdb(path)
+        except RuntimeError as exc:
+            permissive_loader = getattr(System, "from_pdb_permissive", None)
+            if callable(permissive_loader) and "invalid resid" in str(exc).lower():
+                return permissive_loader(path)
+            raise
     if fmt == "gro":
         return System.from_gro(path)
     raise ValueError("system.format must be pdb or gro")
