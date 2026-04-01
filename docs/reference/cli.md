@@ -24,6 +24,7 @@ warp-md <analysis> --topology PATH --traj PATH [analysis options]
 |---------|--------------|
 | `list-plans` | List available analyses (`--format text|json`, `--json`, `--details`) |
 | `water-models` | List bundled water templates (`--format text|json`, `--json`) |
+| `frames` | Extract a single frame or stride a trajectory into `.pdb`/`.gro`/`.dcd`/`.xtc`/`.trr` |
 | `example` | Print example config JSON |
 | `schema` | Print agent schema (`--kind request|result|event`, JSON/YAML, `--json` alias) |
 | `run <config>` | Run analyses from config file |
@@ -157,6 +158,16 @@ For batch workflows with multiple analyses.
 
 ```bash
 warp-md example > config.json
+```
+
+### Edit Frames
+
+```bash
+# Every 10th frame from frames 100..499 into a new DCD
+warp-md frames -p min.pdb -t eq_npt.dcd -o md_new.dcd -b 100 -e 500 -s 10
+
+# Single frame extraction
+warp-md frames -p min.pdb -t eq_npt.dcd -o frame_250.pdb -i 250
 ```
 
 ### Run Config

@@ -109,7 +109,7 @@ def test_inspect_source_passes_source_path(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_validate_request_writes_payload_file(monkeypatch) -> None:
-    payload = {"version": "warp-build.agent.v1"}
+    payload = {"schema_version": "warp-build.agent.v1"}
     request_payload: dict[str, Any] = {}
 
     def fake_run(cmd, capture_output, text, check):  # type: ignore[override]
@@ -133,7 +133,7 @@ def test_validate_request_writes_payload_file(monkeypatch) -> None:
 
 def test_run_build_request_supports_stream_flag(monkeypatch) -> None:
     calls = {"cmd": None}
-    payload = {"version": "warp-build.agent.v1"}
+    payload = {"schema_version": "warp-build.agent.v1"}
 
     def fake_run(cmd, capture_output, text, check):  # type: ignore[override]
         calls["cmd"] = cmd

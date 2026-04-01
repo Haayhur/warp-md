@@ -29,7 +29,9 @@ def _native() -> Any:
 
 
 def _binary() -> str:
-    command = os.environ.get("WARP_BUILD_BINARY", "warp-build")
+    command = os.environ.get("WARP_BUILD_BINARY") or os.environ.get(
+        "POLYMER_BUILD_BINARY", "warp-build"
+    )
     if os.path.isabs(command) or os.path.dirname(command):
         return command
     return shutil.which(command) or command

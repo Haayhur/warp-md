@@ -76,6 +76,13 @@ def test_atlas_fetch_help() -> None:
     assert "--pdb-chain" in result.stdout
 
 
+def test_frames_help() -> None:
+    result = _run("frames", "--help")
+    assert result.returncode == 0
+    assert "--index" in result.stdout
+    assert "--outfile" in result.stdout
+
+
 def test_rg_help() -> None:
     result = _run("rg", "--help")
     assert result.returncode == 0
