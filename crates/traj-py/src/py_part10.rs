@@ -130,11 +130,11 @@ fn load_structure_atoms(
                     chain: atom.chain,
                     segid: atom.segid,
                     element: atom.element,
-                    occupancy: atom.occupancy,
-                    temp_factor: atom.temp_factor,
-                    altloc: atom.altloc,
-                    icode: atom.icode,
-                    charge: atom.charge,
+                    occupancy: 1.0,
+                    temp_factor: 0.0,
+                    altloc: ' ',
+                    icode: ' ',
+                    charge: String::new(),
                 })
                 .collect()
         }
