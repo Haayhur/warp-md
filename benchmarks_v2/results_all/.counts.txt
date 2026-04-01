@@ -1,1 +1,0 @@
-rows=72 ok=72 failed=0 skipped=0
