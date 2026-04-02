@@ -154,7 +154,8 @@ result = run(cfg)
 Bundled `water_pdb(...)` templates are **single-molecule** PDBs. Perfect for packing.
 {% endhint %}
 
-Bundled ions include `Na+`, `K+`, `Li+`, `Cl-`, `Br-`, `I-`, `Ca2+`, and `Mg2+`.
+Bundled ions include `Na+`, `K+`, `Li+`, `Cl-`, `Br-`, `I-`, `Ca2+`, `Mg2+`, `SO4^2-`,
+`HSO4-`, `NO3-`, and `OAc-`.
 Bundled salts currently include:
 
 | `salt.name` | Formula | Species |
@@ -168,9 +169,18 @@ Bundled salts currently include:
 | `cacl2` | `CaCl2` | `{"Ca2+": 1, "Cl-": 2}` |
 | `mgcl2` | `MgCl2` | `{"Mg2+": 1, "Cl-": 2}` |
 | `mgbr2` | `MgBr2` | `{"Mg2+": 1, "Br-": 2}` |
+| `mgso4` | `MgSO4` | `{"Mg2+": 1, "SO4^2-": 1}` |
+| `na2so4` | `Na2SO4` | `{"Na+": 2, "SO4^2-": 1}` |
+| `kno3` | `KNO3` | `{"K+": 1, "NO3-": 1}` |
+| `naoac` | `NaOAc` | `{"Na+": 1, "OAc-": 1}` |
 
 Agents should prefer `salt.name` for these built-ins; `salt.formula` and `salt.species`
 remain available for advanced cases.
+
+For bundled polyatomic systems, the built-in templates work the same way as bundled water models:
+no manual ion PDB paths needed. `salt.formula` remains a convenience path, not a universal
+chemistry parser. For custom or ambiguous polyatomic systems, prefer `salt.name` or explicit
+`salt.species`.
 
 Ion metadata is now registry-backed from `python/warp_md/pack/data/ions.json`. To add more ions
 without patching code, point `WARP_MD_ION_REGISTRY` at a JSON file with extra entries; relative
@@ -205,6 +215,10 @@ warp-pack solution \
   --salt-molar 0.15 \
   --output system_50A.pdb
 ```
+
+Top-level `warp-pack --help` now advertises the legacy `--config` path, the chemistry-intent
+`solution` path, and the contract commands so users and agents can discover the right entrypoint
+without reading the source first.
 
 Bundled ion entries also carry parameterization hints such as `recommended_families` and
 `preferred_water_models`. These are exposed through Python `ion_metadata(...)` and

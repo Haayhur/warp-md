@@ -102,12 +102,49 @@ def _normalize_salt_name_key(name: str) -> str:
     return name.strip().lower()
 
 
+def _validate_salt_species_map(
+    species: dict,
+    ion_lookup: dict[str, dict],
+    *,
+    label: str,
+) -> dict[str, int]:
+    if not isinstance(species, dict) or not species:
+        raise ValueError(f"{label} must define a non-empty species map")
+    canonical: dict[str, int] = {}
+    net_charge = 0
+    has_positive = False
+    has_negative = False
+    for raw_name, raw_count in species.items():
+        name = str(raw_name).strip()
+        if not name:
+            raise ValueError(f"{label} contains an empty ion species name")
+        count = int(raw_count)
+        if count <= 0:
+            raise ValueError(f"{label} species counts must be > 0")
+        key = _normalize_species_key(name)
+        if key not in ion_lookup:
+            raise ValueError(f"{label} references unknown ion species '{name}'")
+        entry = ion_lookup[key]
+        charge = int(entry["charge_e"])
+        net_charge += charge * count
+        has_positive |= charge > 0
+        has_negative |= charge < 0
+        canonical_name = str(entry["species"])
+        canonical[canonical_name] = canonical.get(canonical_name, 0) + count
+    if not has_positive or not has_negative:
+        raise ValueError(f"{label} must include at least one cation and one anion")
+    if net_charge != 0:
+        raise ValueError(f"{label} must be charge neutral")
+    return canonical
+
+
 @lru_cache(maxsize=1)
 def _salt_registry() -> tuple[dict[str, dict], list[str]]:
     entries = _load_salt_registry_entries(_default_salt_registry_path())
     overlay_path = _overlay_salt_registry_path()
     if overlay_path is not None:
         entries.extend(_load_salt_registry_entries(overlay_path))
+    ion_lookup, _ = _ion_registry()
 
     by_lookup: dict[str, dict] = {}
     canonical_names: list[str] = []
@@ -120,7 +157,11 @@ def _salt_registry() -> tuple[dict[str, dict], list[str]]:
             "name": name,
             "aliases": [str(alias).strip() for alias in raw_entry.get("aliases", [])],
             "formula": str(raw_entry.get("formula", "")).strip(),
-            "species": dict(raw_entry.get("species", {})),
+            "species": _validate_salt_species_map(
+                dict(raw_entry.get("species", {})),
+                ion_lookup,
+                label=f"salt registry entry '{name}'",
+            ),
         }
         if not entry["formula"]:
             raise ValueError(f"salt registry entry '{name}' is missing formula")
@@ -166,6 +207,24 @@ def _ion_registry() -> tuple[dict[str, dict], list[str]]:
     for entry in canonical_entries.values():
         if not entry["template"]:
             raise ValueError(f"ion registry entry '{entry['species']}' is missing template")
+        if not Path(entry["template"]).exists():
+            raise ValueError(
+                f"ion registry entry '{entry['species']}' template does not exist: {entry['template']}"
+            )
+        if not entry["formula_symbol"]:
+            raise ValueError(f"ion registry entry '{entry['species']}' is missing formula_symbol")
+        if entry["charge_e"] == 0:
+            raise ValueError(f"ion registry entry '{entry['species']}' must define non-zero charge_e")
+        if entry["mass_amu"] <= 0:
+            raise ValueError(f"ion registry entry '{entry['species']}' must define positive mass_amu")
+        topology_kind = str(entry.get("topology_kind", "")).strip()
+        if topology_kind and topology_kind not in {"single_atom", "polyatomic"}:
+            raise ValueError(
+                f"ion registry entry '{entry['species']}' has unsupported topology_kind '{topology_kind}'"
+            )
+        atom_count = entry.get("atom_count")
+        if atom_count is not None and int(atom_count) <= 0:
+            raise ValueError(f"ion registry entry '{entry['species']}' atom_count must be > 0")
         canonical_species.append(entry["species"])
         for alias in [*entry["aliases"], entry["species"]]:
             key = _normalize_species_key(alias)

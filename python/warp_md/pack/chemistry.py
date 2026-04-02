@@ -51,17 +51,58 @@ def _normalize_catalog_entries(
     return lookup
 
 
+def _ion_entry(
+    species: str,
+    custom_ions: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    key = species.strip().lower()
+    if key in custom_ions:
+        return custom_ions[key]
+    return ion_metadata(species)
+
+
+def _canonicalize_salt_species(
+    species: Mapping[str, Any],
+    custom_ions: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, int]:
+    if not species:
+        raise ValueError("salt mapping requires non-empty species")
+    custom_lookup = _normalize_catalog_entries(custom_ions, "species")
+    canonical: dict[str, int] = {}
+    net_charge = 0
+    has_positive = False
+    has_negative = False
+    for raw_name, raw_count in species.items():
+        name = str(raw_name).strip()
+        if not name:
+            raise ValueError("salt mapping contains an empty ion species name")
+        count = int(raw_count)
+        if count <= 0:
+            raise ValueError("salt species counts must be > 0")
+        entry = _ion_entry(name, custom_lookup)
+        charge = int(entry["charge_e"])
+        net_charge += charge * count
+        has_positive |= charge > 0
+        has_negative |= charge < 0
+        canonical_name = str(entry["species"])
+        canonical[canonical_name] = canonical.get(canonical_name, 0) + count
+    if not has_positive or not has_negative:
+        raise ValueError("salt must include at least one cation and one anion")
+    if net_charge != 0:
+        raise ValueError("salt formula/species must be charge neutral")
+    return canonical
+
+
 def _resolve_salt(
     salt: str | Mapping[str, Any] | None,
     custom_salts: Sequence[Mapping[str, Any]] | None = None,
+    custom_ions: Sequence[Mapping[str, Any]] | None = None,
 ) -> ResolvedSalt | None:
     if salt is None:
         return None
     custom_lookup = _normalize_catalog_entries(custom_salts, "name")
     if isinstance(salt, Mapping):
-        species = {str(k): int(v) for k, v in dict(salt.get("species", {})).items()}
-        if not species:
-            raise ValueError("salt mapping requires non-empty species")
+        species = _canonicalize_salt_species(dict(salt.get("species", {})), custom_ions)
         return ResolvedSalt(
             name=str(salt["name"]).strip() if salt.get("name") else None,
             formula=str(salt["formula"]).strip() if salt.get("formula") else None,
@@ -73,13 +114,13 @@ def _resolve_salt(
         return ResolvedSalt(
             name=entry.get("name"),
             formula=entry.get("formula"),
-            species={str(k): int(v) for k, v in dict(entry["species"]).items()},
+            species=_canonicalize_salt_species(dict(entry["species"]), custom_ions),
         )
     entry = salt_recipe(salt)
     return ResolvedSalt(
         name=entry.get("name"),
         formula=entry.get("formula"),
-        species={str(k): int(v) for k, v in dict(entry["species"]).items()},
+        species=_canonicalize_salt_species(dict(entry["species"]), custom_ions),
     )
 
 
@@ -93,6 +134,8 @@ def _resolve_ion_templates(
         template = str(entry.get("template", "")).strip()
         if not template:
             raise ValueError(f"custom ion '{species}' requires template")
+        if not Path(template).exists():
+            raise ValueError(f"custom ion '{species}' template does not exist: {template}")
         templates[species] = template
     return templates
 
@@ -131,7 +174,7 @@ def solution_recipe(
     custom_salts: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     resolved_box = _normalize_box_size(box_size)
-    resolved_salt = _resolve_salt(salt, custom_salts)
+    resolved_salt = _resolve_salt(salt, custom_salts, custom_ions)
     formula_units = 0
     ion_counts: dict[str, int] = {}
     if resolved_salt is not None and salt_molar is not None:

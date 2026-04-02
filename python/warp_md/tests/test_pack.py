@@ -193,7 +193,7 @@ def test_water_pdb_paths_exist():
 
 
 def test_ion_pdb_paths_exist():
-    for species in ["na+", "cl-", "k+", "ca2+", "mg2+", "li+", "br-", "i-"]:
+    for species in ["na+", "cl-", "k+", "ca2+", "mg2+", "li+", "br-", "i-", "so4^2-", "hso4-", "no3-", "oac-"]:
         path = Path(ion_pdb(species))
         assert path.exists()
 
@@ -208,6 +208,10 @@ def test_available_ion_species_returns_canonical_names():
     assert "Li+" in species
     assert "Br-" in species
     assert "I-" in species
+    assert "SO4^2-" in species
+    assert "HSO4-" in species
+    assert "NO3-" in species
+    assert "OAc-" in species
 
 
 def test_available_salt_names_and_recipe():
@@ -217,11 +221,19 @@ def test_available_salt_names_and_recipe():
     assert "mgcl2" in names
     assert "nabr" in names
     assert "licl" in names
+    assert "mgso4" in names
+    assert "na2so4" in names
+    assert "kno3" in names
+    assert "naoac" in names
     cacl2 = salt_recipe("calcium chloride")
     assert cacl2["formula"] == "CaCl2"
     assert cacl2["species"] == {"Ca2+": 1, "Cl-": 2}
     nabr = salt_recipe("NaBr")
     assert nabr["species"] == {"Na+": 1, "Br-": 1}
+    mgso4 = salt_recipe("MgSO4")
+    assert mgso4["species"] == {"Mg2+": 1, "SO4^2-": 1}
+    naoac = salt_recipe("sodium acetate")
+    assert naoac["species"] == {"Na+": 1, "OAc-": 1}
 
 
 def test_ion_metadata_exposes_parameterization_hints():
@@ -229,6 +241,10 @@ def test_ion_metadata_exposes_parameterization_hints():
     assert mg["topology_kind"] == "single_atom"
     assert "amber" in mg["parameterization"]["recommended_families"]
     assert "tip3p" in ion_parameterization("Mg2+")["preferred_water_models"]
+    sulfate = ion_metadata("SO4^2-")
+    assert sulfate["topology_kind"] == "polyatomic"
+    assert sulfate["atom_count"] == 5
+    assert sulfate["formula_symbol"] == "SO4"
 
 
 def test_solution_recipe_estimates_counts():
@@ -260,6 +276,26 @@ def test_solution_pack_config_uses_bundled_salt_templates(tmp_path):
     ion_paths = {Path(struct.path).name for struct in cfg.structures[2:]}
     assert "na.pdb" in ion_paths
     assert "br.pdb" in ion_paths
+
+
+def test_solution_pack_config_supports_bundled_polyatomic_salts(tmp_path):
+    solute = tmp_path / "solute.pdb"
+    solute.write_text(
+        "ATOM      1  C   MOL A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    cfg = solution_pack_config(
+        solute_path=str(solute),
+        box_size=40.0,
+        output_path=str(tmp_path / "system.pdb"),
+        solvent_model="tip3p",
+        salt="MgSO4",
+        salt_molar=0.15,
+        water_count=10,
+    )
+    ion_paths = {Path(struct.path).name for struct in cfg.structures[2:]}
+    assert "mg.pdb" in ion_paths
+    assert "so4.pdb" in ion_paths
 
 
 def test_solution_pack_config_supports_custom_polyatomic_catalog(tmp_path):

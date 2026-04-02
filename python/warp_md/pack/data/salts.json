@@ -80,6 +80,42 @@
         "Mg2+": 1,
         "Br-": 2
       }
+    },
+    {
+      "name": "mgso4",
+      "aliases": ["MgSO4", "magnesium sulfate"],
+      "formula": "MgSO4",
+      "species": {
+        "Mg2+": 1,
+        "SO4^2-": 1
+      }
+    },
+    {
+      "name": "na2so4",
+      "aliases": ["Na2SO4", "sodium sulfate"],
+      "formula": "Na2SO4",
+      "species": {
+        "Na+": 2,
+        "SO4^2-": 1
+      }
+    },
+    {
+      "name": "kno3",
+      "aliases": ["KNO3", "potassium nitrate"],
+      "formula": "KNO3",
+      "species": {
+        "K+": 1,
+        "NO3-": 1
+      }
+    },
+    {
+      "name": "naoac",
+      "aliases": ["NaOAc", "sodium acetate"],
+      "formula": "NaOAc",
+      "species": {
+        "Na+": 1,
+        "OAc-": 1
+      }
     }
   ]
 }

@@ -34,8 +34,9 @@ def test_pack_cli_help() -> None:
     result = _run("--help")
     assert result.returncode == 0
     assert "--config" in result.stdout
-    assert "--output" in result.stdout
-    assert "--format" in result.stdout
+    assert "warp-pack solution" in result.stdout
+    assert "warp-pack run" in result.stdout
+    assert "mode-specific options" in result.stdout
 
 
 def test_pack_cli_solution_print_config_uses_bundled_salt(tmp_path: Path) -> None:
@@ -122,6 +123,35 @@ def test_pack_cli_solution_supports_custom_catalog(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert any(Path(item["path"]).name == "acetate.pdb" for item in payload["structures"])
+
+
+def test_pack_cli_solution_print_config_supports_bundled_polyatomic_salt(tmp_path: Path) -> None:
+    solute = tmp_path / "solute.pdb"
+    solute.write_text(
+        "ATOM      1  C   MOL A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    result = _run(
+        "solution",
+        "--solute",
+        str(solute),
+        "--box",
+        "40",
+        "--solvent",
+        "tip3p",
+        "--salt",
+        "mgso4",
+        "--salt-molar",
+        "0.15",
+        "--output",
+        str(tmp_path / "system.pdb"),
+        "--print-config",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    paths = {Path(item["path"]).name for item in payload["structures"]}
+    assert "mg.pdb" in paths
+    assert "so4.pdb" in paths
 
 
 @pytest.mark.skipif(not HAS_PACK_RUN, reason="pack bindings unavailable")

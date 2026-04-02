@@ -115,6 +115,31 @@ def build_solution_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _root_help_text() -> str:
+    return """usage: warp-pack [--config CONFIG] [--output OUTPUT] [--format FORMAT]
+                 warp-pack solution ...
+                 warp-pack {run,validate,schema,example,capabilities} ...
+
+Packing CLI with three entry paths:
+
+  legacy config mode
+    warp-pack --config pack.json
+    warp-pack --config packmol.inp
+
+  chemistry-intent mode
+    warp-pack solution --solute ligand.pdb --box 50 --salt cacl2 --salt-molar 0.15 --output system.pdb
+
+  contract mode
+    warp-pack run request.json
+    warp-pack validate request.json
+    warp-pack schema
+    warp-pack example
+    warp-pack capabilities
+
+use `warp-pack <mode> --help` for mode-specific options.
+"""
+
+
 def _build_output_override(cfg: Dict[str, Any], output: str, fmt: str | None) -> None:
     previous = cfg.get("output")
     scale = None
@@ -361,6 +386,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     contract_commands = {"run", "validate", "schema", "example", "capabilities"}
     try:
+        if argv and argv[0] in {"-h", "--help", "help"}:
+            print(_root_help_text())
+            return 0
         if argv and argv[0] == "solution":
             return run_solution_cli(argv[1:])
         if argv and argv[0] in contract_commands:

@@ -82,6 +82,10 @@ struct IonRegistryEntry {
     formula_symbol: String,
     charge_e: i32,
     mass_amu: f64,
+    #[serde(default)]
+    topology_kind: Option<String>,
+    #[serde(default)]
+    atom_count: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1102,11 +1106,45 @@ fn build_ion_registry(entries: Vec<IonRegistryEntry>) -> PackResult<IonRegistry>
                 entry.species
             )));
         }
+        if !Path::new(&entry.template).exists() {
+            return Err(PackError::Invalid(format!(
+                "ion registry entry '{}' template does not exist: {}",
+                entry.species, entry.template
+            )));
+        }
         if entry.formula_symbol.trim().is_empty() {
             return Err(PackError::Invalid(format!(
                 "ion registry entry '{}' is missing formula_symbol",
                 entry.species
             )));
+        }
+        if entry.charge_e == 0 {
+            return Err(PackError::Invalid(format!(
+                "ion registry entry '{}' must define non-zero charge_e",
+                entry.species
+            )));
+        }
+        if entry.mass_amu <= 0.0 {
+            return Err(PackError::Invalid(format!(
+                "ion registry entry '{}' must define positive mass_amu",
+                entry.species
+            )));
+        }
+        if let Some(kind) = entry.topology_kind.as_deref() {
+            if !matches!(kind, "single_atom" | "polyatomic") {
+                return Err(PackError::Invalid(format!(
+                    "ion registry entry '{}' has unsupported topology_kind '{}'",
+                    entry.species, kind
+                )));
+            }
+        }
+        if let Some(atom_count) = entry.atom_count {
+            if atom_count == 0 {
+                return Err(PackError::Invalid(format!(
+                    "ion registry entry '{}' atom_count must be > 0",
+                    entry.species
+                )));
+            }
         }
         let info = IonSpeciesInfo {
             species: entry.species.clone(),
@@ -1280,6 +1318,8 @@ fn chemistry_catalog_for_request(ions: &IonRequest) -> PackResult<ChemistryCatal
         formula_symbol: entry.formula_symbol,
         charge_e: entry.charge_e,
         mass_amu: entry.mass_amu,
+        topology_kind: None,
+        atom_count: None,
     }));
     let ion_registry = build_ion_registry(ion_entries)?;
 
@@ -1415,6 +1455,19 @@ fn parse_salt_formula_with(
     if compact.is_empty() {
         return Err(PackError::Invalid("salt.formula cannot be empty".into()));
     }
+    let mut complex_symbols = ions
+        .by_symbol
+        .keys()
+        .filter(|symbol| !looks_like_simple_formula_symbol(symbol))
+        .cloned()
+        .collect::<Vec<_>>();
+    complex_symbols.sort_by(|left, right| right.len().cmp(&left.len()));
+    if let Some(symbol) = complex_symbols.into_iter().find(|symbol| compact.contains(symbol)) {
+        return Err(PackError::Invalid(format!(
+            "salt.formula '{}' references polyatomic symbol '{}'; use salt.name or salt.species instead",
+            formula, symbol
+        )));
+    }
     let chars = compact.chars().collect::<Vec<_>>();
     let mut idx = 0usize;
     let mut species = BTreeMap::new();
@@ -1482,6 +1535,15 @@ fn canonical_salt_formula_with(ions: &IonRegistry, species: &BTreeMap<String, us
 
 fn canonical_salt_formula(species: &BTreeMap<String, usize>) -> PackResult<String> {
     canonical_salt_formula_with(ion_registry()?, species)
+}
+
+fn looks_like_simple_formula_symbol(symbol: &str) -> bool {
+    let chars = symbol.chars().collect::<Vec<_>>();
+    match chars.as_slice() {
+        [head] => head.is_ascii_uppercase(),
+        [head, tail] => head.is_ascii_uppercase() && tail.is_ascii_lowercase(),
+        _ => false,
+    }
 }
 
 fn salt_stoichiometry_with(ions: &IonRegistry, cation: &str, anion: &str) -> PackResult<BTreeMap<String, usize>> {

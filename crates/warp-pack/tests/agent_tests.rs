@@ -704,11 +704,38 @@ fn capabilities_advertise_components_and_prmtop() {
     assert_eq!(caps["preferred_solute_input"], "components");
     assert_eq!(
         caps["supported_ion_species"],
-        json!(["Br-", "Ca2+", "Cl-", "I-", "K+", "Li+", "Mg2+", "Na+"])
+        json!([
+            "Br-",
+            "Ca2+",
+            "Cl-",
+            "HSO4-",
+            "I-",
+            "K+",
+            "Li+",
+            "Mg2+",
+            "Na+",
+            "NO3-",
+            "OAc-",
+            "SO4^2-"
+        ])
     );
     assert_eq!(
         caps["supported_salt_names"],
-        json!(["cacl2", "kcl", "libr", "licl", "mgbr2", "mgcl2", "nabr", "nacl", "nai"])
+        json!([
+            "cacl2",
+            "kcl",
+            "kno3",
+            "libr",
+            "licl",
+            "mgbr2",
+            "mgcl2",
+            "mgso4",
+            "na2so4",
+            "nabr",
+            "nacl",
+            "nai",
+            "naoac"
+        ])
     );
     assert_eq!(
         caps["supported_custom_chemistry_inputs"],
@@ -957,6 +984,106 @@ fn agent_run_solute_writes_manifest_and_outputs() {
                 .as_u64()
                 .unwrap_or(0)
     );
+}
+
+#[test]
+fn agent_run_supports_builtin_polyatomic_salt_and_preserves_conect() {
+    let solute = write_solute("agent_polyatomic_solute.pdb");
+    let coords = temp_path("agent_polyatomic_out.pdb");
+    let manifest = temp_path("agent_polyatomic_manifest.json");
+
+    let payload = json!({
+        "version": "warp-pack.agent.v1",
+        "run_id": "polyatomic-salt-run",
+        "solute": {
+            "path": solute.to_string_lossy(),
+            "kind": "small_molecule",
+        },
+        "environment": {
+            "box": {"mode": "fixed_size", "size_angstrom": 20.0, "shape": "cubic"},
+            "solvent": {"mode": "none"},
+            "ions": {
+                "neutralize": false,
+                "salt": {"name": "mgso4", "molar": 0.2}
+            },
+            "morphology": {"mode": "single_chain_solution"},
+        },
+        "outputs": {
+            "coordinates": coords.to_string_lossy(),
+            "manifest": manifest.to_string_lossy(),
+            "write_conect": true,
+        },
+    });
+
+    let (exit_code, envelope) = warp_pack::agent::run_request_json(
+        &serde_json::to_string(&payload).expect("serialize payload"),
+        false,
+    );
+    assert_eq!(
+        exit_code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&envelope).expect("envelope text")
+    );
+    let manifest_value: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(manifest_value["target_salt_name"], "mgso4");
+    assert_eq!(manifest_value["target_salt_formula"], "MgSO4");
+    assert_eq!(manifest_value["ion_counts"]["Mg2+"], 1);
+    assert_eq!(manifest_value["ion_counts"]["SO4^2-"], 1);
+    let coords_text = fs::read_to_string(&coords).expect("read output coordinates");
+    assert!(coords_text.contains(" SO4 "));
+    assert!(coords_text.contains("CONECT"));
+}
+
+#[test]
+fn agent_validate_rejects_polyatomic_formula_without_named_salt() {
+    let solute = write_solute("agent_polyatomic_formula_solute.pdb");
+    let tfa = temp_path("agent_polyatomic_formula_tfa.pdb");
+    write_text(
+        &tfa,
+        "HETATM    1  C1  TFA A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+    );
+    let payload = json!({
+        "version": "warp-pack.agent.v1",
+        "solute": {
+            "path": solute.to_string_lossy(),
+            "kind": "small_molecule",
+        },
+        "environment": {
+            "box": {"mode": "fixed_size", "size_angstrom": 30.0, "shape": "cubic"},
+            "solvent": {"mode": "none"},
+            "ions": {
+                "catalog": {
+                    "ions": [
+                        {
+                            "species": "TFA-",
+                            "template": tfa.to_string_lossy(),
+                            "formula_symbol": "TFA",
+                            "charge_e": -1,
+                            "mass_amu": 113.0
+                        }
+                    ]
+                },
+                "salt": {"formula": "NaTFA", "molar": 0.1}
+            },
+            "morphology": {"mode": "single_chain_solution"},
+        },
+        "outputs": {
+            "coordinates": temp_path("agent_polyatomic_formula_out.pdb").to_string_lossy(),
+            "manifest": temp_path("agent_polyatomic_formula_manifest.json").to_string_lossy(),
+        },
+    });
+
+    let (exit_code, result) = warp_pack::agent::validate_request_json(
+        &serde_json::to_string(&payload).expect("serialize payload"),
+    );
+    assert_eq!(exit_code, 2);
+    assert!(result["errors"][0]["message"]
+        .as_str()
+        .expect("validation error message")
+        .contains("use salt.name or salt.species instead"));
 }
 
 #[test]

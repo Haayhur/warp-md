@@ -111,6 +111,70 @@
         "preferred_water_models": ["tip3p", "spce", "tip4pew"],
         "role": "placement_seed"
       }
+    },
+    {
+      "species": "SO4^2-",
+      "aliases": ["so4^2-", "so42-", "sulfate"],
+      "template": "so4.pdb",
+      "formula_symbol": "SO4",
+      "charge_e": -2,
+      "mass_amu": 96.06,
+      "topology_kind": "polyatomic",
+      "atom_count": 5,
+      "canonical_formula": "SO4",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm"],
+        "preferred_water_models": ["tip3p", "spce"],
+        "role": "explicit_template"
+      }
+    },
+    {
+      "species": "HSO4-",
+      "aliases": ["hso4-", "bisulfate", "hydrogen sulfate"],
+      "template": "hso4.pdb",
+      "formula_symbol": "HSO4",
+      "charge_e": -1,
+      "mass_amu": 97.068,
+      "topology_kind": "polyatomic",
+      "atom_count": 6,
+      "canonical_formula": "HSO4",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm"],
+        "preferred_water_models": ["tip3p", "spce"],
+        "role": "explicit_template"
+      }
+    },
+    {
+      "species": "NO3-",
+      "aliases": ["no3-", "nitrate"],
+      "template": "no3.pdb",
+      "formula_symbol": "NO3",
+      "charge_e": -1,
+      "mass_amu": 62.0049,
+      "topology_kind": "polyatomic",
+      "atom_count": 4,
+      "canonical_formula": "NO3",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm"],
+        "preferred_water_models": ["tip3p", "spce"],
+        "role": "explicit_template"
+      }
+    },
+    {
+      "species": "OAc-",
+      "aliases": ["oac-", "acetate"],
+      "template": "oac.pdb",
+      "formula_symbol": "OAc",
+      "charge_e": -1,
+      "mass_amu": 59.044,
+      "topology_kind": "polyatomic",
+      "atom_count": 7,
+      "canonical_formula": "C2H3O2",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm", "opls"],
+        "preferred_water_models": ["tip3p", "spce"],
+        "role": "explicit_template"
+      }
     }
   ]
 }

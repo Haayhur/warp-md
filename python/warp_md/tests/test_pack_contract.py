@@ -115,10 +115,14 @@ def test_pack_capabilities_json() -> None:
     assert "Ca2+" in payload["supported_ion_species"]
     assert "Mg2+" in payload["supported_ion_species"]
     assert "Br-" in payload["supported_ion_species"]
+    assert "SO4^2-" in payload["supported_ion_species"]
+    assert "OAc-" in payload["supported_ion_species"]
     assert "nacl" in payload["supported_salt_names"]
     assert "cacl2" in payload["supported_salt_names"]
     assert "mgcl2" in payload["supported_salt_names"]
     assert "nabr" in payload["supported_salt_names"]
+    assert "mgso4" in payload["supported_salt_names"]
+    assert "naoac" in payload["supported_salt_names"]
     assert payload["supported_custom_chemistry_inputs"] == ["catalog.ions", "catalog.salts"]
     assert "salt.name" in payload["supported_salt_inputs"]
     assert "salt.formula" in payload["supported_salt_inputs"]
@@ -472,6 +476,93 @@ def test_run_build_request_supports_request_scoped_custom_chemistry(tmp_path: Pa
     assert manifest_payload["target_salt_formula"] == "RbF"
     assert manifest_payload["ion_counts"]["Rb+"] == 6
     assert manifest_payload["ion_counts"]["F-"] == 6
+
+
+def test_run_build_request_supports_builtin_polyatomic_salt(tmp_path: Path) -> None:
+    solute = tmp_path / "solute.pdb"
+    coords = tmp_path / "mgso4_system.pdb"
+    manifest = tmp_path / "mgso4_manifest.json"
+    _write_solute(solute)
+
+    payload = {
+        "version": "warp-pack.agent.v1",
+        "run_id": "solute-mgso4-001",
+        "solute": {
+            "path": str(solute),
+            "kind": "small_molecule",
+        },
+        "environment": {
+            "box": {"mode": "fixed_size", "size_angstrom": 20.0, "shape": "cubic"},
+            "solvent": {"mode": "none"},
+            "ions": {
+                "neutralize": False,
+                "salt": {"name": "mgso4", "molar": 0.2},
+            },
+            "morphology": {"mode": "single_chain_solution"},
+        },
+        "outputs": {
+            "coordinates": str(coords),
+            "manifest": str(manifest),
+        },
+    }
+
+    exit_code, envelope = pack_contract.run_build_request(payload)
+    assert exit_code == 0
+    assert envelope["status"] == "ok"
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert manifest_payload["target_salt_name"] == "mgso4"
+    assert manifest_payload["target_salt_formula"] == "MgSO4"
+    assert manifest_payload["ion_counts"]["Mg2+"] == 1
+    assert manifest_payload["ion_counts"]["SO4^2-"] == 1
+    coords_text = coords.read_text(encoding="utf-8")
+    assert " SO4 " in coords_text
+    assert "CONECT" in coords_text
+
+
+def test_validate_request_rejects_polyatomic_formula_without_named_salt(tmp_path: Path) -> None:
+    solute = tmp_path / "solute.pdb"
+    tfa = tmp_path / "tfa.pdb"
+    _write_solute(solute)
+    tfa.write_text(
+        "HETATM    1  C1  TFA A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    payload = {
+        "version": "warp-pack.agent.v1",
+        "run_id": "validate-polyatomic-formula-001",
+        "solute": {
+            "path": str(solute),
+            "kind": "small_molecule",
+        },
+        "environment": {
+            "box": {"mode": "fixed_size", "size_angstrom": 30.0, "shape": "cubic"},
+            "solvent": {"mode": "none"},
+            "ions": {
+                "catalog": {
+                    "ions": [
+                        {
+                            "species": "TFA-",
+                            "aliases": ["trifluoroacetate"],
+                            "template": str(tfa),
+                            "formula_symbol": "TFA",
+                            "charge_e": -1,
+                            "mass_amu": 113.0,
+                        }
+                    ]
+                },
+                "salt": {"formula": "NaTFA", "molar": 0.1},
+            },
+            "morphology": {"mode": "single_chain_solution"},
+        },
+        "outputs": {
+            "coordinates": str(tmp_path / "system.pdb"),
+            "manifest": str(tmp_path / "system_manifest.json"),
+        },
+    }
+
+    result = pack_contract.validate_request_payload(payload)
+    assert result["valid"] is False
+    assert "use salt.name or salt.species instead" in result["errors"][0]["message"]
 
 
 def test_run_build_request_neutralize_with_prefers_requested_counterion(tmp_path: Path) -> None:
