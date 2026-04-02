@@ -289,7 +289,9 @@ fn run_once(
         }
         let atom_params = build_atom_params(cfg, spec, template.atoms.len(), dist_scale)?;
         max_atom_radius = max_atom_radius.max(max_radius(&atom_params));
-        let res_mode = spec.resnumbers.unwrap_or(1);
+        let res_mode = spec
+            .resnumbers
+            .unwrap_or(if spec.count > 1 { 2 } else { 1 });
         let connect = spec.connect && !cfg.ignore_conect;
         let maxmove = spec.maxmove.or(cfg.maxmove).unwrap_or(spec.count.max(1));
         templates.push(TemplateEntry {

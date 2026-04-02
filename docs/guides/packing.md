@@ -43,7 +43,6 @@ cfg = PackConfig(
     ],
     box=Box((40.0, 40.0, 40.0)),
     min_distance=2.0,
-    add_box_sides=True,
 )
 
 result = run(cfg)
@@ -83,7 +82,10 @@ Minimal `warp-pack` handoff:
   "environment": {
     "box": {"mode": "padding", "padding_angstrom": 12.0, "shape": "cubic"},
     "solvent": {"mode": "explicit", "model": "tip3p"},
-    "ions": {"neutralize": true, "salt_molar": 0.15, "cation": "Na+", "anion": "Cl-"},
+    "ions": {
+      "neutralize": {"enabled": true},
+      "salt": {"name": "nacl", "molar": 0.15}
+    },
     "morphology": {"mode": "single_chain_solution"}
   },
   "outputs": {
@@ -151,6 +153,17 @@ result = run(cfg)
 {% hint style="warning" %}
 Bundled `water_pdb(...)` templates are **single-molecule** PDBs. Perfect for packing.
 {% endhint %}
+
+Bundled ions include `Na+`, `K+`, `Cl-`, and `Ca2+`. Bundled salts currently include
+`nacl`, `kcl`, and `cacl2`. Agents should prefer `salt.name` for these built-ins; `salt.formula`
+and `salt.species` remain available for advanced cases.
+
+Ion metadata is now registry-backed from `python/warp_md/pack/data/ions.json`. To add more ions
+without patching code, point `WARP_MD_ION_REGISTRY` at a JSON file with extra entries; relative
+template paths resolve from that registry file's directory.
+
+Salt recipes are registry-backed from `python/warp_md/pack/data/salts.json`. To add more built-in
+salt names without patching code, point `WARP_MD_SALT_REGISTRY` at a JSON file with extra entries.
 
 ---
 
@@ -222,7 +235,7 @@ Resume packing or reuse placements with Packmol-style restart files:
 | `writebad` | Write partial structure on failure |
 | `restart_from` / `restart_to` | Packmol restart files |
 | `relax_steps` / `relax_step` | Post-pack overlap relaxation |
-| `add_box_sides` | Add box dimensions to outputs |
+| `add_box_sides` | Add box dimensions to outputs (default: on) |
 | `pbc_min` / `pbc_max` | Explicit PBC bounds |
 
 </details>
@@ -239,6 +252,7 @@ Resume packing or reuse placements with Packmol-style restart files:
 | `constraints` | Placement constraints |
 | `radius` / `fscale` | Per-atom radius defaults |
 | `changechains` | Assign unique chain IDs |
+| `resnumbers` | Residue numbering mode (`3` for unique residue id per packed molecule); repeated structures auto-offset by default |
 | `rot_bounds` | Constrain Euler rotation ranges |
 | `fixed_eulers` | Fix orientation (with positions) |
 
@@ -282,7 +296,6 @@ cfg = PackConfig(
     ],
     box=Box((50.0, 50.0, 50.0)),
     min_distance=2.5,
-    add_box_sides=True,
 )
 
 result = run(cfg)

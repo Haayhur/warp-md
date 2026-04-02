@@ -1,0 +1,36 @@
+{
+  "ions": [
+    {
+      "species": "Na+",
+      "aliases": ["na+"],
+      "template": "na.pdb",
+      "formula_symbol": "Na",
+      "charge_e": 1,
+      "mass_amu": 22.99
+    },
+    {
+      "species": "Cl-",
+      "aliases": ["cl-"],
+      "template": "cl.pdb",
+      "formula_symbol": "Cl",
+      "charge_e": -1,
+      "mass_amu": 35.45
+    },
+    {
+      "species": "K+",
+      "aliases": ["k+"],
+      "template": "k.pdb",
+      "formula_symbol": "K",
+      "charge_e": 1,
+      "mass_amu": 39.098
+    },
+    {
+      "species": "Ca2+",
+      "aliases": ["ca2+"],
+      "template": "ca.pdb",
+      "formula_symbol": "Ca",
+      "charge_e": 2,
+      "mass_amu": 40.078
+    }
+  ]
+}

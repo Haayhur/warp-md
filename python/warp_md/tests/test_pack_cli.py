@@ -57,3 +57,21 @@ def test_pack_cli_runs_json_config(tmp_path: Path) -> None:
     text = out.read_text(encoding="utf-8")
     assert "ATOM" in text or "HETATM" in text
 
+
+@pytest.mark.skipif(not HAS_PACK_RUN, reason="pack bindings unavailable")
+def test_pack_cli_output_override_infers_format_from_suffix(tmp_path: Path) -> None:
+    cfg = {
+        "structures": [
+            {"path": water_pdb("tip3p"), "count": 1},
+        ],
+        "box": {"size": [18.0, 18.0, 18.0], "shape": "orthorhombic"},
+    }
+    cfg_path = tmp_path / "pack.json"
+    out = tmp_path / "packed.cif"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    result = _run("--config", str(cfg_path), "--output", str(out))
+    assert result.returncode == 0, result.stderr
+    assert out.exists()
+    assert "data_warp_pack" in out.read_text(encoding="utf-8")
+

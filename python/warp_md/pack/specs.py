@@ -8,6 +8,16 @@ from typing import Any, Dict, List, Optional, Tuple
 from .errors import ValidationError
 
 
+def _normalize_box_shape(shape: str) -> str:
+    lowered = shape.lower()
+    return "orthorhombic" if lowered == "cubic" else lowered
+
+
+def _infer_output_format(path: str) -> str:
+    suffix = path.rsplit(".", 1)[-1].lower() if "." in path else "pdb"
+    return suffix or "pdb"
+
+
 @dataclass
 class Constraint:
     mode: str
@@ -327,13 +337,13 @@ class Box:
     shape: str = "orthorhombic"
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"size": list(self.size), "shape": self.shape}
+        return {"size": list(self.size), "shape": _normalize_box_shape(self.shape)}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Box":
         return cls(
             size=tuple(data["size"]),
-            shape=data.get("shape", "orthorhombic"),
+            shape=_normalize_box_shape(data.get("shape", "orthorhombic")),
         )
 
     def validate(self) -> None:
@@ -341,8 +351,8 @@ class Box:
             raise ValidationError(f"Box size must have 3 dimensions, got {len(self.size)}")
         if any(s <= 0 for s in self.size):
             raise ValidationError("All box dimensions must be positive")
-        valid_shapes = ("orthorhombic", "cubic", "triclinic")
-        if self.shape not in valid_shapes:
+        valid_shapes = ("orthorhombic", "cubic")
+        if self.shape.lower() not in valid_shapes:
             raise ValidationError(
                 f"Invalid box shape '{self.shape}'. Must be one of: {valid_shapes}"
             )
@@ -351,11 +361,13 @@ class Box:
 @dataclass
 class OutputSpec:
     path: str
-    format: str
+    format: Optional[str] = None
     scale: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"path": self.path, "format": self.format}
+        out: Dict[str, Any] = {"path": self.path}
+        if self.format:
+            out["format"] = self.format
         if self.scale is not None:
             out["scale"] = float(self.scale)
         return out
@@ -364,15 +376,17 @@ class OutputSpec:
     def from_dict(cls, data: Dict[str, Any]) -> "OutputSpec":
         return cls(
             path=data["path"],
-            format=data["format"],
+            format=data.get("format") or _infer_output_format(data["path"]),
             scale=data.get("scale"),
         )
 
     def validate(self) -> None:
         if not self.path:
             raise ValidationError("Output path cannot be empty")
+        fmt = (self.format or _infer_output_format(self.path)).lower()
         valid_formats = (
             "pdb",
+            "pdb-strict",
             "xyz",
             "pdbx",
             "cif",
@@ -383,10 +397,13 @@ class OutputSpec:
             "lmp",
             "mol2",
             "crd",
+            "inpcrd",
+            "rst",
+            "rst7",
         )
-        if self.format.lower() not in valid_formats:
+        if fmt not in valid_formats:
             raise ValidationError(
-                f"Invalid format '{self.format}'. Must be one of: {valid_formats}"
+                f"Invalid format '{fmt}'. Must be one of: {valid_formats}"
             )
         if self.scale is not None and self.scale <= 0:
             raise ValidationError("Output scale must be positive")

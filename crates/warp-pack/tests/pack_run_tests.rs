@@ -178,6 +178,47 @@ fn pack_resnumbers_mode_global_mol() {
 }
 
 #[test]
+fn pack_default_resnumbers_preserves_single_structure_ids() {
+    let pdb_path = temp_path("resnumbers_single_default.pdb");
+    write_text(
+        &pdb_path,
+        "ATOM      1  H   MOL A   5       0.000   0.000   0.000           H\nEND\n",
+    );
+    let mut spec = base_structure(&pdb_path);
+    spec.fixed = true;
+    spec.positions = Some(vec![[1.0, 1.0, 1.0]]);
+    let cfg = base_config(vec![spec]);
+    let out = warp_pack::pack::run(&cfg).expect("single default resnumbers");
+    assert_eq!(out.atoms[0].resid, 5);
+    let _ = fs::remove_file(&pdb_path);
+}
+
+#[test]
+fn pack_default_resnumbers_offsets_repeated_structures() {
+    let pdb_path = temp_path("resnumbers_repeat_default.pdb");
+    write_text(
+        &pdb_path,
+        "HETATM    1  CL  CL- A   1       0.000   0.000   0.000           CL\nEND\n",
+    );
+    let mut spec = base_structure(&pdb_path);
+    spec.count = 2;
+    spec.fixed = true;
+    spec.positions = Some(vec![[1.0, 1.0, 1.0], [3.0, 1.0, 1.0]]);
+    let cfg = base_config(vec![spec]);
+    let out = warp_pack::pack::run(&cfg).expect("repeat default resnumbers");
+    let mut resid_by_mol =
+        out.atoms
+            .iter()
+            .fold(std::collections::HashMap::new(), |mut acc, atom| {
+                acc.entry(atom.mol_id).or_insert(atom.resid);
+                acc
+            });
+    assert_eq!(resid_by_mol.remove(&1), Some(1));
+    assert_eq!(resid_by_mol.remove(&2), Some(2));
+    let _ = fs::remove_file(&pdb_path);
+}
+
+#[test]
 fn pack_check_detects_overlap() {
     let pdb_path = temp_path("check_overlap.pdb");
     write_text(

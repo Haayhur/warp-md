@@ -6,7 +6,7 @@ use clap::Parser;
 
 use warp_pack::config::{OutputSpec, PackConfig};
 use warp_pack::error::{PackError, PackResult};
-use warp_pack::io::write_output;
+use warp_pack::io::{infer_output_format_from_path, write_output, OutputWriteResult};
 use warp_pack::pack::run_with_stream;
 use warp_pack::streaming::{PackCompleteEvent, PackProfile, StreamEmitter};
 
@@ -38,14 +38,18 @@ fn run_cli() -> PackResult<()> {
     let emitter = StreamEmitter::new(cli.stream);
     let out = run_with_stream(&cfg, emitter)?;
     let output = if let Some(path) = cli.output {
+        let path_str = path.to_string_lossy().to_string();
         Some(OutputSpec {
-            path: path.to_string_lossy().to_string(),
-            format: cli.format.unwrap_or_else(|| "pdb".to_string()),
+            path: path_str.clone(),
+            format: cli
+                .format
+                .unwrap_or_else(|| infer_output_format_from_path(&path_str)),
             scale: None,
         })
     } else {
         cfg.output.clone()
     };
+    let mut written_output: Option<OutputWriteResult> = None;
     if let Some(ref spec) = output {
         let add_box_sides = cfg.add_box_sides || cfg.pbc;
         let box_fix = if cfg.add_box_sides {
@@ -54,7 +58,7 @@ fn run_cli() -> PackResult<()> {
             0.0
         };
         let write_conect = !cfg.ignore_conect;
-        write_output(
+        let written = write_output(
             &out,
             &spec,
             add_box_sides,
@@ -62,6 +66,13 @@ fn run_cli() -> PackResult<()> {
             write_conect,
             cfg.hexadecimal_indices,
         )?;
+        if written.fallback_applied {
+            eprintln!(
+                "requested output required mmcif; wrote '{}' instead",
+                written.path
+            );
+        }
+        written_output = Some(written);
     }
     if let Some(path) = &cfg.write_crd {
         let scale = output.as_ref().and_then(|spec| spec.scale).unwrap_or(1.0);
@@ -75,7 +86,10 @@ fn run_cli() -> PackResult<()> {
             total_atoms: out.atoms.len(),
             total_molecules,
             final_box_size: out.box_size,
-            output_path: output.as_ref().map(|spec| spec.path.clone()),
+            output_path: written_output
+                .as_ref()
+                .map(|spec| spec.path.clone())
+                .or_else(|| output.as_ref().map(|spec| spec.path.clone())),
             elapsed_ms,
             profile: PackProfile::default(),
         });

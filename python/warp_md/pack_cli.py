@@ -10,6 +10,11 @@ from .pack import PackConfig, export, parse_inp, run
 from .pack_contract import example_request, pack_capabilities, render_pack_schema, run_build_request, validate_request_payload
 
 
+def _infer_output_format(path: str) -> str:
+    suffix = Path(path).suffix.lower().lstrip(".")
+    return suffix or "pdb"
+
+
 def _load_config(path: Path) -> Dict[str, Any]:
     ext = path.suffix.lower()
     if ext == ".inp":
@@ -87,7 +92,7 @@ def _build_output_override(cfg: Dict[str, Any], output: str, fmt: str | None) ->
     scale = None
     if isinstance(previous, dict):
         scale = previous.get("scale")
-    merged: Dict[str, Any] = {"path": output, "format": fmt or "pdb"}
+    merged: Dict[str, Any] = {"path": output, "format": fmt or _infer_output_format(output)}
     if scale is not None:
         merged["scale"] = scale
     cfg["output"] = merged
@@ -132,7 +137,7 @@ def run_legacy_cli(argv: list[str] | None = None) -> int:
         add_box_sides = cfg.add_box_sides or cfg.pbc
         box_sides_fix = cfg.add_box_sides_fix if cfg.add_box_sides else 0.0
         write_conect = not cfg.ignore_conect
-        export(
+        written = export(
             result,
             cfg.output.format,
             cfg.output.path,
@@ -142,6 +147,11 @@ def run_legacy_cli(argv: list[str] | None = None) -> int:
             write_conect=write_conect,
             hexadecimal_indices=cfg.hexadecimal_indices,
         )
+        if isinstance(written, dict) and written.get("fallback_applied"):
+            print(
+                f"requested output required mmcif; wrote '{written['path']}' instead",
+                file=sys.stderr,
+            )
 
     if cfg.write_crd:
         export(

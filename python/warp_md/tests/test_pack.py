@@ -7,9 +7,16 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from warp_md.pack import water_pdb
+from warp_md.pack import (
+    available_ion_species,
+    available_salt_names,
+    ion_pdb,
+    salt_recipe,
+    water_pdb,
+)
 from warp_md.pack.config import Box, OutputSpec, PackConfig, Structure
 from warp_md.pack.export import export
+from warp_md.pack import data as pack_data
 from warp_md.pack.result import PackResult
 
 try:
@@ -87,7 +94,9 @@ def test_structure_to_dict_includes_restart():
 def test_export_pdb_writes_conect_and_ter(tmp_path):
     assert HAS_PACK_EXPORT, "pack_write_output binding unavailable"
     out = tmp_path / "out.pdb"
-    export(DummyResult(), "pdb", str(out))
+    written = export(DummyResult(), "pdb", str(out))
+    assert written["path"] == str(out)
+    assert written["fallback_applied"] is False
     text = out.read_text(encoding="utf-8")
     assert "CRYST1" in text
     assert "ATOM" in text
@@ -157,7 +166,105 @@ def test_export_accepts_none_optional_fields(tmp_path):
     assert "ATOM" in text
 
 
+def test_export_falls_back_to_mmcif_when_strict_pdb_overflows(tmp_path):
+    assert HAS_PACK_EXPORT, "pack_write_output binding unavailable"
+    out = tmp_path / "strict_overflow.pdb"
+    result = DummyResult()
+    result.resname[0] = "LONGRES"
+    written = export(result, "pdb-strict", str(out))
+    assert written["fallback_applied"] is True
+    assert written["format"] == "mmcif"
+    fallback = Path(written["path"])
+    assert fallback.exists()
+    assert fallback.suffix == ".cif"
+    assert "data_warp_pack" in fallback.read_text(encoding="utf-8")
+
+
 def test_water_pdb_paths_exist():
     for model in ["spce", "tip3p", "tip4pew", "tip5p", "tip4p-ew", "spc/e"]:
         path = Path(water_pdb(model))
         assert path.exists()
+
+
+def test_ion_pdb_paths_exist():
+    for species in ["na+", "cl-", "k+", "ca2+"]:
+        path = Path(ion_pdb(species))
+        assert path.exists()
+
+
+def test_available_ion_species_returns_canonical_names():
+    species = available_ion_species()
+    assert "Na+" in species
+    assert "Cl-" in species
+    assert "K+" in species
+    assert "Ca2+" in species
+
+
+def test_available_salt_names_and_recipe():
+    names = available_salt_names()
+    assert "nacl" in names
+    assert "cacl2" in names
+    cacl2 = salt_recipe("calcium chloride")
+    assert cacl2["formula"] == "CaCl2"
+    assert cacl2["species"] == {"Ca2+": 1, "Cl-": 2}
+
+
+def test_ion_registry_overlay_supports_external_templates(tmp_path, monkeypatch):
+    mg = tmp_path / "mg.pdb"
+    br = tmp_path / "br.pdb"
+    registry = tmp_path / "ions_overlay.json"
+    mg.write_text(
+        "HETATM    1 MG   MG2 A   1       0.000   0.000   0.000  1.00  0.00          MG\nEND\n",
+        encoding="utf-8",
+    )
+    br.write_text(
+        "HETATM    1 BR   BR- A   1       0.000   0.000   0.000  1.00  0.00          BR\nEND\n",
+        encoding="utf-8",
+    )
+    registry.write_text(
+        (
+            "{\n"
+            '  "ions": [\n'
+            '    {"species": "Mg2+", "aliases": ["mg2+"], "template": "mg.pdb", "formula_symbol": "Mg", "charge_e": 2, "mass_amu": 24.305},\n'
+            '    {"species": "Br-", "aliases": ["br-"], "template": "br.pdb", "formula_symbol": "Br", "charge_e": -1, "mass_amu": 79.904}\n'
+            "  ]\n"
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("WARP_MD_ION_REGISTRY", str(registry))
+    pack_data._ion_registry.cache_clear()
+    try:
+        assert Path(ion_pdb("mg2+")) == mg.resolve()
+        assert Path(ion_pdb("Br-")) == br.resolve()
+        species = available_ion_species()
+        assert "Mg2+" in species
+        assert "Br-" in species
+        assert "Na+" in species
+    finally:
+        pack_data._ion_registry.cache_clear()
+
+
+def test_salt_registry_overlay_supports_custom_names(tmp_path, monkeypatch):
+    registry = tmp_path / "salts_overlay.json"
+    registry.write_text(
+        (
+            "{\n"
+            '  "salts": [\n'
+            '    {"name": "mgcl2", "aliases": ["MgCl2", "magnesium chloride"], "formula": "MgCl2", "species": {"Mg2+": 1, "Cl-": 2}}\n'
+            "  ]\n"
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("WARP_MD_SALT_REGISTRY", str(registry))
+    pack_data._salt_registry.cache_clear()
+    try:
+        names = available_salt_names()
+        assert "mgcl2" in names
+        assert salt_recipe("magnesium chloride")["species"] == {"Mg2+": 1, "Cl-": 2}
+        assert "nacl" in names
+    finally:
+        pack_data._salt_registry.cache_clear()

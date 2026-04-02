@@ -269,7 +269,7 @@ class PackConfigBuilder:
         self._nloop: Optional[int] = None
         self._maxit: Optional[int] = None
         self._avoid_overlap: bool = True
-        self._add_box_sides: bool = False
+        self._add_box_sides: bool = True
 
     # --- Box configuration ---
 
@@ -297,7 +297,7 @@ class PackConfigBuilder:
 
     def cubic_box(self, side: float) -> "PackConfigBuilder":
         """Set a cubic simulation box."""
-        self._box = Box(size=(side, side, side), shape="cubic")
+        self._box = Box(size=(side, side, side), shape="orthorhombic")
         return self
 
     # --- Structure builders ---

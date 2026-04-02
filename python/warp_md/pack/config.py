@@ -21,7 +21,7 @@ class PackConfig:
     max_attempts: int = 10000
     min_distance: float = 2.0
     filetype: Optional[str] = None
-    add_box_sides: bool = False
+    add_box_sides: bool = True
     add_box_sides_fix: Optional[float] = None
     add_amber_ter: bool = False
     amber_ter_preserve: bool = False
@@ -77,8 +77,8 @@ class PackConfig:
             out["min_distance"] = float(self.min_distance)
         if self.filetype:
             out["filetype"] = self.filetype
-        if self.add_box_sides:
-            out["add_box_sides"] = True
+        if not self.add_box_sides:
+            out["add_box_sides"] = False
         if self.add_box_sides_fix is not None:
             out["add_box_sides_fix"] = float(self.add_box_sides_fix)
         if self.add_amber_ter:
@@ -171,7 +171,7 @@ class PackConfig:
             max_attempts=data.get("max_attempts", 10000),
             min_distance=data.get("min_distance", 2.0),
             filetype=data.get("filetype"),
-            add_box_sides=data.get("add_box_sides", False),
+            add_box_sides=data.get("add_box_sides", True),
             add_box_sides_fix=data.get("add_box_sides_fix"),
             add_amber_ter=data.get("add_amber_ter", False),
             amber_ter_preserve=data.get("amber_ter_preserve", False),

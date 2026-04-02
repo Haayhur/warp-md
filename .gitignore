@@ -55,5 +55,7 @@ architect.md
 !crates/warp-build/tests/fixtures/**/*.json
 #!crates/warp-build/tests/fixtures/**/*.pdb
 !crates/warp-build/tests/fixtures/**/*.prmtop
+!python/warp_md/pack/data/ions.json
+!python/warp_md/pack/data/salts.json
 !python/warp_md/pack/data/*.pdb
 outputs/

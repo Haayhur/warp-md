@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 
 def export(
     result,
-    fmt: str,
+    fmt: Optional[str],
     path: str,
     scale: Optional[float] = None,
     *,
@@ -16,7 +17,7 @@ def export(
     write_conect: bool = True,
     hexadecimal_indices: bool = False,
 ):
-    fmt = fmt.lower()
+    fmt = (fmt or Path(path).suffix.lstrip(".") or "pdb").lower()
     scale = 1.0 if scale is None else float(scale)
     box_sides_fix = 0.0 if box_sides_fix is None else float(box_sides_fix)
     try:

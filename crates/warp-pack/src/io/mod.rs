@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::OutputSpec;
 use crate::error::{PackError, PackResult};
@@ -41,6 +41,42 @@ pub struct MoleculeData {
     pub ter_after: Vec<usize>,
 }
 
+#[derive(Clone, Debug)]
+pub struct OutputWriteResult {
+    pub path: String,
+    pub format: String,
+    pub fallback_applied: bool,
+}
+
+pub fn infer_output_format_from_path(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("pdb")
+        .to_ascii_lowercase()
+}
+
+fn resolved_output_format(spec: &OutputSpec) -> String {
+    if spec.format.trim().is_empty() {
+        infer_output_format_from_path(&spec.path)
+    } else {
+        spec.format.to_ascii_lowercase()
+    }
+}
+
+fn should_fallback_to_mmcif(err: &PackError) -> bool {
+    match err {
+        PackError::Invalid(message) => message.contains("use mmcif"),
+        _ => false,
+    }
+}
+
+fn fallback_mmcif_path(path: &str) -> String {
+    let mut fallback = PathBuf::from(path);
+    fallback.set_extension("cif");
+    fallback.to_string_lossy().to_string()
+}
+
 pub fn read_molecule(
     path: &Path,
     format: Option<&str>,
@@ -75,12 +111,12 @@ pub fn write_output(
     box_sides_fix: f32,
     write_conect: bool,
     hexadecimal_indices: bool,
-) -> PackResult<()> {
-    let format = spec.format.to_lowercase();
+) -> PackResult<OutputWriteResult> {
+    let format = resolved_output_format(spec);
     let scale = spec.scale.unwrap_or(1.0);
     let box_fix = if add_box_sides { box_sides_fix } else { 0.0 };
     match format.as_str() {
-        "pdb" | "pdb-strict" => write_pdb(
+        "pdb" | "pdb-strict" => match write_pdb(
             out,
             &spec.path,
             scale,
@@ -89,14 +125,79 @@ pub fn write_output(
             write_conect,
             hexadecimal_indices,
             format == "pdb-strict",
-        ),
-        "xyz" => write_xyz(out, &spec.path, scale),
-        "pdbx" | "cif" | "mmcif" => write_pdbx(out, &spec.path, scale, box_fix),
-        "gro" => write_gro(out, &spec.path, scale, box_fix),
-        "lammps" | "lammps-data" | "lmp" => write_lammps(out, &spec.path, scale, box_fix),
-        "mol2" => write_mol2(out, &spec.path, scale),
-        "crd" => write_crd(out, &spec.path, scale, box_fix),
-        "inpcrd" | "rst" | "rst7" => write_amber_inpcrd(out, &spec.path, scale),
+        ) {
+            Ok(()) => Ok(OutputWriteResult {
+                path: spec.path.clone(),
+                format,
+                fallback_applied: false,
+            }),
+            Err(err) if should_fallback_to_mmcif(&err) => {
+                let fallback_path = fallback_mmcif_path(&spec.path);
+                write_pdbx(out, &fallback_path, scale, box_fix)?;
+                Ok(OutputWriteResult {
+                    path: fallback_path,
+                    format: "mmcif".into(),
+                    fallback_applied: true,
+                })
+            }
+            Err(err) => Err(err),
+        },
+        "xyz" => {
+            write_xyz(out, &spec.path, scale)?;
+            Ok(OutputWriteResult {
+                path: spec.path.clone(),
+                format,
+                fallback_applied: false,
+            })
+        }
+        "pdbx" | "cif" | "mmcif" => {
+            write_pdbx(out, &spec.path, scale, box_fix)?;
+            Ok(OutputWriteResult {
+                path: spec.path.clone(),
+                format,
+                fallback_applied: false,
+            })
+        }
+        "gro" => {
+            write_gro(out, &spec.path, scale, box_fix)?;
+            Ok(OutputWriteResult {
+                path: spec.path.clone(),
+                format,
+                fallback_applied: false,
+            })
+        }
+        "lammps" | "lammps-data" | "lmp" => {
+            write_lammps(out, &spec.path, scale, box_fix)?;
+            Ok(OutputWriteResult {
+                path: spec.path.clone(),
+                format,
+                fallback_applied: false,
+            })
+        }
+        "mol2" => {
+            write_mol2(out, &spec.path, scale)?;
+            Ok(OutputWriteResult {
+                path: spec.path.clone(),
+                format,
+                fallback_applied: false,
+            })
+        }
+        "crd" => {
+            write_crd(out, &spec.path, scale, box_fix)?;
+            Ok(OutputWriteResult {
+                path: spec.path.clone(),
+                format,
+                fallback_applied: false,
+            })
+        }
+        "inpcrd" | "rst" | "rst7" => {
+            write_amber_inpcrd(out, &spec.path, scale)?;
+            Ok(OutputWriteResult {
+                path: spec.path.clone(),
+                format,
+                fallback_applied: false,
+            })
+        }
         _ => Err(PackError::Invalid(format!(
             "unsupported output format: {format}"
         ))),

@@ -703,6 +703,15 @@ fn capabilities_advertise_components_and_prmtop() {
     let caps = warp_pack::agent::capabilities();
     assert_eq!(caps["preferred_solute_input"], "components");
     assert_eq!(
+        caps["supported_ion_species"],
+        json!(["Ca2+", "Cl-", "K+", "Na+"])
+    );
+    assert_eq!(caps["supported_salt_names"], json!(["cacl2", "kcl", "nacl"]));
+    assert_eq!(
+        caps["supported_salt_inputs"],
+        json!(["salt.name", "salt.formula", "salt.species", "legacy_pair"])
+    );
+    assert_eq!(
         caps["supported_morphology_modes"],
         json!([
             "single_chain_solution",

@@ -71,11 +71,13 @@ def test_pack_config_serialization():
 def test_pack_config_defaults_use_packmol_gencan_controls():
     restored = PackConfig.from_dict(
         {
-            "box": {"size": [10.0, 10.0, 10.0], "shape": "orthorhombic"},
+            "box": {"size": [10.0, 10.0, 10.0], "shape": "cubic"},
             "structures": [{"path": "water.pdb", "count": 1}],
         }
     )
     assert restored.gencan_maxit is None
+    assert restored.add_box_sides is True
+    assert restored.box.shape == "orthorhombic"
 
 
 def test_pack_config_omits_removed_use_gencan_field():
@@ -85,6 +87,17 @@ def test_pack_config_omits_removed_use_gencan_field():
     )
     dumped = cfg.to_dict()
     assert "use_gencan" not in dumped
+    assert "add_box_sides" not in dumped
+
+
+def test_pack_config_to_dict_preserves_explicit_false_box_sides():
+    cfg = PackConfig(
+        structures=[Structure("water.pdb", count=1)],
+        box=Box((10.0, 10.0, 10.0)),
+        add_box_sides=False,
+    )
+    dumped = cfg.to_dict()
+    assert dumped["add_box_sides"] is False
 
 
 def test_pack_config_validate_allows_none_max_attempts():

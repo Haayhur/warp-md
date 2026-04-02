@@ -722,7 +722,7 @@ fn gist_apply_pme_scaling<'py>(
 
 #[pyfunction]
 fn pack_write_output(
-    _py: Python<'_>,
+    py: Python<'_>,
     result: &Bound<'_, PyAny>,
     format: &str,
     path: &str,
@@ -731,14 +731,14 @@ fn pack_write_output(
     box_sides_fix: f32,
     write_conect: bool,
     hexadecimal_indices: bool,
-) -> PyResult<()> {
+ ) -> PyResult<PyObject> {
     let out = build_pack_output(result)?;
     let spec = warp_pack::config::OutputSpec {
         path: path.to_string(),
         format: format.to_string(),
         scale: Some(scale),
     };
-    warp_pack::io::write_output(
+    let written = warp_pack::io::write_output(
         &out,
         &spec,
         add_box_sides,
@@ -746,7 +746,12 @@ fn pack_write_output(
         write_conect,
         hexadecimal_indices,
     )
-    .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("path", written.path)?;
+    dict.set_item("format", written.format)?;
+    dict.set_item("fallback_applied", written.fallback_applied)?;
+    Ok(dict.into_py(py))
 }
 
 fn pep_emit(

@@ -6,7 +6,7 @@ from warp_md.pack.config import PackConfig
 def test_pack_builder_cubic_box():
     cfg = PackConfigBuilder().cubic_box(50.0).build(validate=False)
     assert cfg.box.size == (50.0, 50.0, 50.0)
-    assert cfg.box.shape == "cubic"
+    assert cfg.box.shape == "orthorhombic"
 
 def test_pack_builder_orthorhombic_box():
     cfg = PackConfigBuilder().box(40.0, 50.0, 60.0).build(validate=False)
@@ -73,3 +73,8 @@ def test_build_validation_trigger():
     builder = PackConfigBuilder().add("foo.pdb") 
     with pytest.raises(ValidationError):
         builder.build(validate=True)
+
+
+def test_pack_builder_defaults_box_sides_on():
+    cfg = PackConfigBuilder().box(20.0, 20.0, 20.0).build(validate=False)
+    assert cfg.add_box_sides is True

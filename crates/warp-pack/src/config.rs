@@ -16,7 +16,7 @@ pub struct PackConfig {
     pub min_distance: Option<f32>,
     #[serde(default)]
     pub filetype: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub add_box_sides: bool,
     #[serde(default)]
     pub add_box_sides_fix: Option<f32>,
@@ -174,6 +174,7 @@ pub struct StructureSpec {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OutputSpec {
     pub path: String,
+    #[serde(default)]
     pub format: String,
     #[serde(default)]
     pub scale: Option<f32>,
@@ -210,10 +211,23 @@ fn default_true() -> bool {
     true
 }
 
+fn infer_output_format(path: &str) -> String {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("pdb")
+        .to_ascii_lowercase()
+}
+
 impl PackConfig {
     pub fn normalized(&self) -> PackResult<PackConfig> {
         let mut cfg = self.clone();
         cfg.validate()?;
+        if cfg.box_.shape.eq_ignore_ascii_case("cubic") {
+            cfg.box_.shape = "orthorhombic".into();
+        } else {
+            cfg.box_.shape = cfg.box_.shape.to_ascii_lowercase();
+        }
         if let (Some(min), Some(max)) = (cfg.pbc_min, cfg.pbc_max) {
             cfg.pbc = true;
             for i in 0..3 {
@@ -257,6 +271,13 @@ impl PackConfig {
         if cfg.gencan_maxit.is_none() {
             cfg.gencan_maxit = Some(cfg.maxit.unwrap_or(20));
         }
+        if let Some(output) = cfg.output.as_mut() {
+            if output.format.trim().is_empty() {
+                output.format = infer_output_format(&output.path);
+            } else {
+                output.format = output.format.to_ascii_lowercase();
+            }
+        }
         Ok(cfg)
     }
 
@@ -281,9 +302,10 @@ impl PackConfig {
         if self.box_.size.iter().any(|&v| v <= 0.0) {
             return Err(PackError::Invalid("box size must be positive".into()));
         }
-        if self.box_.shape.to_lowercase() != "orthorhombic" {
+        let shape = self.box_.shape.to_ascii_lowercase();
+        if shape != "orthorhombic" && shape != "cubic" {
             return Err(PackError::Invalid(
-                "only orthorhombic boxes are supported".into(),
+                "only orthorhombic boxes are supported (cubic is accepted as an alias)".into(),
             ));
         }
         if let Some(sidemax) = self.sidemax {

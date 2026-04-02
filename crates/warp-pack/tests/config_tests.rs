@@ -92,6 +92,26 @@ fn json_default_uses_packmol_gencan_defaults() {
 }
 
 #[test]
+fn json_defaults_enable_box_sides_and_accept_cubic_alias() {
+    use serde_json::json;
+
+    let pdb_path = temp_path("json_cubic_defaults.pdb");
+    write_text(
+        &pdb_path,
+        "ATOM      1  H   MOL A   1       0.000   0.000   0.000           H\nEND\n",
+    );
+    let cfg: warp_pack::config::PackConfig = serde_json::from_value(json!({
+        "box": { "size": [10.0, 10.0, 10.0], "shape": "cubic" },
+        "structures": [{ "path": pdb_path.to_string_lossy(), "count": 1 }]
+    }))
+    .expect("deserialize config");
+    let norm = cfg.normalized().expect("normalized config");
+    assert!(norm.add_box_sides);
+    assert_eq!(norm.box_.shape, "orthorhombic");
+    let _ = fs::remove_file(&pdb_path);
+}
+
+#[test]
 fn validate_rejects_bad_box() {
     let pdb_path = temp_path("bad_box.pdb");
     write_text(

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use schemars::{schema_for, JsonSchema};
@@ -39,7 +40,6 @@ const SUPPORTED_COMPONENT_KINDS: &[&str] = &[
     "assembly",
 ];
 const SUPPORTED_SOLVENT_MODELS: &[&str] = &["spce", "tip3p", "tip4pew", "tip5p"];
-const SUPPORTED_ION_SPECIES: &[&str] = &["Na+", "Cl-", "K+"];
 const SUPPORTED_MORPHOLOGY_MODES: &[&str] = &[
     "single_chain_solution",
     "amorphous_bulk",
@@ -65,8 +65,78 @@ const SUPPORTED_OUTPUT_FORMATS: &[&str] = &[
 
 const AVOGADRO: f64 = 6.022_140_76e23;
 const ANGSTROM3_TO_LITER: f64 = 1.0e-27;
+const ANGSTROM3_TO_CM3: f64 = 1.0e-24;
+const AMU_TO_GRAM: f64 = 1.660_539_066_60e-24;
 const WATER_MOLARITY: f64 = 55.5;
+const WATER_MASS_AMU: f64 = 18.015_28;
 const DEFAULT_PACKING_FRACTION: f64 = 0.80;
+const ION_REGISTRY_ENV: &str = "WARP_MD_ION_REGISTRY";
+const SALT_REGISTRY_ENV: &str = "WARP_MD_SALT_REGISTRY";
+
+#[derive(Clone, Debug, Deserialize)]
+struct IonRegistryEntry {
+    species: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    template: String,
+    formula_symbol: String,
+    charge_e: i32,
+    mass_amu: f64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct IonRegistryFile {
+    ions: Vec<IonRegistryEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SaltRegistryEntry {
+    name: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    formula: String,
+    species: BTreeMap<String, usize>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SaltRegistryFile {
+    salts: Vec<SaltRegistryEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct IonSpeciesInfo {
+    species: String,
+    template: String,
+    formula_symbol: String,
+    charge_e: i32,
+    mass_amu: f64,
+}
+
+#[derive(Debug)]
+struct IonRegistry {
+    supported_species: Vec<String>,
+    by_lookup: BTreeMap<String, IonSpeciesInfo>,
+    by_symbol: BTreeMap<String, String>,
+    ambiguous_symbols: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug)]
+struct NormalizedSaltSpec {
+    name: Option<String>,
+    formula: Option<String>,
+    species: BTreeMap<String, usize>,
+    molar: Option<f32>,
+}
+
+#[derive(Debug)]
+struct SaltRegistry {
+    supported_names: Vec<String>,
+    by_lookup: BTreeMap<String, NormalizedSaltSpec>,
+    by_formula: BTreeMap<String, NormalizedSaltSpec>,
+}
+
+static ION_REGISTRY: OnceLock<Result<IonRegistry, String>> = OnceLock::new();
+static SALT_REGISTRY: OnceLock<Result<SaltRegistry, String>> = OnceLock::new();
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactRef {
@@ -142,26 +212,65 @@ pub struct SolventRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NeutralizeConfig {
+    #[serde(default = "default_true_bool")]
+    #[schemars(default = "default_true_bool")]
+    pub enabled: bool,
+    #[serde(default, rename = "with")]
+    #[schemars(rename = "with")]
+    pub with_ion: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum NeutralizeRequest {
+    Bool(bool),
+    Config(NeutralizeConfig),
+}
+
+impl Default for NeutralizeRequest {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SaltRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub formula: Option<String>,
+    #[serde(default)]
+    pub species: Option<BTreeMap<String, usize>>,
+    #[serde(default)]
+    pub molar: Option<f32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct IonRequest {
     #[serde(default)]
-    pub neutralize: bool,
+    pub neutralize: NeutralizeRequest,
     #[serde(default)]
+    pub salt: Option<SaltRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
     pub salt_molar: Option<f32>,
-    #[serde(default = "default_na")]
-    #[schemars(default = "default_na")]
-    pub cation: String,
-    #[serde(default = "default_cl")]
-    #[schemars(default = "default_cl")]
-    pub anion: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub cation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub anion: Option<String>,
 }
 
 impl Default for IonRequest {
     fn default() -> Self {
         Self {
-            neutralize: false,
+            neutralize: NeutralizeRequest::default(),
+            salt: None,
             salt_molar: None,
-            cation: default_na(),
-            anion: default_cl(),
+            cation: None,
+            anion: None,
         }
     }
 }
@@ -412,6 +521,10 @@ fn default_cubic() -> String {
 
 fn default_none() -> String {
     "none".to_string()
+}
+
+fn default_true_bool() -> bool {
+    true
 }
 
 fn default_write_conect() -> bool {
@@ -850,24 +963,592 @@ fn resolved_md_package_path(outputs: &OutputRequest) -> String {
         .unwrap_or_else(|| default_md_package_path(&outputs.manifest))
 }
 
-fn water_template_path(model: &str) -> String {
+fn pack_data_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../python/warp_md/pack/data")
+}
+
+fn water_template_path(model: &str) -> String {
+    pack_data_dir()
         .join(format!("{model}.pdb"))
         .to_string_lossy()
         .to_string()
 }
 
-fn ion_template_path(species: &str) -> String {
-    let stem = species
+fn default_ion_registry_path() -> PathBuf {
+    pack_data_dir().join("ions.json")
+}
+
+fn default_salt_registry_path() -> PathBuf {
+    pack_data_dir().join("salts.json")
+}
+
+fn overlay_ion_registry_path() -> Option<PathBuf> {
+    std::env::var_os(ION_REGISTRY_ENV).map(PathBuf::from)
+}
+
+fn overlay_salt_registry_path() -> Option<PathBuf> {
+    std::env::var_os(SALT_REGISTRY_ENV).map(PathBuf::from)
+}
+
+fn normalize_ion_species_key(species: &str) -> String {
+    species.trim().to_ascii_lowercase()
+}
+
+fn normalize_salt_name_key(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+fn normalize_salt_formula_key(formula: &str) -> String {
+    formula
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
         .to_ascii_lowercase()
-        .replace('+', "")
-        .replace('-', "");
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../python/warp_md/pack/data")
-        .join(format!("{stem}.pdb"))
-        .to_string_lossy()
-        .to_string()
+}
+
+fn parse_ion_registry_file(path: &Path) -> PackResult<Vec<IonRegistryEntry>> {
+    let text = fs::read_to_string(path).map_err(|err| {
+        PackError::Invalid(format!("failed to read ion registry '{}': {err}", path.display()))
+    })?;
+    let mut file: IonRegistryFile = serde_json::from_str(&text).map_err(|err| {
+        PackError::Invalid(format!(
+            "failed to parse ion registry '{}': {err}",
+            path.display()
+        ))
+    })?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    for entry in &mut file.ions {
+        let template_path = Path::new(&entry.template);
+        if template_path.is_relative() {
+            entry.template = base.join(template_path).to_string_lossy().to_string();
+        }
+    }
+    Ok(file.ions)
+}
+
+fn parse_salt_registry_file(path: &Path) -> PackResult<Vec<SaltRegistryEntry>> {
+    let text = fs::read_to_string(path).map_err(|err| {
+        PackError::Invalid(format!("failed to read salt registry '{}': {err}", path.display()))
+    })?;
+    let file: SaltRegistryFile = serde_json::from_str(&text).map_err(|err| {
+        PackError::Invalid(format!(
+            "failed to parse salt registry '{}': {err}",
+            path.display()
+        ))
+    })?;
+    Ok(file.salts)
+}
+
+fn load_ion_registry() -> PackResult<IonRegistry> {
+    let mut entries = parse_ion_registry_file(&default_ion_registry_path())?;
+    if let Some(path) = overlay_ion_registry_path() {
+        entries.extend(parse_ion_registry_file(&path)?);
+    }
+
+    let mut canonical_entries = BTreeMap::new();
+    for entry in entries {
+        let canonical_key = normalize_ion_species_key(&entry.species);
+        if canonical_key.is_empty() {
+            return Err(PackError::Invalid(
+                "ion registry species names cannot be empty".into(),
+            ));
+        }
+        canonical_entries.insert(canonical_key, entry);
+    }
+
+    let mut supported_species = Vec::new();
+    let mut by_lookup: BTreeMap<String, IonSpeciesInfo> = BTreeMap::new();
+    let mut by_symbol: BTreeMap<String, String> = BTreeMap::new();
+    let mut ambiguous_symbols = BTreeSet::new();
+
+    for entry in canonical_entries.into_values() {
+        if entry.template.trim().is_empty() {
+            return Err(PackError::Invalid(format!(
+                "ion registry entry '{}' is missing template",
+                entry.species
+            )));
+        }
+        if entry.formula_symbol.trim().is_empty() {
+            return Err(PackError::Invalid(format!(
+                "ion registry entry '{}' is missing formula_symbol",
+                entry.species
+            )));
+        }
+        let info = IonSpeciesInfo {
+            species: entry.species.clone(),
+            template: entry.template.clone(),
+            formula_symbol: entry.formula_symbol.clone(),
+            charge_e: entry.charge_e,
+            mass_amu: entry.mass_amu,
+        };
+        supported_species.push(info.species.clone());
+        let mut lookups = entry.aliases;
+        lookups.push(info.species.clone());
+        for alias in lookups {
+            let key = normalize_ion_species_key(&alias);
+            if key.is_empty() {
+                return Err(PackError::Invalid(format!(
+                    "ion registry entry '{}' has an empty alias",
+                    info.species
+                )));
+            }
+            match by_lookup.get(&key) {
+                Some(existing) if existing.species != info.species => {
+                    return Err(PackError::Invalid(format!(
+                        "ion registry alias '{}' conflicts between '{}' and '{}'",
+                        alias, existing.species, info.species
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    by_lookup.insert(key, info.clone());
+                }
+            }
+        }
+        if !ambiguous_symbols.contains(&info.formula_symbol) {
+            if let Some(existing_species) =
+                by_symbol.insert(info.formula_symbol.clone(), info.species.clone())
+            {
+                if existing_species != info.species {
+                    by_symbol.remove(&info.formula_symbol);
+                    ambiguous_symbols.insert(info.formula_symbol.clone());
+                }
+            }
+        }
+    }
+
+    Ok(IonRegistry {
+        supported_species,
+        by_lookup,
+        by_symbol,
+        ambiguous_symbols,
+    })
+}
+
+fn ion_registry() -> PackResult<&'static IonRegistry> {
+    match ION_REGISTRY.get_or_init(|| load_ion_registry().map_err(|err| err.to_string())) {
+        Ok(registry) => Ok(registry),
+        Err(message) => Err(PackError::Invalid(message.clone())),
+    }
+}
+
+fn supported_ion_species() -> PackResult<Vec<String>> {
+    Ok(ion_registry()?.supported_species.clone())
+}
+
+fn load_salt_registry() -> PackResult<SaltRegistry> {
+    let mut entries = parse_salt_registry_file(&default_salt_registry_path())?;
+    if let Some(path) = overlay_salt_registry_path() {
+        entries.extend(parse_salt_registry_file(&path)?);
+    }
+
+    let mut canonical_entries = BTreeMap::new();
+    for entry in entries {
+        let canonical_key = normalize_salt_name_key(&entry.name);
+        if canonical_key.is_empty() {
+            return Err(PackError::Invalid(
+                "salt registry names cannot be empty".into(),
+            ));
+        }
+        canonical_entries.insert(canonical_key, entry);
+    }
+
+    let mut supported_names = Vec::new();
+    let mut by_lookup: BTreeMap<String, NormalizedSaltSpec> = BTreeMap::new();
+    let mut by_formula: BTreeMap<String, NormalizedSaltSpec> = BTreeMap::new();
+
+    for entry in canonical_entries.into_values() {
+        if entry.formula.trim().is_empty() {
+            return Err(PackError::Invalid(format!(
+                "salt registry entry '{}' is missing formula",
+                entry.name
+            )));
+        }
+        validate_salt_species_map(&entry.species)?;
+        let spec = NormalizedSaltSpec {
+            name: Some(entry.name.clone()),
+            formula: Some(entry.formula.clone()),
+            species: entry.species.clone(),
+            molar: None,
+        };
+        supported_names.push(entry.name.clone());
+        let mut lookups = entry.aliases;
+        lookups.push(entry.name.clone());
+        for alias in lookups {
+            let key = normalize_salt_name_key(&alias);
+            if key.is_empty() {
+                return Err(PackError::Invalid(format!(
+                    "salt registry entry '{}' has an empty alias",
+                    entry.name
+                )));
+            }
+            match by_lookup.get(&key) {
+                Some(existing) if existing.name != spec.name => {
+                    return Err(PackError::Invalid(format!(
+                        "salt registry alias '{}' conflicts between '{}' and '{}'",
+                        alias,
+                        existing.name.clone().unwrap_or_default(),
+                        entry.name
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    by_lookup.insert(key, spec.clone());
+                }
+            }
+        }
+        by_formula.insert(normalize_salt_formula_key(&entry.formula), spec);
+    }
+
+    Ok(SaltRegistry {
+        supported_names,
+        by_lookup,
+        by_formula,
+    })
+}
+
+fn salt_registry() -> PackResult<&'static SaltRegistry> {
+    match SALT_REGISTRY.get_or_init(|| load_salt_registry().map_err(|err| err.to_string())) {
+        Ok(registry) => Ok(registry),
+        Err(message) => Err(PackError::Invalid(message.clone())),
+    }
+}
+
+fn supported_salt_names() -> PackResult<Vec<String>> {
+    Ok(salt_registry()?.supported_names.clone())
+}
+
+fn named_salt_spec(name: &str) -> PackResult<NormalizedSaltSpec> {
+    salt_registry()?
+        .by_lookup
+        .get(&normalize_salt_name_key(name))
+        .cloned()
+        .ok_or_else(|| PackError::Invalid(format!("unsupported salt.name '{}'", name)))
+}
+
+fn catalog_salt_spec_for_formula(formula: &str) -> PackResult<Option<NormalizedSaltSpec>> {
+    Ok(salt_registry()?
+        .by_formula
+        .get(&normalize_salt_formula_key(formula))
+        .cloned())
+}
+
+fn ion_species_info(species: &str) -> Option<IonSpeciesInfo> {
+    let registry = ion_registry().ok()?;
+    registry
+        .by_lookup
+        .get(&normalize_ion_species_key(species))
+        .cloned()
+}
+
+fn ion_species_for_formula_symbol(symbol: &str) -> PackResult<String> {
+    let registry = ion_registry()?;
+    if registry.ambiguous_symbols.contains(symbol) {
+        return Err(PackError::Invalid(format!(
+            "salt.formula symbol '{}' is ambiguous; use salt.species instead",
+            symbol
+        )));
+    }
+    registry
+        .by_symbol
+        .get(symbol)
+        .cloned()
+        .ok_or_else(|| {
+            PackError::Invalid(format!("unsupported salt.formula symbol '{}'", symbol))
+        })
+}
+
+fn validate_salt_species_map(species: &BTreeMap<String, usize>) -> PackResult<()> {
+    if species.is_empty() {
+        return Err(PackError::Invalid(
+            "salt.species must include at least one ion species".into(),
+        ));
+    }
+    let mut net_charge = 0i32;
+    let mut has_positive = false;
+    let mut has_negative = false;
+    for (name, count) in species {
+        if *count == 0 {
+            return Err(PackError::Invalid(
+                "salt.species counts must be > 0".into(),
+            ));
+        }
+        let info = ion_species_info(name)
+            .ok_or_else(|| PackError::Invalid(format!("unsupported ion species '{name}'")))?;
+        net_charge += info.charge_e * *count as i32;
+        has_positive |= info.charge_e > 0;
+        has_negative |= info.charge_e < 0;
+    }
+    if !has_positive || !has_negative {
+        return Err(PackError::Invalid(
+            "salt must include at least one cation and one anion".into(),
+        ));
+    }
+    if net_charge != 0 {
+        return Err(PackError::Invalid(
+            "salt formula/species must be charge neutral".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_salt_formula(formula: &str) -> PackResult<BTreeMap<String, usize>> {
+    if let Some(spec) = catalog_salt_spec_for_formula(formula)? {
+        return Ok(spec.species);
+    }
+    let compact = formula
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    if compact.is_empty() {
+        return Err(PackError::Invalid("salt.formula cannot be empty".into()));
+    }
+    let chars = compact.chars().collect::<Vec<_>>();
+    let mut idx = 0usize;
+    let mut species = BTreeMap::new();
+    while idx < chars.len() {
+        let first = chars[idx];
+        if !first.is_ascii_uppercase() {
+            return Err(PackError::Invalid(format!(
+                "invalid salt.formula '{}'",
+                formula
+            )));
+        }
+        let mut symbol = String::from(first);
+        idx += 1;
+        while idx < chars.len() && chars[idx].is_ascii_lowercase() {
+            symbol.push(chars[idx]);
+            idx += 1;
+        }
+        let mut digits = String::new();
+        while idx < chars.len() && chars[idx].is_ascii_digit() {
+            digits.push(chars[idx]);
+            idx += 1;
+        }
+        let count = if digits.is_empty() {
+            1usize
+        } else {
+            digits.parse::<usize>().map_err(|_| {
+                PackError::Invalid(format!("invalid count in salt.formula '{}'", formula))
+            })?
+        };
+        let species_name = ion_species_for_formula_symbol(&symbol).map_err(|err| {
+            PackError::Invalid(format!("{err} in '{}'", formula))
+        })?;
+        *species.entry(species_name.to_string()).or_insert(0) += count;
+    }
+    validate_salt_species_map(&species)?;
+    Ok(species)
+}
+
+fn canonical_salt_formula(species: &BTreeMap<String, usize>) -> PackResult<String> {
+    validate_salt_species_map(species)?;
+    let mut positive = Vec::new();
+    let mut negative = Vec::new();
+    for (name, count) in species {
+        let info = ion_species_info(name)
+            .ok_or_else(|| PackError::Invalid(format!("unsupported ion species '{name}'")))?;
+        let token = if *count == 1 {
+            info.formula_symbol.to_string()
+        } else {
+            format!("{}{}", info.formula_symbol, count)
+        };
+        if info.charge_e > 0 {
+            positive.push(token);
+        } else {
+            negative.push(token);
+        }
+    }
+    positive.sort();
+    negative.sort();
+    Ok(positive.into_iter().chain(negative).collect::<String>())
+}
+
+fn salt_stoichiometry(cation: &str, anion: &str) -> PackResult<BTreeMap<String, usize>> {
+    let cation_info = ion_species_info(cation)
+        .ok_or_else(|| PackError::Invalid(format!("unsupported cation '{cation}'")))?;
+    let anion_info = ion_species_info(anion)
+        .ok_or_else(|| PackError::Invalid(format!("unsupported anion '{anion}'")))?;
+    if cation_info.charge_e <= 0 {
+        return Err(PackError::Invalid(format!(
+            "cation '{cation}' must have positive charge"
+        )));
+    }
+    if anion_info.charge_e >= 0 {
+        return Err(PackError::Invalid(format!(
+            "anion '{anion}' must have negative charge"
+        )));
+    }
+    let cation_valence = cation_info.charge_e.unsigned_abs() as usize;
+    let anion_valence = anion_info.charge_e.unsigned_abs() as usize;
+    let gcd = gcd_usize(cation_valence, anion_valence);
+    let lcm = (cation_valence / gcd) * anion_valence;
+    let mut counts = BTreeMap::new();
+    counts.insert(cation.to_string(), lcm / cation_valence);
+    counts.insert(anion.to_string(), lcm / anion_valence);
+    Ok(counts)
+}
+
+impl NeutralizeRequest {
+    fn enabled(&self) -> bool {
+        match self {
+            Self::Bool(value) => *value,
+            Self::Config(config) => config.enabled,
+        }
+    }
+
+    fn preferred_ion(&self) -> Option<&str> {
+        match self {
+            Self::Bool(_) => None,
+            Self::Config(config) => config.with_ion.as_deref(),
+        }
+    }
+}
+
+impl IonRequest {
+    fn legacy_cation(&self) -> String {
+        self.cation.clone().unwrap_or_else(default_na)
+    }
+
+    fn legacy_anion(&self) -> String {
+        self.anion.clone().unwrap_or_else(default_cl)
+    }
+
+    fn uses_legacy_salt_fields(&self) -> bool {
+        self.salt_molar.is_some() || self.cation.is_some() || self.anion.is_some()
+    }
+
+    fn normalized_salt(&self) -> PackResult<Option<NormalizedSaltSpec>> {
+        if let Some(salt) = &self.salt {
+            if self.uses_legacy_salt_fields() {
+                return Err(PackError::Invalid(
+                    "use either ions.salt or legacy ions.salt_molar/cation/anion, not both"
+                        .into(),
+                ));
+            }
+            let populated = [
+                salt.name.as_ref().map(|_| "name"),
+                salt.formula.as_ref().map(|_| "formula"),
+                salt.species.as_ref().map(|_| "species"),
+            ]
+            .into_iter()
+            .flatten()
+            .count();
+            if populated > 1 {
+                return Err(PackError::Invalid(
+                    "ions.salt accepts exactly one of name, formula, or species".into(),
+                ));
+            }
+            let mut normalized = match (&salt.name, &salt.formula, &salt.species) {
+                (None, None, None) => {
+                    return Err(PackError::Invalid(
+                        "ions.salt requires name, formula, or species".into(),
+                    ))
+                }
+                (Some(name), None, None) => named_salt_spec(name)?,
+                (None, Some(formula), None) => {
+                    if let Some(spec) = catalog_salt_spec_for_formula(formula)? {
+                        spec
+                    } else {
+                        NormalizedSaltSpec {
+                            name: None,
+                            formula: Some(formula.clone()),
+                            species: parse_salt_formula(formula)?,
+                            molar: None,
+                        }
+                    }
+                }
+                (None, None, Some(species)) => {
+                    validate_salt_species_map(species)?;
+                    NormalizedSaltSpec {
+                        name: None,
+                        formula: Some(canonical_salt_formula(species)?),
+                        species: species.clone(),
+                        molar: None,
+                    }
+                }
+                _ => unreachable!(),
+            };
+            normalized.molar = salt.molar;
+            if normalized.formula.is_none() {
+                normalized.formula = Some(canonical_salt_formula(&normalized.species)?);
+            }
+            Ok(Some(normalized))
+        } else if self.salt_molar.is_some() {
+            let cation = self.legacy_cation();
+            let anion = self.legacy_anion();
+            Ok(Some(NormalizedSaltSpec {
+                name: None,
+                formula: Some(canonical_salt_formula(&salt_stoichiometry(&cation, &anion)?)?),
+                species: salt_stoichiometry(&cation, &anion)?,
+                molar: self.salt_molar,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn counterion_for_charge(&self, need_positive: bool) -> PackResult<String> {
+        if let Some(preferred) = self.neutralize.preferred_ion() {
+            let info = ion_species_info(preferred).ok_or_else(|| {
+                PackError::Invalid(format!(
+                    "unsupported neutralize.with ion species '{}'",
+                    preferred
+                ))
+            })?;
+            if need_positive && info.charge_e <= 0 {
+                return Err(PackError::Invalid(
+                    "neutralize.with must be a cation for negatively charged systems".into(),
+                ));
+            }
+            if !need_positive && info.charge_e >= 0 {
+                return Err(PackError::Invalid(
+                    "neutralize.with must be an anion for positively charged systems".into(),
+                ));
+            }
+            return Ok(preferred.to_string());
+        }
+        if let Some(salt) = self.normalized_salt()? {
+            if let Some((species, _)) = salt.species.iter().find(|(species, _)| {
+                ion_species_info(species)
+                    .map(|info| {
+                        (need_positive && info.charge_e > 0)
+                            || (!need_positive && info.charge_e < 0)
+                    })
+                    .unwrap_or(false)
+            }) {
+                return Ok(species.clone());
+            }
+        }
+        Ok(if need_positive {
+            self.legacy_cation()
+        } else {
+            self.legacy_anion()
+        })
+    }
+}
+
+fn gcd_usize(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a.max(1)
+}
+
+fn ion_template_path(species: &str) -> String {
+    let template = ion_species_info(species)
+        .map(|info| info.template)
+        .unwrap_or_else(|| {
+            pack_data_dir()
+                .join(format!("{}.pdb", normalize_ion_species_key(species)))
+                .to_string_lossy()
+                .to_string()
+        });
+    template
 }
 
 fn parse_request_text(text: &str) -> Result<BuildRequest, ErrorDetail> {
@@ -1023,21 +1704,40 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
         )),
     }
 
-    if !SUPPORTED_ION_SPECIES.contains(&req.environment.ions.cation.as_str()) {
-        errors.push(error_detail(
-            "E_CONFIG_VALIDATION",
-            Some("/environment/ions/cation".into()),
-            format!("unsupported cation '{}'", req.environment.ions.cation),
-        ));
+    if let Some(cation) = req.environment.ions.cation.as_deref() {
+        if ion_species_info(cation).is_none() {
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("/environment/ions/cation".into()),
+                format!("unsupported cation '{}'", cation),
+            ));
+        } else if ion_species_info(cation).map(|info| info.charge_e <= 0).unwrap_or(false) {
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("/environment/ions/cation".into()),
+                "cation must have positive charge",
+            ));
+        }
     }
-    if !SUPPORTED_ION_SPECIES.contains(&req.environment.ions.anion.as_str()) {
-        errors.push(error_detail(
-            "E_CONFIG_VALIDATION",
-            Some("/environment/ions/anion".into()),
-            format!("unsupported anion '{}'", req.environment.ions.anion),
-        ));
+    if let Some(anion) = req.environment.ions.anion.as_deref() {
+        if ion_species_info(anion).is_none() {
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("/environment/ions/anion".into()),
+                format!("unsupported anion '{}'", anion),
+            ));
+        } else if ion_species_info(anion).map(|info| info.charge_e >= 0).unwrap_or(false) {
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("/environment/ions/anion".into()),
+                "anion must have negative charge",
+            ));
+        }
     }
-    if req.environment.ions.cation == req.environment.ions.anion {
+    if req.environment.ions.cation.is_some()
+        && req.environment.ions.anion.is_some()
+        && req.environment.ions.cation == req.environment.ions.anion
+    {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
             Some("/environment/ions/anion".into()),
@@ -1049,6 +1749,31 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
             "E_CONFIG_VALIDATION",
             Some("/environment/ions/salt_molar".into()),
             "salt_molar must be >= 0",
+        ));
+    }
+    if let Some(salt) = req.environment.ions.salt.as_ref() {
+        if salt.molar.unwrap_or(0.0) < 0.0 {
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("/environment/ions/salt/molar".into()),
+                "salt.molar must be >= 0",
+            ));
+        }
+    }
+    if let Some(with_ion) = req.environment.ions.neutralize.preferred_ion() {
+        if ion_species_info(with_ion).is_none() {
+            errors.push(error_detail(
+                "E_CONFIG_VALIDATION",
+                Some("/environment/ions/neutralize/with".into()),
+                format!("unsupported neutralize.with ion species '{}'", with_ion),
+            ));
+        }
+    }
+    if let Err(err) = req.environment.ions.normalized_salt() {
+        errors.push(error_detail(
+            "E_CONFIG_VALIDATION",
+            Some("/environment/ions/salt".into()),
+            err.to_string(),
         ));
     }
 
@@ -1078,11 +1803,13 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
                 "target_density_g_cm3 is only executable for bulk morphologies",
             ));
         }
-        if req.environment.solvent.mode != "none" {
+        if req.environment.solvent.mode != "none"
+            && req.environment.box_spec.size_angstrom.is_none()
+        {
             errors.push(error_detail(
                 "E_UNSUPPORTED_FEATURE",
                 Some("/environment/solvent/mode".into()),
-                "target_density_g_cm3 currently requires solvent.mode = none",
+                "target_density_g_cm3 with explicit solvent currently requires fixed box size_angstrom",
             ));
         }
     }
@@ -1178,14 +1905,14 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
                             ));
                         }
                     }
-                    if req.environment.ions.neutralize
+                    if req.environment.ions.neutralize.enabled()
                         && artifact.charge_manifest.is_none()
                         && artifact.topology.is_none()
                     {
                         errors.push(error_detail(
                             "E_CONFIG_VALIDATION",
                             Some(format!("components[{idx}].source.artifact.charge_manifest")),
-                            "neutralize=true requires component charge_manifest or topology",
+                            "neutralize requires component charge_manifest or topology",
                         ));
                     }
                     if req.environment.morphology.mode == "backbone_aligned_bulk"
@@ -1201,7 +1928,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
                 ComponentSource::PolymerBuild { polymer_build } => {
                     match load_polymer_build_handoff(polymer_build) {
                         Ok(loaded) => {
-                            if req.environment.ions.neutralize
+                            if req.environment.ions.neutralize.enabled()
                                 && loaded.charge_manifest_path.is_none()
                                 && loaded.topology.is_none()
                             {
@@ -1210,7 +1937,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
                                     Some(format!(
                                         "components[{idx}].source.polymer_build.charge_manifest"
                                     )),
-                                    "neutralize=true requires polymer_build charge_manifest or topology",
+                                    "neutralize requires polymer_build charge_manifest or topology",
                                 ));
                             }
                         }
@@ -1250,14 +1977,14 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
                 ));
             }
         }
-        if req.environment.ions.neutralize
+        if req.environment.ions.neutralize.enabled()
             && solute.charge_manifest.is_none()
             && solute.topology.is_none()
         {
             errors.push(error_detail(
                 "E_CONFIG_VALIDATION",
                 Some("/solute/charge_manifest".into()),
-                "neutralize=true requires solute.charge_manifest or solute.topology",
+                "neutralize requires solute.charge_manifest or solute.topology",
             ));
         }
         if req.environment.morphology.mode == "backbone_aligned_bulk"
@@ -1275,14 +2002,14 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
         total_component_instances += 1;
         match load_polymer_build_handoff(polymer_build) {
             Ok(loaded) => {
-                if req.environment.ions.neutralize
+                if req.environment.ions.neutralize.enabled()
                     && loaded.charge_manifest_path.is_none()
                     && loaded.topology.is_none()
                 {
                     errors.push(error_detail(
                         "E_CONFIG_VALIDATION",
                         Some("/polymer_build/charge_manifest".into()),
-                        "neutralize=true requires polymer_build charge_manifest or topology",
+                        "neutralize requires polymer_build charge_manifest or topology",
                     ));
                 }
             }
@@ -2358,7 +3085,33 @@ fn estimate_solvent_count(box_size: [f32; 3], occupied_volume: f64) -> usize {
     estimate.round().max(0.0) as usize
 }
 
-fn estimate_salt_pairs(box_size: [f32; 3], salt_molar: Option<f32>) -> usize {
+fn total_ion_mass_amu(ion_counts: &BTreeMap<String, usize>) -> PackResult<f64> {
+    ion_counts.iter().try_fold(0.0, |total, (species, count)| {
+        let info = ion_species_info(species).ok_or_else(|| {
+            PackError::Invalid(format!("unsupported ion species '{species}'"))
+        })?;
+        Ok(total + info.mass_amu * *count as f64)
+    })
+}
+
+fn estimate_solvent_count_for_density(
+    box_size: [f32; 3],
+    target_density_g_cm3: f32,
+    dry_mass_amu: f64,
+    ion_counts: &BTreeMap<String, usize>,
+) -> PackResult<usize> {
+    let target_mass_amu = target_density_g_cm3 as f64
+        * box_size[0] as f64
+        * box_size[1] as f64
+        * box_size[2] as f64
+        * ANGSTROM3_TO_CM3
+        / AMU_TO_GRAM;
+    let ion_mass_amu = total_ion_mass_amu(ion_counts)?;
+    let solvent_mass_amu = (target_mass_amu - dry_mass_amu - ion_mass_amu).max(0.0);
+    Ok((solvent_mass_amu / WATER_MASS_AMU).round().max(0.0) as usize)
+}
+
+fn estimate_salt_formula_units(box_size: [f32; 3], salt_molar: Option<f32>) -> usize {
     let Some(molar) = salt_molar else {
         return 0;
     };
@@ -2712,8 +3465,34 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
     }
 
     let aggregated_context = merge_solute_contexts(&components)?;
+    let explicit_box_size = req
+        .environment
+        .box_spec
+        .size_angstrom
+        .as_ref()
+        .map(value_to_triplet)
+        .transpose()?;
+    let density_sets_solvent_fill = req.environment.solvent.mode == "explicit"
+        && req.environment.morphology.target_density_g_cm3.is_some()
+        && explicit_box_size.is_some();
     let (box_size, box_decisions) = if req.environment.morphology.mode == "single_chain_solution" {
         box_from_positions(&components[0].context.positions, &req.environment.box_spec)?
+    } else if density_sets_solvent_fill {
+        let mut resolved = explicit_box_size.expect("checked explicit box size");
+        if req.environment.box_spec.shape == "cubic" {
+            let side = resolved[0].max(resolved[1]).max(resolved[2]);
+            resolved = [side, side, side];
+        }
+        (
+            resolved,
+            json!({
+                "box_policy": req.environment.box_spec.mode,
+                "box_shape": req.environment.box_spec.shape,
+                "resolved_box_size_angstrom": resolved,
+                "target_density_g_cm3": req.environment.morphology.target_density_g_cm3,
+                "density_basis": "fixed_box_with_explicit_solvent_fill",
+            }),
+        )
     } else if let Some(target_density) = req.environment.morphology.target_density_g_cm3 {
         let resolved = density_target_box_size(
             &req.environment.box_spec,
@@ -2870,12 +3649,107 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
         )
     })?;
 
+    let mut charge_manifest_paths = Vec::new();
+    let mut charge_source_kind_set = BTreeSet::new();
+    let mut component_charge_resolution = Vec::new();
+    let mut net_charge_before_neutralization = None;
+    let mut neutralization_policy = "not_requested".to_string();
+    for component in &components {
+        if let Some(path) = &component.charge_manifest_path {
+            charge_manifest_paths.push(path.clone());
+        }
+        for kind in &component.charge_source_kinds {
+            charge_source_kind_set.insert(kind.clone());
+        }
+        component_charge_resolution.push(json!({
+            "name": component.name,
+            "count": component.count,
+            "source_kind": component.source_kind,
+            "charge_manifest": component.charge_manifest_path,
+            "topology": component.topology,
+            "per_instance_net_charge_e": component.per_instance_net_charge,
+            "total_component_charge_e": component.per_instance_net_charge.map(|value| value * component.count as f32),
+            "charge_source": component.charge_source,
+            "charge_source_kinds": component.charge_source_kinds,
+        }));
+    }
+    if req.environment.ions.neutralize.enabled() {
+        let mut total_charge = 0.0f32;
+        for component in &components {
+            let net_charge = component.per_instance_net_charge.ok_or_else(|| {
+                PackError::Invalid(format!(
+                    "neutralize requires charge data for component '{}'",
+                    component.name
+                ))
+            })?;
+            total_charge += net_charge * component.count as f32;
+        }
+        net_charge_before_neutralization = Some(total_charge);
+        neutralization_policy =
+            if components.len() == 1 && total_component_instances(&components) == 1 {
+                components[0]
+                    .charge_source
+                    .clone()
+                    .unwrap_or_else(|| "component_sum".to_string())
+            } else {
+                "component_sum".to_string()
+            };
+    }
+
+    let normalized_salt = req.environment.ions.normalized_salt()?;
+    let salt_stoich = normalized_salt
+        .as_ref()
+        .map(|salt| salt.species.clone())
+        .unwrap_or_default();
+    let salt_pair_count = estimate_salt_formula_units(
+        box_size,
+        normalized_salt.as_ref().and_then(|salt| salt.molar),
+    );
+    let mut ion_counts = BTreeMap::new();
+    for (species, per_formula_unit) in &salt_stoich {
+        ion_counts.insert(species.clone(), per_formula_unit * salt_pair_count);
+    }
+
+    if req.environment.ions.neutralize.enabled() {
+        if let Some(net_charge) = net_charge_before_neutralization {
+            if net_charge < 0.0 {
+                let counterion = req.environment.ions.counterion_for_charge(true)?;
+                let cation_valence = ion_species_info(&counterion)
+                    .map(|info| info.charge_e.unsigned_abs() as f32)
+                    .unwrap_or(1.0);
+                let neutralizers = (net_charge.abs() / cation_valence).ceil() as usize;
+                *ion_counts
+                    .entry(counterion)
+                    .or_insert(0) += neutralizers;
+            } else if net_charge > 0.0 {
+                let counterion = req.environment.ions.counterion_for_charge(false)?;
+                let anion_valence = ion_species_info(&counterion)
+                    .map(|info| info.charge_e.unsigned_abs() as f32)
+                    .unwrap_or(1.0);
+                let neutralizers = (net_charge.abs() / anion_valence).ceil() as usize;
+                *ion_counts
+                    .entry(counterion)
+                    .or_insert(0) += neutralizers;
+            }
+        }
+    }
+
     let mut water_count = 0usize;
     if req.environment.solvent.mode == "explicit" {
         let model = req.environment.solvent.model.as_deref().ok_or_else(|| {
             PackError::Invalid("explicit solvent mode requires solvent.model".into())
         })?;
-        water_count = estimate_solvent_count(box_size, occupied_volume);
+        water_count = if let Some(target_density) = req.environment.morphology.target_density_g_cm3
+        {
+            estimate_solvent_count_for_density(
+                box_size,
+                target_density,
+                aggregated_context.total_mass_amu,
+                &ion_counts,
+            )?
+        } else {
+            estimate_solvent_count(box_size, occupied_volume)
+        };
         if water_count > 0 {
             structures.push(StructureSpec {
                 path: water_template_path(model),
@@ -2909,73 +3783,6 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
                 atom_constraints: Vec::new(),
                 rot_bounds: None,
             });
-        }
-    }
-
-    let mut charge_manifest_paths = Vec::new();
-    let mut charge_source_kind_set = BTreeSet::new();
-    let mut component_charge_resolution = Vec::new();
-    let mut net_charge_before_neutralization = None;
-    let mut neutralization_policy = "not_requested".to_string();
-    for component in &components {
-        if let Some(path) = &component.charge_manifest_path {
-            charge_manifest_paths.push(path.clone());
-        }
-        for kind in &component.charge_source_kinds {
-            charge_source_kind_set.insert(kind.clone());
-        }
-        component_charge_resolution.push(json!({
-            "name": component.name,
-            "count": component.count,
-            "source_kind": component.source_kind,
-            "charge_manifest": component.charge_manifest_path,
-            "topology": component.topology,
-            "per_instance_net_charge_e": component.per_instance_net_charge,
-            "total_component_charge_e": component.per_instance_net_charge.map(|value| value * component.count as f32),
-            "charge_source": component.charge_source,
-            "charge_source_kinds": component.charge_source_kinds,
-        }));
-    }
-    if req.environment.ions.neutralize {
-        let mut total_charge = 0.0f32;
-        for component in &components {
-            let net_charge = component.per_instance_net_charge.ok_or_else(|| {
-                PackError::Invalid(format!(
-                    "neutralize=true requires charge data for component '{}'",
-                    component.name
-                ))
-            })?;
-            total_charge += net_charge * component.count as f32;
-        }
-        net_charge_before_neutralization = Some(total_charge);
-        neutralization_policy =
-            if components.len() == 1 && total_component_instances(&components) == 1 {
-                components[0]
-                    .charge_source
-                    .clone()
-                    .unwrap_or_else(|| "component_sum".to_string())
-            } else {
-                "component_sum".to_string()
-            };
-    }
-
-    let salt_pair_count = estimate_salt_pairs(box_size, req.environment.ions.salt_molar);
-    let mut ion_counts = BTreeMap::new();
-    ion_counts.insert(req.environment.ions.cation.clone(), salt_pair_count);
-    ion_counts.insert(req.environment.ions.anion.clone(), salt_pair_count);
-
-    if req.environment.ions.neutralize {
-        if let Some(net_charge) = net_charge_before_neutralization {
-            let neutralizers = net_charge.abs().ceil() as usize;
-            if net_charge < 0.0 {
-                *ion_counts
-                    .entry(req.environment.ions.cation.clone())
-                    .or_insert(0) += neutralizers;
-            } else if net_charge > 0.0 {
-                *ion_counts
-                    .entry(req.environment.ions.anion.clone())
-                    .or_insert(0) += neutralizers;
-            }
         }
     }
 
@@ -3027,7 +3834,7 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
         max_attempts: None,
         min_distance: None,
         filetype: None,
-        add_box_sides: false,
+        add_box_sides: true,
         add_box_sides_fix: None,
         add_amber_ter: false,
         amber_ter_preserve: false,
@@ -3160,10 +3967,23 @@ fn build_pack_config(req: &BuildRequest) -> PackResult<(PackConfig, TranslationM
                 },
                 "solvent_policy": req.environment.solvent,
                 "ion_policy": {
-                    "neutralize": req.environment.ions.neutralize,
-                    "salt_molar": req.environment.ions.salt_molar,
-                    "cation": req.environment.ions.cation,
-                    "anion": req.environment.ions.anion,
+                    "neutralize": req.environment.ions.neutralize.enabled(),
+                    "neutralize_with": req.environment.ions.neutralize.preferred_ion(),
+                    "legacy_pair": if req.environment.ions.cation.is_some() || req.environment.ions.anion.is_some() {
+                        Some(json!({
+                            "cation": req.environment.ions.legacy_cation(),
+                            "anion": req.environment.ions.legacy_anion(),
+                        }))
+                    } else {
+                        None
+                    },
+                    "salt": normalized_salt.as_ref().map(|salt| json!({
+                        "name": salt.name,
+                        "formula": salt.formula,
+                        "species": salt.species,
+                        "molar": salt.molar,
+                    })),
+                    "salt_stoichiometry": salt_stoich,
                     "salt_pair_count": salt_pair_count,
                     "net_charge_before_neutralization": net_charge_before_neutralization,
                     "neutralization_policy": neutralization_policy,
@@ -3190,9 +4010,12 @@ fn build_manifest(
     cfg: &PackConfig,
     metadata: &TranslationMetadata,
     total_atoms: usize,
+    coordinates_path: &str,
+    coordinates_format: &str,
     md_package_path: &str,
     md_package_digest: Option<String>,
 ) -> PackResult<Value> {
+    let normalized_salt = req.environment.ions.normalized_salt()?;
     let request_value =
         serde_json::to_value(req).map_err(|err| PackError::Parse(err.to_string()))?;
     let cfg_value = serde_json::to_value(cfg).map_err(|err| PackError::Parse(err.to_string()))?;
@@ -3224,7 +4047,7 @@ fn build_manifest(
         "build_metadata": build_metadata,
     });
     let artifact_digests = json!({
-        "coordinates": sha256_file(Path::new(&req.outputs.coordinates)).ok(),
+        "coordinates": sha256_file(Path::new(coordinates_path)).ok(),
         "md_package": md_package_digest,
         "component_inputs": component_input_digests,
     });
@@ -3297,7 +4120,9 @@ fn build_manifest(
         "ion_counts": metadata.ion_counts,
         "net_charge_before_neutralization": metadata.net_charge_before_neutralization,
         "neutralization_policy_applied": metadata.neutralization_policy,
-        "target_salt_concentration_molar": req.environment.ions.salt_molar,
+        "target_salt_name": normalized_salt.as_ref().and_then(|salt| salt.name.clone()),
+        "target_salt_concentration_molar": normalized_salt.as_ref().and_then(|salt| salt.molar),
+        "target_salt_formula": normalized_salt.as_ref().and_then(|salt| salt.formula.clone()),
         "achieved_salt_count": metadata.salt_pair_count,
         "achieved_salt_counts_by_species": metadata.ion_counts,
         "morphology_mode": req.environment.morphology.mode,
@@ -3308,8 +4133,8 @@ fn build_manifest(
         },
         "output_metadata": {
             "coordinates": {
-                "path": req.outputs.coordinates,
-                "format": resolved_output_format(&req.outputs),
+                "path": coordinates_path,
+                "format": coordinates_format,
                 "write_conect": req.outputs.write_conect,
             },
             "manifest": {
@@ -3325,10 +4150,10 @@ fn build_manifest(
         "artifact_digests": artifact_digests,
         "engine_decisions": engine_decisions,
         "outputs": {
-            "coordinates": req.outputs.coordinates,
+            "coordinates": coordinates_path,
             "manifest": req.outputs.manifest,
             "md_package": md_package_path,
-            "format": resolved_output_format(&req.outputs),
+            "format": coordinates_format,
             "write_conect": req.outputs.write_conect,
             "preserve_topology_graph": req.outputs.preserve_topology_graph,
         },
@@ -3345,6 +4170,8 @@ fn build_manifest(
 fn build_md_ready_package(
     req: &BuildRequest,
     metadata: &TranslationMetadata,
+    coordinates_path: &str,
+    coordinates_format: &str,
     md_package_path: &str,
 ) -> Value {
     let preserved_topology_graphs = if req.outputs.preserve_topology_graph {
@@ -3361,8 +4188,8 @@ fn build_md_ready_package(
         "schema_version": "warp-md.md-ready-package.v1",
         "run_id": req.run_id,
         "coordinates": {
-            "path": req.outputs.coordinates,
-            "format": resolved_output_format(&req.outputs),
+            "path": coordinates_path,
+            "format": coordinates_format,
             "write_conect": req.outputs.write_conect,
         },
         "pack_manifest": {
@@ -3379,7 +4206,7 @@ fn build_md_ready_package(
         "component_inventory": metadata.component_inventory,
         "md_engine_helpers": {
             "openmm": {
-                "coordinates": req.outputs.coordinates,
+                "coordinates": coordinates_path,
                 "pack_manifest": req.outputs.manifest,
                 "polymer_build_handoff": if req.outputs.preserve_topology_graph {
                     metadata.polymer_build_handoff.clone()
@@ -3398,6 +4225,7 @@ fn validate_warnings(req: &BuildRequest) -> PackResult<Vec<ErrorDetail>> {
 
 fn resolved_inputs(req: &BuildRequest) -> PackResult<Value> {
     let components = resolve_components(req)?;
+    let normalized_salt = req.environment.ions.normalized_salt()?;
     let total_instances = total_component_instances(&components);
     let graph_versions = components
         .iter()
@@ -3457,10 +4285,16 @@ fn resolved_inputs(req: &BuildRequest) -> PackResult<Value> {
         },
         "charge_source_kinds": charge_source_kinds.into_iter().collect::<Vec<_>>(),
         "neutralization_preconditions": {
-            "requested": req.environment.ions.neutralize,
-            "satisfied": !req.environment.ions.neutralize || missing_neutralization.is_empty(),
+            "requested": req.environment.ions.neutralize.enabled(),
+            "satisfied": !req.environment.ions.neutralize.enabled() || missing_neutralization.is_empty(),
             "missing_charge_components": missing_neutralization,
         },
+        "salt": normalized_salt.as_ref().map(|salt| json!({
+            "name": salt.name,
+            "formula": salt.formula,
+            "species": salt.species,
+            "molar": salt.molar,
+        })),
     }))
 }
 
@@ -3514,7 +4348,10 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             "environment": {
                 "box": {"mode": "padding", "padding_angstrom": 12.0, "shape": "cubic"},
                 "solvent": {"mode": "explicit", "model": "tip3p"},
-                "ions": {"neutralize": true, "salt_molar": 0.15, "cation": "Na+", "anion": "Cl-"},
+                "ions": {
+                    "neutralize": {"enabled": true},
+                    "salt": {"name": "nacl", "molar": 0.15}
+                },
                 "morphology": {"mode": "single_chain_solution"},
             },
             "outputs": {
@@ -3536,7 +4373,10 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             "environment": {
                 "box": {"mode": "padding", "padding_angstrom": 12.0, "shape": "cubic"},
                 "solvent": {"mode": "explicit", "model": "tip3p"},
-                "ions": {"neutralize": true, "salt_molar": 0.15, "cation": "Na+", "anion": "Cl-"},
+                "ions": {
+                    "neutralize": {"enabled": true},
+                    "salt": {"name": "nacl", "molar": 0.15}
+                },
                 "morphology": {"mode": "single_chain_solution"},
             },
             "outputs": {
@@ -3578,7 +4418,10 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             "environment": {
                 "box": {"mode": "fixed_size", "size_angstrom": [80.0, 80.0, 80.0], "shape": "orthorhombic"},
                 "solvent": {"mode": "none"},
-                "ions": {"neutralize": true, "salt_molar": 0.0, "cation": "Na+", "anion": "Cl-"},
+                "ions": {
+                    "neutralize": {"enabled": true},
+                    "salt": {"name": "nacl", "molar": 0.0}
+                },
                 "morphology": {"mode": "amorphous_bulk"},
             },
             "outputs": {
@@ -3608,7 +4451,10 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             "environment": {
                 "box": {"mode": "fixed_size", "size_angstrom": [80.0, 80.0, 120.0], "shape": "orthorhombic"},
                 "solvent": {"mode": "none"},
-                "ions": {"neutralize": true, "salt_molar": 0.0, "cation": "Na+", "anion": "Cl-"},
+                "ions": {
+                    "neutralize": {"enabled": true},
+                    "salt": {"name": "nacl", "molar": 0.0}
+                },
                 "morphology": {"mode": "backbone_aligned_bulk", "alignment_axis": "z"},
             },
             "outputs": {
@@ -3627,16 +4473,21 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
 }
 
 pub fn capabilities() -> Value {
+    let supported_ions = supported_ion_species().unwrap_or_default();
+    let supported_salts = supported_salt_names().unwrap_or_default();
     json!({
         "schema_version": AGENT_SCHEMA_VERSION,
         "supported_build_modes": SUPPORTED_BUILD_MODES,
         "supported_component_kinds": SUPPORTED_COMPONENT_KINDS,
         "supported_solvent_models": SUPPORTED_SOLVENT_MODELS,
-        "supported_ion_species": SUPPORTED_ION_SPECIES,
+        "supported_ion_species": supported_ions,
+        "supported_salt_names": supported_salts,
+        "supported_salt_inputs": ["salt.name", "salt.formula", "salt.species", "legacy_pair"],
         "supported_morphology_modes": SUPPORTED_MORPHOLOGY_MODES,
         "supported_charge_sources": ["charge_manifest", "prmtop"],
         "supported_output_formats": SUPPORTED_OUTPUT_FORMATS,
         "supported_output_controls": ["format", "write_conect", "preserve_topology_graph", "md_package"],
+        "supported_ion_controls": ["neutralize", "neutralize.with", "salt.name", "salt.formula", "salt.species", "salt.molar"],
         "supported_polymer_build_handoff_artifacts": ["build_manifest", "coordinates", "charge_manifest", "topology", "topology_graph"],
         "schema_targets": ["request", "result", "event"],
         "polymer_build_supported": true,
@@ -3815,7 +4666,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             );
         }
 
-        if req.environment.ions.salt_molar.is_some() || req.environment.ions.neutralize {
+        if req.environment.ions.normalized_salt()?.is_some() || req.environment.ions.neutralize.enabled() {
             emit_event(
                 &RunEvent::PhaseStarted {
                     schema_version: AGENT_SCHEMA_VERSION.into(),
@@ -3873,16 +4724,18 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
 
         let packed = run(&cfg)?;
         ensure_parent(&req.outputs.coordinates)?;
-        write_output(
+        let written_output = write_output(
             &packed,
             cfg.output
                 .as_ref()
                 .ok_or_else(|| PackError::Invalid("missing output spec".into()))?,
-            false,
-            0.0,
+            cfg.add_box_sides,
+            cfg.add_box_sides_fix.unwrap_or(0.0),
             req.outputs.write_conect,
             false,
         )?;
+        let coordinates_path = written_output.path.clone();
+        let coordinates_format = written_output.format.clone();
 
         emit_event(
             &RunEvent::PhaseProgress {
@@ -3892,7 +4745,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 progress_pct: 85.0,
                 elapsed_ms: elapsed_ms(&started),
                 eta_ms: eta_ms(&started, 85.0),
-                artifact: Some(req.outputs.coordinates.clone()),
+                artifact: Some(coordinates_path.clone()),
             },
             stream_ndjson,
         );
@@ -3902,7 +4755,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 run_id: run_id.clone(),
                 phase: "packing".into(),
                 elapsed_ms: elapsed_ms(&started),
-                artifact: Some(req.outputs.coordinates.clone()),
+                artifact: Some(coordinates_path.clone()),
             },
             stream_ndjson,
         );
@@ -3930,7 +4783,13 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         );
 
         let md_package_path = resolved_md_package_path(&req.outputs);
-        let md_package = build_md_ready_package(&req, &metadata, &md_package_path);
+        let md_package = build_md_ready_package(
+            &req,
+            &metadata,
+            &coordinates_path,
+            &coordinates_format,
+            &md_package_path,
+        );
         ensure_parent(&md_package_path)?;
         fs::write(
             &md_package_path,
@@ -3946,6 +4805,8 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             &cfg,
             &metadata,
             packed.atoms.len(),
+            &coordinates_path,
+            &coordinates_format,
             &md_package_path,
             md_package_digest,
         )?;
@@ -3974,9 +4835,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             schema_version: AGENT_SCHEMA_VERSION.into(),
             status: "ok".into(),
             run_id: Some(run_id.clone()),
-            output_dir: common_output_dir(&req.outputs.coordinates, &req.outputs.manifest),
+            output_dir: common_output_dir(&coordinates_path, &req.outputs.manifest),
             artifacts: ArtifactEnvelope {
-                coordinates: req.outputs.coordinates.clone(),
+                coordinates: coordinates_path,
                 manifest: req.outputs.manifest.clone(),
                 md_package: Some(md_package_path.clone()),
             },

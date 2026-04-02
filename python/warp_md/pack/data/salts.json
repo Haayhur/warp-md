@@ -1,0 +1,31 @@
+{
+  "salts": [
+    {
+      "name": "nacl",
+      "aliases": ["NaCl", "sodium chloride"],
+      "formula": "NaCl",
+      "species": {
+        "Na+": 1,
+        "Cl-": 1
+      }
+    },
+    {
+      "name": "kcl",
+      "aliases": ["KCl", "potassium chloride"],
+      "formula": "KCl",
+      "species": {
+        "K+": 1,
+        "Cl-": 1
+      }
+    },
+    {
+      "name": "cacl2",
+      "aliases": ["CaCl2", "calcium chloride"],
+      "formula": "CaCl2",
+      "species": {
+        "Ca2+": 1,
+        "Cl-": 2
+      }
+    }
+  ]
+}

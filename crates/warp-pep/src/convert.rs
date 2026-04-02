@@ -163,6 +163,7 @@ pub fn write_structure(struc: &Structure, path: &str, format: Option<&str>) -> R
         scale: None,
     };
     write_output(&pack_out, &spec, false, 0.0, write_conect, false)
+        .map(|_| ())
         .map_err(|e| format!("failed to write '{}': {}", path, e))
 }
 

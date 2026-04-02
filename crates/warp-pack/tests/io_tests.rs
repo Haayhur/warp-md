@@ -242,7 +242,7 @@ fn write_output_formats() {
 }
 
 #[test]
-fn pdb_strict_rejects_long_residue_names() {
+fn pdb_strict_falls_back_to_mmcif_when_needed() {
     let mut out = sample_output();
     out.atoms[0].resname = "pes_8mer_029".into();
     let pdb_path = temp_path("out_strict_invalid_resname.pdb");
@@ -251,9 +251,29 @@ fn pdb_strict_rejects_long_residue_names() {
         format: "pdb-strict".into(),
         scale: Some(1.0),
     };
-    let err = write_output(&out, &pdb_spec, false, 0.0, false, false)
-        .expect_err("strict pdb should reject long residue names");
-    assert!(err
-        .to_string()
-        .contains("pdb-strict residue name 'pes_8mer_029' exceeds 3 characters"));
+    let written = write_output(&out, &pdb_spec, false, 0.0, false, false)
+        .expect("strict pdb should fall back to mmcif");
+    assert!(written.fallback_applied);
+    assert_eq!(written.format, "mmcif");
+    assert!(written.path.ends_with(".cif"));
+    let cif_text = fs::read_to_string(&written.path).expect("fallback mmcif read");
+    assert!(cif_text.contains("data_warp_pack"));
+    let _ = fs::remove_file(&written.path);
+}
+
+#[test]
+fn write_output_infers_format_from_path_when_missing() {
+    let out = sample_output();
+    let cif_path = temp_path("out_inferred.cif");
+    let cif_spec = OutputSpec {
+        path: cif_path.to_string_lossy().to_string(),
+        format: String::new(),
+        scale: Some(1.0),
+    };
+    let written = write_output(&out, &cif_spec, false, 0.0, false, false)
+        .expect("inferred cif write");
+    assert_eq!(written.format, "cif");
+    let cif_text = fs::read_to_string(&cif_path).expect("cif read");
+    assert!(cif_text.contains("data_warp_pack"));
+    let _ = fs::remove_file(&cif_path);
 }
