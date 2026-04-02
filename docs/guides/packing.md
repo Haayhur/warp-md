@@ -154,9 +154,23 @@ result = run(cfg)
 Bundled `water_pdb(...)` templates are **single-molecule** PDBs. Perfect for packing.
 {% endhint %}
 
-Bundled ions include `Na+`, `K+`, `Cl-`, and `Ca2+`. Bundled salts currently include
-`nacl`, `kcl`, and `cacl2`. Agents should prefer `salt.name` for these built-ins; `salt.formula`
-and `salt.species` remain available for advanced cases.
+Bundled ions include `Na+`, `K+`, `Li+`, `Cl-`, `Br-`, `I-`, `Ca2+`, and `Mg2+`.
+Bundled salts currently include:
+
+| `salt.name` | Formula | Species |
+|---|---|---|
+| `nacl` | `NaCl` | `{"Na+": 1, "Cl-": 1}` |
+| `kcl` | `KCl` | `{"K+": 1, "Cl-": 1}` |
+| `licl` | `LiCl` | `{"Li+": 1, "Cl-": 1}` |
+| `nabr` | `NaBr` | `{"Na+": 1, "Br-": 1}` |
+| `nai` | `NaI` | `{"Na+": 1, "I-": 1}` |
+| `libr` | `LiBr` | `{"Li+": 1, "Br-": 1}` |
+| `cacl2` | `CaCl2` | `{"Ca2+": 1, "Cl-": 2}` |
+| `mgcl2` | `MgCl2` | `{"Mg2+": 1, "Cl-": 2}` |
+| `mgbr2` | `MgBr2` | `{"Mg2+": 1, "Br-": 2}` |
+
+Agents should prefer `salt.name` for these built-ins; `salt.formula` and `salt.species`
+remain available for advanced cases.
 
 Ion metadata is now registry-backed from `python/warp_md/pack/data/ions.json`. To add more ions
 without patching code, point `WARP_MD_ION_REGISTRY` at a JSON file with extra entries; relative
@@ -164,6 +178,42 @@ template paths resolve from that registry file's directory.
 
 Salt recipes are registry-backed from `python/warp_md/pack/data/salts.json`. To add more built-in
 salt names without patching code, point `WARP_MD_SALT_REGISTRY` at a JSON file with extra entries.
+
+For agent-first custom chemistry, you can define request-scoped ions and salts inline:
+
+```json
+{
+  "environment": {
+    "ions": {
+      "catalog": {
+        "ions": [
+          {
+            "species": "Rb+",
+            "template": "/abs/path/rb.pdb",
+            "formula_symbol": "Rb",
+            "charge_e": 1,
+            "mass_amu": 85.4678
+          },
+          {
+            "species": "F-",
+            "template": "/abs/path/f.pdb",
+            "formula_symbol": "F",
+            "charge_e": -1,
+            "mass_amu": 18.998403
+          }
+        ],
+        "salts": [
+          {
+            "name": "rbf",
+            "species": {"Rb+": 1, "F-": 1}
+          }
+        ]
+      },
+      "salt": {"name": "rbf", "molar": 0.15}
+    }
+  }
+}
+```
 
 ---
 

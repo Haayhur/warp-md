@@ -31,6 +31,38 @@
       "formula_symbol": "Ca",
       "charge_e": 2,
       "mass_amu": 40.078
+    },
+    {
+      "species": "Mg2+",
+      "aliases": ["mg2+"],
+      "template": "mg.pdb",
+      "formula_symbol": "Mg",
+      "charge_e": 2,
+      "mass_amu": 24.305
+    },
+    {
+      "species": "Li+",
+      "aliases": ["li+"],
+      "template": "li.pdb",
+      "formula_symbol": "Li",
+      "charge_e": 1,
+      "mass_amu": 6.94
+    },
+    {
+      "species": "Br-",
+      "aliases": ["br-"],
+      "template": "br.pdb",
+      "formula_symbol": "Br",
+      "charge_e": -1,
+      "mass_amu": 79.904
+    },
+    {
+      "species": "I-",
+      "aliases": ["i-"],
+      "template": "i.pdb",
+      "formula_symbol": "I",
+      "charge_e": -1,
+      "mass_amu": 126.90447
     }
   ]
 }

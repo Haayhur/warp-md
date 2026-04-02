@@ -113,10 +113,16 @@ def test_pack_capabilities_json() -> None:
     ]
     assert "tip3p" in payload["supported_solvent_models"]
     assert "Ca2+" in payload["supported_ion_species"]
+    assert "Mg2+" in payload["supported_ion_species"]
+    assert "Br-" in payload["supported_ion_species"]
     assert "nacl" in payload["supported_salt_names"]
     assert "cacl2" in payload["supported_salt_names"]
+    assert "mgcl2" in payload["supported_salt_names"]
+    assert "nabr" in payload["supported_salt_names"]
+    assert payload["supported_custom_chemistry_inputs"] == ["catalog.ions", "catalog.salts"]
     assert "salt.name" in payload["supported_salt_inputs"]
     assert "salt.formula" in payload["supported_salt_inputs"]
+    assert "catalog.ions" in payload["supported_ion_controls"]
     assert "neutralize.with" in payload["supported_ion_controls"]
 
 
@@ -391,6 +397,81 @@ def test_run_build_request_supports_explicit_salt_species_map(tmp_path: Path) ->
     assert manifest_payload["target_salt_formula"] == "CaCl2"
     assert manifest_payload["ion_counts"]["Ca2+"] == 11
     assert manifest_payload["ion_counts"]["Cl-"] == 22
+
+
+def test_run_build_request_supports_request_scoped_custom_chemistry(tmp_path: Path) -> None:
+    solute = tmp_path / "solute.pdb"
+    rb = tmp_path / "rb.pdb"
+    f = tmp_path / "f.pdb"
+    coords = tmp_path / "custom_system.pdb"
+    manifest = tmp_path / "custom_manifest.json"
+    _write_solute(solute)
+    rb.write_text(
+        "HETATM    1 RB   RB+ A   1       0.000   0.000   0.000  1.00  0.00          RB\nEND\n",
+        encoding="utf-8",
+    )
+    f.write_text(
+        "HETATM    1  F   F-  A   1       0.000   0.000   0.000  1.00  0.00           F\nEND\n",
+        encoding="utf-8",
+    )
+
+    payload = {
+        "version": "warp-pack.agent.v1",
+        "run_id": "solute-rbf-001",
+        "solute": {
+            "path": str(solute),
+            "kind": "small_molecule",
+        },
+        "environment": {
+            "box": {"mode": "fixed_size", "size_angstrom": 40.0, "shape": "cubic"},
+            "solvent": {"mode": "explicit", "model": "tip3p"},
+            "ions": {
+                "catalog": {
+                    "ions": [
+                        {
+                            "species": "Rb+",
+                            "aliases": ["rb+"],
+                            "template": str(rb),
+                            "formula_symbol": "Rb",
+                            "charge_e": 1,
+                            "mass_amu": 85.4678,
+                        },
+                        {
+                            "species": "F-",
+                            "aliases": ["f-"],
+                            "template": str(f),
+                            "formula_symbol": "F",
+                            "charge_e": -1,
+                            "mass_amu": 18.998403,
+                        },
+                    ],
+                    "salts": [
+                        {
+                            "name": "rbf",
+                            "aliases": ["rubidium fluoride"],
+                            "species": {"Rb+": 1, "F-": 1},
+                        }
+                    ],
+                },
+                "neutralize": False,
+                "salt": {"name": "rbf", "molar": 0.15},
+            },
+            "morphology": {"mode": "single_chain_solution"},
+        },
+        "outputs": {
+            "coordinates": str(coords),
+            "manifest": str(manifest),
+        },
+    }
+
+    exit_code, envelope = pack_contract.run_build_request(payload)
+    assert exit_code == 0
+    assert envelope["status"] == "ok"
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert manifest_payload["target_salt_name"] == "rbf"
+    assert manifest_payload["target_salt_formula"] == "RbF"
+    assert manifest_payload["ion_counts"]["Rb+"] == 6
+    assert manifest_payload["ion_counts"]["F-"] == 6
 
 
 def test_run_build_request_neutralize_with_prefers_requested_counterion(tmp_path: Path) -> None:

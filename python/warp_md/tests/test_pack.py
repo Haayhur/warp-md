@@ -187,7 +187,7 @@ def test_water_pdb_paths_exist():
 
 
 def test_ion_pdb_paths_exist():
-    for species in ["na+", "cl-", "k+", "ca2+"]:
+    for species in ["na+", "cl-", "k+", "ca2+", "mg2+", "li+", "br-", "i-"]:
         path = Path(ion_pdb(species))
         assert path.exists()
 
@@ -198,15 +198,24 @@ def test_available_ion_species_returns_canonical_names():
     assert "Cl-" in species
     assert "K+" in species
     assert "Ca2+" in species
+    assert "Mg2+" in species
+    assert "Li+" in species
+    assert "Br-" in species
+    assert "I-" in species
 
 
 def test_available_salt_names_and_recipe():
     names = available_salt_names()
     assert "nacl" in names
     assert "cacl2" in names
+    assert "mgcl2" in names
+    assert "nabr" in names
+    assert "licl" in names
     cacl2 = salt_recipe("calcium chloride")
     assert cacl2["formula"] == "CaCl2"
     assert cacl2["species"] == {"Ca2+": 1, "Cl-": 2}
+    nabr = salt_recipe("NaBr")
+    assert nabr["species"] == {"Na+": 1, "Br-": 1}
 
 
 def test_ion_registry_overlay_supports_external_templates(tmp_path, monkeypatch):

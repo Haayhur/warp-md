@@ -26,6 +26,60 @@
         "Ca2+": 1,
         "Cl-": 2
       }
+    },
+    {
+      "name": "mgcl2",
+      "aliases": ["MgCl2", "magnesium chloride"],
+      "formula": "MgCl2",
+      "species": {
+        "Mg2+": 1,
+        "Cl-": 2
+      }
+    },
+    {
+      "name": "licl",
+      "aliases": ["LiCl", "lithium chloride"],
+      "formula": "LiCl",
+      "species": {
+        "Li+": 1,
+        "Cl-": 1
+      }
+    },
+    {
+      "name": "nabr",
+      "aliases": ["NaBr", "sodium bromide"],
+      "formula": "NaBr",
+      "species": {
+        "Na+": 1,
+        "Br-": 1
+      }
+    },
+    {
+      "name": "nai",
+      "aliases": ["NaI", "sodium iodide"],
+      "formula": "NaI",
+      "species": {
+        "Na+": 1,
+        "I-": 1
+      }
+    },
+    {
+      "name": "libr",
+      "aliases": ["LiBr", "lithium bromide"],
+      "formula": "LiBr",
+      "species": {
+        "Li+": 1,
+        "Br-": 1
+      }
+    },
+    {
+      "name": "mgbr2",
+      "aliases": ["MgBr2", "magnesium bromide"],
+      "formula": "MgBr2",
+      "species": {
+        "Mg2+": 1,
+        "Br-": 2
+      }
     }
   ]
 }

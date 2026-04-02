@@ -704,9 +704,16 @@ fn capabilities_advertise_components_and_prmtop() {
     assert_eq!(caps["preferred_solute_input"], "components");
     assert_eq!(
         caps["supported_ion_species"],
-        json!(["Ca2+", "Cl-", "K+", "Na+"])
+        json!(["Br-", "Ca2+", "Cl-", "I-", "K+", "Li+", "Mg2+", "Na+"])
     );
-    assert_eq!(caps["supported_salt_names"], json!(["cacl2", "kcl", "nacl"]));
+    assert_eq!(
+        caps["supported_salt_names"],
+        json!(["cacl2", "kcl", "libr", "licl", "mgbr2", "mgcl2", "nabr", "nacl", "nai"])
+    );
+    assert_eq!(
+        caps["supported_custom_chemistry_inputs"],
+        json!(["catalog.ions", "catalog.salts"])
+    );
     assert_eq!(
         caps["supported_salt_inputs"],
         json!(["salt.name", "salt.formula", "salt.species", "legacy_pair"])
