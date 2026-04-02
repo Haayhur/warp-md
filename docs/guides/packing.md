@@ -179,6 +179,37 @@ template paths resolve from that registry file's directory.
 Salt recipes are registry-backed from `python/warp_md/pack/data/salts.json`. To add more built-in
 salt names without patching code, point `WARP_MD_SALT_REGISTRY` at a JSON file with extra entries.
 
+Python also exposes a low-level chemistry helper path for agent scripts:
+
+```python
+from warp_md.pack import solution_pack_config
+
+cfg = solution_pack_config(
+    solute_path="ligand.pdb",
+    box_size=50.0,
+    output_path="system_50A.pdb",
+    solvent_model="tip3p",
+    salt="cacl2",
+    salt_molar=0.15,
+)
+```
+
+CLI equivalent:
+
+```bash
+warp-pack solution \
+  --solute ligand.pdb \
+  --box 50 \
+  --solvent tip3p \
+  --salt cacl2 \
+  --salt-molar 0.15 \
+  --output system_50A.pdb
+```
+
+Bundled ion entries also carry parameterization hints such as `recommended_families` and
+`preferred_water_models`. These are exposed through Python `ion_metadata(...)` and
+`ion_parameterization(...)` helpers so agents can keep force-field selection coupled to ion choice.
+
 For agent-first custom chemistry, you can define request-scoped ions and salts inline:
 
 ```json

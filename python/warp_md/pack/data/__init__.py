@@ -116,6 +116,7 @@ def _salt_registry() -> tuple[dict[str, dict], list[str]]:
         if not name:
             raise ValueError("salt registry names cannot be empty")
         entry = {
+            **raw_entry,
             "name": name,
             "aliases": [str(alias).strip() for alias in raw_entry.get("aliases", [])],
             "formula": str(raw_entry.get("formula", "")).strip(),
@@ -151,6 +152,7 @@ def _ion_registry() -> tuple[dict[str, dict], list[str]]:
         if not species:
             raise ValueError("ion registry species names cannot be empty")
         canonical_entries[_normalize_species_key(species)] = {
+            **raw_entry,
             "species": species,
             "aliases": [str(alias).strip() for alias in raw_entry.get("aliases", [])],
             "template": str(raw_entry.get("template", "")).strip(),
@@ -205,6 +207,15 @@ def available_ion_species() -> list[str]:
     """Return canonical ion species names from the active registry."""
     _, canonical_species = _ion_registry()
     return canonical_species.copy()
+
+
+def ion_metadata(species: str) -> dict:
+    """Return bundled or registry-defined ion metadata by species or alias."""
+    registry, _ = _ion_registry()
+    key = _normalize_species_key(species)
+    if key not in registry:
+        raise ValueError(f"unknown ion species: {species}")
+    return dict(registry[key])
 
 
 def salt_recipe(name: str) -> dict:

@@ -10,8 +10,14 @@ if str(ROOT) not in sys.path:
 from warp_md.pack import (
     available_ion_species,
     available_salt_names,
+    estimate_salt_formula_units,
+    estimate_water_count,
+    ion_metadata,
+    ion_parameterization,
     ion_pdb,
     salt_recipe,
+    solution_pack_config,
+    solution_recipe,
     water_pdb,
 )
 from warp_md.pack.config import Box, OutputSpec, PackConfig, Structure
@@ -216,6 +222,85 @@ def test_available_salt_names_and_recipe():
     assert cacl2["species"] == {"Ca2+": 1, "Cl-": 2}
     nabr = salt_recipe("NaBr")
     assert nabr["species"] == {"Na+": 1, "Br-": 1}
+
+
+def test_ion_metadata_exposes_parameterization_hints():
+    mg = ion_metadata("Mg2+")
+    assert mg["topology_kind"] == "single_atom"
+    assert "amber" in mg["parameterization"]["recommended_families"]
+    assert "tip3p" in ion_parameterization("Mg2+")["preferred_water_models"]
+
+
+def test_solution_recipe_estimates_counts():
+    recipe = solution_recipe(50.0, solvent_model="tip3p", salt="cacl2", salt_molar=0.15)
+    assert recipe["salt"]["name"] == "cacl2"
+    assert recipe["salt"]["formula_units"] == estimate_salt_formula_units(50.0, 0.15)
+    assert recipe["ion_counts"]["Ca2+"] == recipe["salt"]["formula_units"]
+    assert recipe["ion_counts"]["Cl-"] == 2 * recipe["salt"]["formula_units"]
+    assert recipe["water_count"] == estimate_water_count(50.0)
+
+
+def test_solution_pack_config_uses_bundled_salt_templates(tmp_path):
+    solute = tmp_path / "solute.pdb"
+    solute.write_text(
+        "ATOM      1  C   MOL A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    cfg = solution_pack_config(
+        solute_path=str(solute),
+        box_size=40.0,
+        output_path=str(tmp_path / "system.pdb"),
+        solvent_model="tip3p",
+        salt="nabr",
+        salt_molar=0.15,
+        water_count=10,
+    )
+    assert cfg.box.size == (40.0, 40.0, 40.0)
+    assert cfg.output is not None and cfg.output.path.endswith("system.pdb")
+    ion_paths = {Path(struct.path).name for struct in cfg.structures[2:]}
+    assert "na.pdb" in ion_paths
+    assert "br.pdb" in ion_paths
+
+
+def test_solution_pack_config_supports_custom_polyatomic_catalog(tmp_path):
+    solute = tmp_path / "solute.pdb"
+    acetate = tmp_path / "acetate.pdb"
+    solute.write_text(
+        "ATOM      1  C   MOL A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    acetate.write_text(
+        "HETATM    1  C1  ACT A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  O1  ACT A   1       1.200   0.000   0.000  1.00  0.00           O\n"
+        "END\n",
+        encoding="utf-8",
+    )
+    cfg = solution_pack_config(
+        solute_path=str(solute),
+        box_size=(30.0, 30.0, 30.0),
+        solvent_model="tip3p",
+        salt={"name": "naoac", "species": {"Na+": 1, "OAc-": 1}},
+        salt_molar=0.1,
+        water_count=5,
+        custom_ions=[
+            {
+                "species": "OAc-",
+                "aliases": ["acetate"],
+                "template": str(acetate),
+                "formula_symbol": "OAc",
+                "charge_e": -1,
+                "mass_amu": 59.044,
+            }
+        ],
+        custom_salts=[
+            {
+                "name": "naoac",
+                "aliases": ["sodium acetate"],
+                "species": {"Na+": 1, "OAc-": 1},
+            }
+        ],
+    )
+    assert any(Path(struct.path).name == "acetate.pdb" for struct in cfg.structures)
 
 
 def test_ion_registry_overlay_supports_external_templates(tmp_path, monkeypatch):

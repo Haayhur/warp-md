@@ -38,6 +38,92 @@ def test_pack_cli_help() -> None:
     assert "--format" in result.stdout
 
 
+def test_pack_cli_solution_print_config_uses_bundled_salt(tmp_path: Path) -> None:
+    solute = tmp_path / "solute.pdb"
+    solute.write_text(
+        "ATOM      1  C   MOL A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    result = _run(
+        "solution",
+        "--solute",
+        str(solute),
+        "--box",
+        "40",
+        "--solvent",
+        "tip3p",
+        "--salt",
+        "cacl2",
+        "--salt-molar",
+        "0.15",
+        "--output",
+        str(tmp_path / "system.pdb"),
+        "--print-config",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    paths = [Path(item["path"]).name for item in payload["structures"]]
+    assert "ca.pdb" in paths
+    assert "cl.pdb" in paths
+
+
+def test_pack_cli_solution_supports_custom_catalog(tmp_path: Path) -> None:
+    solute = tmp_path / "solute.pdb"
+    acetate = tmp_path / "acetate.pdb"
+    catalog = tmp_path / "catalog.json"
+    solute.write_text(
+        "ATOM      1  C   MOL A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    acetate.write_text(
+        "HETATM    1  C1  ACT A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    catalog.write_text(
+        json.dumps(
+            {
+                "ions": [
+                    {
+                        "species": "OAc-",
+                        "aliases": ["acetate"],
+                        "template": str(acetate),
+                        "formula_symbol": "OAc",
+                        "charge_e": -1,
+                        "mass_amu": 59.044,
+                    }
+                ],
+                "salts": [
+                    {
+                        "name": "naoac",
+                        "aliases": ["sodium acetate"],
+                        "species": {"Na+": 1, "OAc-": 1},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run(
+        "solution",
+        "--solute",
+        str(solute),
+        "--box",
+        "30",
+        "--salt",
+        "naoac",
+        "--salt-molar",
+        "0.1",
+        "--catalog",
+        str(catalog),
+        "--output",
+        str(tmp_path / "system.pdb"),
+        "--print-config",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert any(Path(item["path"]).name == "acetate.pdb" for item in payload["structures"])
+
+
 @pytest.mark.skipif(not HAS_PACK_RUN, reason="pack bindings unavailable")
 def test_pack_cli_runs_json_config(tmp_path: Path) -> None:
     out = tmp_path / "packed.pdb"

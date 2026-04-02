@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .pack import PackConfig, export, parse_inp, run
+from .pack import PackConfig, export, parse_inp, run, solution_pack_config, solution_recipe
 from .pack_contract import example_request, pack_capabilities, render_pack_schema, run_build_request, validate_request_payload
 
 
@@ -87,6 +87,34 @@ def build_contract_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_solution_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="warp-pack solution",
+        description="Build a pack config from chemistry intent",
+    )
+    parser.add_argument("--solute", required=True, help="solute coordinates path")
+    parser.add_argument(
+        "--box",
+        nargs="+",
+        required=True,
+        help="box side length or three lengths in angstrom",
+    )
+    parser.add_argument("--solvent", default="tip3p", help="bundled solvent model")
+    parser.add_argument("--salt", help="bundled salt name, alias, formula, or custom salt name")
+    parser.add_argument("--salt-molar", type=float, help="target salt molarity")
+    parser.add_argument("--water-count", type=int, help="explicit water count override")
+    parser.add_argument(
+        "--catalog",
+        help="optional JSON catalog with custom ions/salts for polyatomic or uncommon systems",
+    )
+    parser.add_argument("--output", required=True, help="output coordinate path")
+    parser.add_argument("--format", help="optional output format override")
+    parser.add_argument("--min-distance", type=float, default=2.0, help="packing min distance")
+    parser.add_argument("--print-config", action="store_true", help="print generated PackConfig JSON and exit")
+    parser.add_argument("--print-recipe", action="store_true", help="print resolved counts JSON and exit")
+    return parser
+
+
 def _build_output_override(cfg: Dict[str, Any], output: str, fmt: str | None) -> None:
     previous = cfg.get("output")
     scale = None
@@ -121,6 +149,25 @@ def _load_request(args: argparse.Namespace) -> Dict[str, Any]:
     if not request_path:
         raise ValueError("request path is required unless --stdin is used")
     return _load_config(Path(request_path))
+
+
+def _parse_box_arg(values: list[str]) -> float | tuple[float, float, float]:
+    if len(values) == 1:
+        return float(values[0])
+    if len(values) == 3:
+        return (float(values[0]), float(values[1]), float(values[2]))
+    raise ValueError("--box expects one side length or three axis lengths")
+
+
+def _load_catalog(path: str | None) -> Dict[str, Any]:
+    if not path:
+        return {"ions": [], "salts": []}
+    data = _load_config(Path(path))
+    ions = data.get("ions", [])
+    salts = data.get("salts", [])
+    if not isinstance(ions, list) or not isinstance(salts, list):
+        raise ValueError("catalog must contain 'ions' and 'salts' lists")
+    return {"ions": ions, "salts": salts}
 
 
 def run_legacy_cli(argv: list[str] | None = None) -> int:
@@ -257,10 +304,65 @@ def run_contract_cli(argv: list[str] | None = None) -> int:
     return 1
 
 
+def run_solution_cli(argv: list[str] | None = None) -> int:
+    args = build_solution_parser().parse_args(argv)
+    box_size = _parse_box_arg(args.box)
+    catalog = _load_catalog(args.catalog)
+    recipe = solution_recipe(
+        box_size,
+        solvent_model=args.solvent,
+        salt=args.salt,
+        salt_molar=args.salt_molar,
+        water_count=args.water_count,
+        custom_ions=catalog["ions"],
+        custom_salts=catalog["salts"],
+    )
+    if args.print_recipe:
+        print(json.dumps(recipe, indent=2))
+        return 0
+
+    cfg = solution_pack_config(
+        solute_path=args.solute,
+        box_size=box_size,
+        output_path=args.output,
+        solvent_model=args.solvent,
+        salt=args.salt,
+        salt_molar=args.salt_molar,
+        water_count=args.water_count,
+        custom_ions=catalog["ions"],
+        custom_salts=catalog["salts"],
+        min_distance=args.min_distance,
+    )
+    if args.format and cfg.output is not None:
+        cfg.output.format = args.format
+    if args.print_config:
+        print(json.dumps(cfg.to_dict(), indent=2))
+        return 0
+
+    result = run(cfg)
+    if cfg.output is None:
+        raise RuntimeError("solution config must define output")
+    written = export(
+        result,
+        cfg.output.format,
+        cfg.output.path,
+        cfg.output.scale,
+        add_box_sides=cfg.add_box_sides or cfg.pbc,
+        box_sides_fix=cfg.add_box_sides_fix,
+        write_conect=not cfg.ignore_conect,
+        hexadecimal_indices=cfg.hexadecimal_indices,
+    )
+    if isinstance(written, dict):
+        print(json.dumps(written, indent=2))
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     contract_commands = {"run", "validate", "schema", "example", "capabilities"}
     try:
+        if argv and argv[0] == "solution":
+            return run_solution_cli(argv[1:])
         if argv and argv[0] in contract_commands:
             return run_contract_cli(argv)
         return run_legacy_cli(argv)

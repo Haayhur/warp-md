@@ -6,7 +6,13 @@
       "template": "na.pdb",
       "formula_symbol": "Na",
       "charge_e": 1,
-      "mass_amu": 22.99
+      "mass_amu": 22.99,
+      "topology_kind": "single_atom",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm", "opls"],
+        "preferred_water_models": ["tip3p", "spce", "tip4pew"],
+        "role": "placement_seed"
+      }
     },
     {
       "species": "Cl-",
@@ -14,7 +20,13 @@
       "template": "cl.pdb",
       "formula_symbol": "Cl",
       "charge_e": -1,
-      "mass_amu": 35.45
+      "mass_amu": 35.45,
+      "topology_kind": "single_atom",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm", "opls"],
+        "preferred_water_models": ["tip3p", "spce", "tip4pew"],
+        "role": "placement_seed"
+      }
     },
     {
       "species": "K+",
@@ -22,7 +34,13 @@
       "template": "k.pdb",
       "formula_symbol": "K",
       "charge_e": 1,
-      "mass_amu": 39.098
+      "mass_amu": 39.098,
+      "topology_kind": "single_atom",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm", "opls"],
+        "preferred_water_models": ["tip3p", "spce", "tip4pew"],
+        "role": "placement_seed"
+      }
     },
     {
       "species": "Ca2+",
@@ -30,7 +48,13 @@
       "template": "ca.pdb",
       "formula_symbol": "Ca",
       "charge_e": 2,
-      "mass_amu": 40.078
+      "mass_amu": 40.078,
+      "topology_kind": "single_atom",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm", "opls"],
+        "preferred_water_models": ["tip3p", "spce"],
+        "role": "placement_seed"
+      }
     },
     {
       "species": "Mg2+",
@@ -38,7 +62,13 @@
       "template": "mg.pdb",
       "formula_symbol": "Mg",
       "charge_e": 2,
-      "mass_amu": 24.305
+      "mass_amu": 24.305,
+      "topology_kind": "single_atom",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm", "opls"],
+        "preferred_water_models": ["tip3p", "spce"],
+        "role": "placement_seed"
+      }
     },
     {
       "species": "Li+",
@@ -46,7 +76,13 @@
       "template": "li.pdb",
       "formula_symbol": "Li",
       "charge_e": 1,
-      "mass_amu": 6.94
+      "mass_amu": 6.94,
+      "topology_kind": "single_atom",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm", "opls"],
+        "preferred_water_models": ["tip3p", "spce", "tip4pew"],
+        "role": "placement_seed"
+      }
     },
     {
       "species": "Br-",
@@ -54,7 +90,13 @@
       "template": "br.pdb",
       "formula_symbol": "Br",
       "charge_e": -1,
-      "mass_amu": 79.904
+      "mass_amu": 79.904,
+      "topology_kind": "single_atom",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm", "opls"],
+        "preferred_water_models": ["tip3p", "spce", "tip4pew"],
+        "role": "placement_seed"
+      }
     },
     {
       "species": "I-",
@@ -62,7 +104,13 @@
       "template": "i.pdb",
       "formula_symbol": "I",
       "charge_e": -1,
-      "mass_amu": 126.90447
+      "mass_amu": 126.90447,
+      "topology_kind": "single_atom",
+      "parameterization": {
+        "recommended_families": ["amber", "charmm", "opls"],
+        "preferred_water_models": ["tip3p", "spce", "tip4pew"],
+        "role": "placement_seed"
+      }
     }
   ]
 }

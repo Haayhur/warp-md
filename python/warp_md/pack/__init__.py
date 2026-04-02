@@ -16,9 +16,17 @@ from .data import (
     available_ion_species,
     available_salt_names,
     available_water_models,
+    ion_metadata,
     ion_pdb,
     salt_recipe,
     water_pdb,
+)
+from .chemistry import (
+    estimate_salt_formula_units,
+    estimate_water_count,
+    ion_parameterization,
+    solution_pack_config,
+    solution_recipe,
 )
 from .runner import parse_inp, run, run_inp
 from .export import export
@@ -61,8 +69,14 @@ __all__ = [
     # Utilities
     "water_pdb",
     "available_water_models",
+    "ion_metadata",
     "ion_pdb",
     "available_ion_species",
     "salt_recipe",
     "available_salt_names",
+    "estimate_salt_formula_units",
+    "estimate_water_count",
+    "solution_recipe",
+    "solution_pack_config",
+    "ion_parameterization",
 ]
