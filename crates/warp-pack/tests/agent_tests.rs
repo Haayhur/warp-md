@@ -764,6 +764,49 @@ fn capabilities_advertise_components_and_prmtop() {
 }
 
 #[test]
+fn chemistry_resolver_reports_counts_templates_and_molarity() {
+    let payload = json!({
+        "box_size_angstrom": 40.0,
+        "solvent_model": "tip3p",
+        "salt": {"name": "mgso4", "molar": 0.15},
+        "water_count": 25
+    });
+    let recipe = warp_pack::agent::resolve_chemistry_json(
+        &serde_json::to_string(&payload).expect("serialize payload"),
+    )
+    .expect("resolve chemistry");
+    assert_eq!(recipe["salt"]["name"], "mgso4");
+    assert_eq!(recipe["salt"]["formula"], "MgSO4");
+    assert_eq!(recipe["salt"]["formula_units"], 6);
+    assert_eq!(recipe["salt_ion_counts"]["Mg2+"], 6);
+    assert_eq!(recipe["salt_ion_counts"]["SO4^2-"], 6);
+    assert!(recipe["salt"]["achieved_molar"].as_f64().unwrap_or(0.0) > 0.15);
+    assert!(recipe["templates"]["ions"]["SO4^2-"]
+        .as_str()
+        .expect("sulfate template")
+        .ends_with("so4.pdb"));
+}
+
+#[test]
+fn chemistry_resolver_supports_neutralization_preview() {
+    let payload = json!({
+        "box_size_angstrom": 30.0,
+        "solvent_model": "tip3p",
+        "salt": {"name": "nacl", "molar": 0.1},
+        "water_count": 10,
+        "neutralize": true,
+        "solute_net_charge_e": -2.0
+    });
+    let recipe = warp_pack::agent::resolve_chemistry_json(
+        &serde_json::to_string(&payload).expect("serialize payload"),
+    )
+    .expect("resolve chemistry");
+    assert_eq!(recipe["neutralization"]["counterion"], "Na+");
+    assert_eq!(recipe["neutralization"]["counterion_count"], 2);
+    assert_eq!(recipe["neutralization"]["residual_charge_e"], 0.0);
+}
+
+#[test]
 fn agent_validate_rejects_removed_inline_polymer_request() {
     let training = write_training_oligomer("polymer_validate_training.pdb");
     let payload = json!({

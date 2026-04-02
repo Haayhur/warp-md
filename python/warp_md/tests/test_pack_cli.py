@@ -154,6 +154,34 @@ def test_pack_cli_solution_print_config_supports_bundled_polyatomic_salt(tmp_pat
     assert "so4.pdb" in paths
 
 
+def test_pack_cli_solution_print_recipe_includes_templates_and_achieved_molarity(tmp_path: Path) -> None:
+    solute = tmp_path / "solute.pdb"
+    solute.write_text(
+        "ATOM      1  C   MOL A   1       0.000   0.000   0.000  1.00  0.00           C\nEND\n",
+        encoding="utf-8",
+    )
+    result = _run(
+        "solution",
+        "--solute",
+        str(solute),
+        "--box",
+        "40",
+        "--solvent",
+        "tip3p",
+        "--salt",
+        "mgso4",
+        "--salt-molar",
+        "0.15",
+        "--output",
+        str(tmp_path / "system.pdb"),
+        "--print-recipe",
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["salt"]["achieved_molar"] is not None
+    assert payload["templates"]["ions"]["SO4^2-"].endswith("so4.pdb")
+
+
 @pytest.mark.skipif(not HAS_PACK_RUN, reason="pack bindings unavailable")
 def test_pack_cli_runs_json_config(tmp_path: Path) -> None:
     out = tmp_path / "packed.pdb"

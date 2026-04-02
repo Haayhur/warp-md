@@ -15,6 +15,7 @@ from warp_md.pack import (
     ion_metadata,
     ion_parameterization,
     ion_pdb,
+    resolve_chemistry,
     salt_recipe,
     solution_pack_config,
     solution_recipe,
@@ -254,6 +255,56 @@ def test_solution_recipe_estimates_counts():
     assert recipe["ion_counts"]["Ca2+"] == recipe["salt"]["formula_units"]
     assert recipe["ion_counts"]["Cl-"] == 2 * recipe["salt"]["formula_units"]
     assert recipe["water_count"] == estimate_water_count(50.0)
+    assert recipe["templates"]["solvent"].endswith("tip3p.pdb")
+    assert recipe["templates"]["ions"]["Ca2+"].endswith("ca.pdb")
+
+
+def test_resolve_chemistry_reports_achieved_molarity_and_templates():
+    recipe = resolve_chemistry(
+        40.0,
+        solvent_model="tip3p",
+        salt="mgso4",
+        salt_molar=0.15,
+        water_count=25,
+    )
+    assert recipe["salt"]["name"] == "mgso4"
+    assert recipe["salt"]["formula"] == "MgSO4"
+    assert recipe["salt"]["achieved_molar"] is not None
+    assert recipe["salt_ion_counts"]["Mg2+"] == recipe["salt"]["formula_units"]
+    assert recipe["templates"]["ions"]["SO4^2-"].endswith("so4.pdb")
+    assert recipe["warnings"] == []
+
+
+def test_resolve_chemistry_supports_neutralization_preview():
+    recipe = resolve_chemistry(
+        30.0,
+        solvent_model="tip3p",
+        salt="nacl",
+        salt_molar=0.1,
+        water_count=10,
+        neutralize=True,
+        solute_net_charge_e=-2.0,
+    )
+    assert recipe["neutralization"]["counterion"] == "Na+"
+    assert recipe["neutralization"]["counterion_count"] == 2
+    assert recipe["neutralization"]["residual_charge_e"] == 0.0
+    assert recipe["ion_counts"]["Na+"] == recipe["salt_ion_counts"]["Na+"] + 2
+
+
+def test_resolve_chemistry_warns_on_valence_overshoot():
+    recipe = resolve_chemistry(
+        30.0,
+        solvent_model="tip3p",
+        salt="cacl2",
+        salt_molar=0.1,
+        water_count=10,
+        neutralize=True,
+        solute_net_charge_e=-1.0,
+    )
+    assert recipe["neutralization"]["counterion"] == "Ca2+"
+    assert recipe["neutralization"]["counterion_count"] == 1
+    assert recipe["neutralization"]["residual_charge_e"] == 1.0
+    assert recipe["warnings"]
 
 
 def test_solution_pack_config_uses_bundled_salt_templates(tmp_path):

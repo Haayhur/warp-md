@@ -428,6 +428,13 @@ fn pack_agent_capabilities<'py>(py: Python<'py>) -> PyResult<PyObject> {
 }
 
 #[pyfunction]
+fn pack_resolve_chemistry<'py>(py: Python<'py>, json: &str) -> PyResult<PyObject> {
+    let value = warp_pack::agent::resolve_chemistry_json(json)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
 fn pack_agent_validate<'py>(py: Python<'py>, json: &str) -> PyResult<(i32, PyObject)> {
     let (exit_code, value) = warp_pack::agent::validate_request_json(json);
     Ok((exit_code, json_value_to_py(py, &value)?))
@@ -1071,6 +1078,7 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pack_agent_schema, m)?)?;
     m.add_function(wrap_pyfunction!(pack_agent_example, m)?)?;
     m.add_function(wrap_pyfunction!(pack_agent_capabilities, m)?)?;
+    m.add_function(wrap_pyfunction!(pack_resolve_chemistry, m)?)?;
     m.add_function(wrap_pyfunction!(pack_agent_validate, m)?)?;
     m.add_function(wrap_pyfunction!(pack_agent_run, m)?)?;
     m.add_function(wrap_pyfunction!(crank_delta, m)?)?;

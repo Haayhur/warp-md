@@ -25,6 +25,7 @@ from .chemistry import (
     estimate_salt_formula_units,
     estimate_water_count,
     ion_parameterization,
+    resolve_chemistry,
     solution_pack_config,
     solution_recipe,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "available_salt_names",
     "estimate_salt_formula_units",
     "estimate_water_count",
+    "resolve_chemistry",
     "solution_recipe",
     "solution_pack_config",
     "ion_parameterization",

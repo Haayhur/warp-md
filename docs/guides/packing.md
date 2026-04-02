@@ -192,7 +192,16 @@ salt names without patching code, point `WARP_MD_SALT_REGISTRY` at a JSON file w
 Python also exposes a low-level chemistry helper path for agent scripts:
 
 ```python
-from warp_md.pack import solution_pack_config
+from warp_md.pack import resolve_chemistry, solution_pack_config
+
+recipe = resolve_chemistry(
+    box_size=50.0,
+    solvent_model="tip3p",
+    salt="mgso4",
+    salt_molar=0.15,
+    neutralize=True,
+    solute_net_charge_e=-2.0,
+)
 
 cfg = solution_pack_config(
     solute_path="ligand.pdb",
@@ -203,6 +212,10 @@ cfg = solution_pack_config(
     salt_molar=0.15,
 )
 ```
+
+`resolve_chemistry(...)` is the preview API for agents and scripts. It resolves salt stoichiometry,
+rounded counts, chosen templates, estimated waters, achieved molarity, and neutralization choices
+before the packer runs.
 
 CLI equivalent:
 

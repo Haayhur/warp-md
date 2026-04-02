@@ -317,6 +317,26 @@ impl Default for IonRequest {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ChemistryResolveRequest {
+    pub box_size_angstrom: Value,
+    #[serde(default = "default_tip3p")]
+    #[schemars(default = "default_tip3p")]
+    pub solvent_model: String,
+    #[serde(default)]
+    pub salt: Option<SaltRequest>,
+    #[serde(default)]
+    pub water_count: Option<usize>,
+    #[serde(default)]
+    pub occupied_volume_angstrom3: Option<f32>,
+    #[serde(default)]
+    pub catalog: CustomChemistryCatalogRequest,
+    #[serde(default)]
+    pub neutralize: NeutralizeRequest,
+    #[serde(default)]
+    pub solute_net_charge_e: Option<f32>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct MorphologyRequest {
     #[serde(default = "default_single_chain_solution")]
@@ -563,6 +583,10 @@ fn default_cubic() -> String {
 
 fn default_none() -> String {
     "none".to_string()
+}
+
+fn default_tip3p() -> String {
+    "tip3p".to_string()
 }
 
 fn default_true_bool() -> bool {
@@ -3370,6 +3394,165 @@ fn estimate_salt_formula_units(box_size: [f32; 3], salt_molar: Option<f32>) -> u
     (molar as f64 * volume_l * AVOGADRO).round().max(0.0) as usize
 }
 
+fn box_volume_angstrom3(box_size: [f32; 3]) -> f64 {
+    box_size[0] as f64 * box_size[1] as f64 * box_size[2] as f64
+}
+
+fn box_volume_liter(box_size: [f32; 3]) -> f64 {
+    box_volume_angstrom3(box_size) * ANGSTROM3_TO_LITER
+}
+
+fn achieved_salt_molarity(box_size: [f32; 3], formula_units: usize) -> Option<f64> {
+    if formula_units == 0 {
+        return None;
+    }
+    let volume_l = box_volume_liter(box_size);
+    if volume_l <= 0.0 {
+        return None;
+    }
+    Some(formula_units as f64 / AVOGADRO / volume_l)
+}
+
+fn neutralizer_count(net_charge_e: f32, ion_charge_e: i32) -> PackResult<usize> {
+    if ion_charge_e == 0 {
+        return Err(PackError::Invalid(
+            "neutralization ion must define non-zero charge".into(),
+        ));
+    }
+    Ok((net_charge_e.abs() / ion_charge_e.unsigned_abs() as f32).ceil() as usize)
+}
+
+fn resolve_chemistry_value(req: &ChemistryResolveRequest) -> PackResult<Value> {
+    let ion_request = IonRequest {
+        neutralize: req.neutralize.clone(),
+        salt: req.salt.clone(),
+        catalog: req.catalog.clone(),
+        salt_molar: None,
+        cation: None,
+        anion: None,
+    };
+    let chemistry = chemistry_catalog_for_request(&ion_request)?;
+    let box_size = value_to_triplet(&req.box_size_angstrom)?;
+    let occupied_volume = req.occupied_volume_angstrom3.unwrap_or(0.0).max(0.0) as f64;
+    let normalized_salt = ion_request.normalized_salt_with(&chemistry)?;
+    let salt_pair_count =
+        estimate_salt_formula_units(box_size, normalized_salt.as_ref().and_then(|salt| salt.molar));
+
+    let salt_stoich = normalized_salt
+        .as_ref()
+        .map(|salt| salt.species.clone())
+        .unwrap_or_default();
+    let mut salt_ion_counts = BTreeMap::new();
+    let mut ion_counts = BTreeMap::new();
+    for (species, per_formula_unit) in &salt_stoich {
+        let count = per_formula_unit * salt_pair_count;
+        salt_ion_counts.insert(species.clone(), count);
+        ion_counts.insert(species.clone(), count);
+    }
+
+    let mut warnings = Vec::new();
+    let mut neutralization = json!({
+        "enabled": ion_request.neutralize.enabled(),
+        "solute_net_charge_e": req.solute_net_charge_e,
+        "counterion": Value::Null,
+        "counterion_count": 0,
+        "counterion_charge_e": Value::Null,
+        "applied_charge_e": 0.0,
+        "residual_charge_e": req.solute_net_charge_e,
+    });
+    if ion_request.neutralize.enabled() {
+        let Some(net_charge_e) = req.solute_net_charge_e else {
+            return Err(PackError::Invalid(
+                "solute_net_charge_e is required when neutralize=true".into(),
+            ));
+        };
+        if net_charge_e.abs() < 1.0e-8 {
+            neutralization["residual_charge_e"] = json!(0.0);
+        } else {
+            let need_positive = net_charge_e < 0.0;
+            let counterion = ion_request.counterion_for_charge_with(&chemistry, need_positive)?;
+            let charge_e = ion_species_info_with(&chemistry.ions, &counterion)
+                .map(|info| info.charge_e)
+                .ok_or_else(|| {
+                    PackError::Invalid(format!("unsupported ion species '{counterion}'"))
+                })?;
+            let count = neutralizer_count(net_charge_e, charge_e)?;
+            let applied_charge_e = charge_e as f32 * count as f32;
+            let residual_charge_e = net_charge_e + applied_charge_e;
+            *ion_counts.entry(counterion.clone()).or_insert(0) += count;
+            neutralization = json!({
+                "enabled": true,
+                "solute_net_charge_e": net_charge_e,
+                "counterion": counterion,
+                "counterion_count": count,
+                "counterion_charge_e": charge_e,
+                "applied_charge_e": applied_charge_e,
+                "residual_charge_e": residual_charge_e,
+            });
+            if residual_charge_e.abs() > 1.0e-8 {
+                warnings.push(format!(
+                    "neutralization with {} leaves residual charge {:+.3} e",
+                    neutralization["counterion"].as_str().unwrap_or("ion"),
+                    residual_charge_e
+                ));
+            }
+        }
+    }
+
+    let water_count = req
+        .water_count
+        .unwrap_or_else(|| estimate_solvent_count(box_size, occupied_volume));
+    let ion_templates = ion_counts
+        .keys()
+        .map(|species| {
+            (
+                species.clone(),
+                Value::String(ion_template_path_with(&chemistry.ions, species)),
+            )
+        })
+        .collect::<serde_json::Map<String, Value>>();
+    let custom_ions = req
+        .catalog
+        .ions
+        .iter()
+        .filter_map(|entry| {
+            let species = normalize_ion_species_key(&entry.species);
+            ion_species_info_with(&chemistry.ions, &species).map(|info| {
+                let resolved_species = info.species;
+                (
+                    resolved_species.clone(),
+                    Value::String(ion_template_path_with(&chemistry.ions, &resolved_species)),
+                )
+            })
+        })
+        .collect::<serde_json::Map<String, Value>>();
+
+    Ok(json!({
+        "box_size": box_size,
+        "box_volume_angstrom3": box_volume_angstrom3(box_size),
+        "box_volume_liter": box_volume_liter(box_size),
+        "solvent_model": req.solvent_model,
+        "salt": normalized_salt.as_ref().map(|salt| json!({
+            "name": salt.name,
+            "formula": salt.formula,
+            "species": salt.species,
+            "molar": salt.molar,
+            "formula_units": salt_pair_count,
+            "achieved_molar": achieved_salt_molarity(box_size, salt_pair_count),
+        })),
+        "ion_counts": ion_counts,
+        "salt_ion_counts": salt_ion_counts,
+        "water_count": water_count,
+        "neutralization": neutralization,
+        "templates": {
+            "solvent": water_template_path(&req.solvent_model),
+            "ions": ion_templates,
+        },
+        "warnings": warnings,
+        "custom_ions": custom_ions,
+    }))
+}
+
 fn emit_event(event: &RunEvent, enabled: bool) {
     if enabled {
         eprintln!(
@@ -4769,6 +4952,12 @@ pub fn capabilities() -> Value {
         "streaming_supported": true,
         "manifest_supported": true,
     })
+}
+
+pub fn resolve_chemistry_json(text: &str) -> PackResult<Value> {
+    let req: ChemistryResolveRequest =
+        serde_json::from_str(text).map_err(|err| PackError::Parse(err.to_string()))?;
+    resolve_chemistry_value(&req)
 }
 
 pub fn validate_request_json(text: &str) -> (i32, Value) {
