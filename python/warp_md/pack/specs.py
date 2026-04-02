@@ -257,10 +257,10 @@ class Structure:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Structure":
         constraints = None
-        if "constraints" in data:
+        if data.get("constraints") is not None:
             constraints = [Constraint.from_dict(c) for c in data["constraints"]]
         atom_overrides = None
-        if "atom_overrides" in data:
+        if data.get("atom_overrides") is not None:
             atom_overrides = [AtomOverride.from_dict(o) for o in data["atom_overrides"]]
         return cls(
             path=data["path"],
@@ -270,7 +270,7 @@ class Structure:
             restart_from=data.get("restart_from"),
             restart_to=data.get("restart_to"),
             fixed_eulers=[tuple(e) for e in data["fixed_eulers"]]
-            if "fixed_eulers" in data
+            if data.get("fixed_eulers") is not None
             else None,
             chain=data.get("chain"),
             changechains=data.get("changechains", False),
@@ -280,9 +280,9 @@ class Structure:
             rotate=data.get("rotate", True),
             fixed=data.get("fixed", False),
             positions=[tuple(p) for p in data["positions"]]
-            if "positions" in data
+            if data.get("positions") is not None
             else None,
-            translate=tuple(data["translate"]) if "translate" in data else None,
+            translate=tuple(data["translate"]) if data.get("translate") is not None else None,
             center=data.get("center", True),
             min_distance=data.get("min_distance"),
             resnumbers=data.get("resnumbers"),
@@ -296,7 +296,7 @@ class Structure:
             short_radius_scale=data.get("short_radius_scale"),
             atom_overrides=atom_overrides,
             rot_bounds=[tuple(b) for b in data["rot_bounds"]]
-            if "rot_bounds" in data
+            if data.get("rot_bounds") is not None
             else None,
         )
 

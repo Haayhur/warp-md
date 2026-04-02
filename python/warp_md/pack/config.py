@@ -67,11 +67,14 @@ class PackConfig:
         out: Dict[str, Any] = {
             "box": self.box.to_dict(),
             "structures": [s.to_dict() for s in self.structures],
-            "seed": int(self.seed),
-            "max_attempts": int(self.max_attempts),
-            "min_distance": float(self.min_distance),
             "pbc": bool(self.pbc),
         }
+        if self.seed is not None:
+            out["seed"] = int(self.seed)
+        if self.max_attempts is not None:
+            out["max_attempts"] = int(self.max_attempts)
+        if self.min_distance is not None:
+            out["min_distance"] = float(self.min_distance)
         if self.filetype:
             out["filetype"] = self.filetype
         if self.add_box_sides:
@@ -216,7 +219,7 @@ class PackConfig:
             raise ValidationError("PackConfig requires at least one structure")
         if self.min_distance <= 0:
             raise ValidationError("min_distance must be positive")
-        if self.max_attempts < 1:
+        if self.max_attempts is not None and self.max_attempts < 1:
             raise ValidationError("max_attempts must be >= 1")
 
         try:

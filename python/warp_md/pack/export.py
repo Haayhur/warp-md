@@ -11,13 +11,14 @@ def export(
     path: str,
     scale: Optional[float] = None,
     *,
-    add_box_sides: bool = False,
-    box_sides_fix: float = 0.0,
+    add_box_sides: bool = True,
+    box_sides_fix: Optional[float] = 0.0,
     write_conect: bool = True,
     hexadecimal_indices: bool = False,
 ):
     fmt = fmt.lower()
     scale = 1.0 if scale is None else float(scale)
+    box_sides_fix = 0.0 if box_sides_fix is None else float(box_sides_fix)
     try:
         from .. import traj_py  # type: ignore
     except Exception as exc:
@@ -34,7 +35,7 @@ def export(
         path,
         scale,
         bool(add_box_sides),
-        float(box_sides_fix),
+        box_sides_fix,
         bool(write_conect),
         bool(hexadecimal_indices),
     )

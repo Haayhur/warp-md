@@ -89,6 +89,7 @@ def test_export_pdb_writes_conect_and_ter(tmp_path):
     out = tmp_path / "out.pdb"
     export(DummyResult(), "pdb", str(out))
     text = out.read_text(encoding="utf-8")
+    assert "CRYST1" in text
     assert "ATOM" in text
     assert "HETATM" in text
     assert "TER" in text
@@ -108,6 +109,15 @@ def test_export_pdb_add_box_sides(tmp_path):
     assert HAS_PACK_EXPORT, "pack_write_output binding unavailable"
     out = tmp_path / "out_box.pdb"
     export(DummyResult(), "pdb", str(out), add_box_sides=True, box_sides_fix=2.0)
+    text = out.read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if line.strip()]
+    assert lines[0].startswith("CRYST1")
+
+
+def test_export_pdb_add_box_sides_accepts_none_fix(tmp_path):
+    assert HAS_PACK_EXPORT, "pack_write_output binding unavailable"
+    out = tmp_path / "out_box_none_fix.pdb"
+    export(DummyResult(), "pdb", str(out), add_box_sides=True, box_sides_fix=None)
     text = out.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if line.strip()]
     assert lines[0].startswith("CRYST1")

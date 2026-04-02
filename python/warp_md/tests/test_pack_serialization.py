@@ -85,3 +85,65 @@ def test_pack_config_omits_removed_use_gencan_field():
     )
     dumped = cfg.to_dict()
     assert "use_gencan" not in dumped
+
+
+def test_pack_config_validate_allows_none_max_attempts():
+    cfg = PackConfig(
+        structures=[Structure("water.pdb", count=1)],
+        box=Box((10.0, 10.0, 10.0)),
+        max_attempts=None,
+    )
+    cfg.validate()
+
+
+def test_pack_config_to_dict_omits_none_seed_and_max_attempts():
+    cfg = PackConfig(
+        structures=[Structure("water.pdb", count=1)],
+        box=Box((10.0, 10.0, 10.0)),
+        seed=None,
+        max_attempts=None,
+    )
+    dumped = cfg.to_dict()
+    assert "seed" not in dumped
+    assert "max_attempts" not in dumped
+
+
+def test_structure_from_dict_accepts_explicit_none_optionals():
+    restored = Structure.from_dict(
+        {
+            "path": "ligand.pdb",
+            "count": 1,
+            "name": None,
+            "topology": None,
+            "restart_from": None,
+            "restart_to": None,
+            "fixed_eulers": None,
+            "chain": None,
+            "changechains": False,
+            "segid": None,
+            "connect": True,
+            "format": None,
+            "rotate": False,
+            "fixed": True,
+            "positions": None,
+            "translate": None,
+            "center": True,
+            "min_distance": None,
+            "resnumbers": None,
+            "maxmove": None,
+            "nloop": None,
+            "nloop0": None,
+            "constraints": [],
+            "radius": None,
+            "fscale": None,
+            "short_radius": None,
+            "short_radius_scale": None,
+            "atom_overrides": [],
+            "rot_bounds": None,
+        }
+    )
+
+    assert restored.path == "ligand.pdb"
+    assert restored.fixed is True
+    assert restored.fixed_eulers is None
+    assert restored.positions is None

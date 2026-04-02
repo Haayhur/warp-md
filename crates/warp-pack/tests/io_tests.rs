@@ -59,12 +59,15 @@ fn read_molecule_parses_mol2() {
     let mol2_path = temp_path("sample.mol2");
     write_text(
         &mol2_path,
-        "@<TRIPOS>MOLECULE\nwarp\n2 0 0 0 0\nSMALL\nUSER_CHARGES\n@<TRIPOS>ATOM\n\
+        "@<TRIPOS>MOLECULE\nwarp\n2 1 0 0 0\nSMALL\nUSER_CHARGES\n@<TRIPOS>ATOM\n\
 1 C1 0.0 0.0 0.0 C 1 MOL 0.0\n\
-2 O1 1.0 0.0 0.0 O 1 MOL 0.0\n",
+2 O1 1.0 0.0 0.0 O 1 MOL 0.0\n\
+@<TRIPOS>BOND\n\
+1 1 2 1\n",
     );
     let mol = read_molecule(Path::new(&mol2_path), None, false, false, None).expect("mol2");
     assert_eq!(mol.atoms.len(), 2);
+    assert_eq!(mol.bonds, vec![(0, 1)]);
     let _ = fs::remove_file(&mol2_path);
 }
 
