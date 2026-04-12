@@ -64,3 +64,41 @@ def test_projection_matches_pca():
     traj2 = _DummyTraj(coords)
     proj2 = projection(traj2, system, mask="all", eigenvectors=evecs, eigenvalues=evals)
     np.testing.assert_allclose(proj, proj2, rtol=1e-5)
+
+
+def test_projection_supports_mass_weighting_and_internal_mean():
+    coords = np.zeros((3, 2, 3), dtype=np.float32)
+    coords[:, 0, 0] = np.array([0.0, 1.0, 2.0], dtype=np.float32)
+    coords[:, 1, 0] = np.array([0.0, 2.0, 4.0], dtype=np.float32)
+    traj = _DummyTraj(coords)
+    system = _DummySystem(coords.shape[1])
+
+    proj, (evals, evecs) = pca(traj, system, mask="all", n_vecs=2, fit=False)
+    traj2 = _DummyTraj(coords)
+    proj2 = projection(
+        traj2,
+        system,
+        mask="all",
+        eigenvectors=evecs,
+        eigenvalues=evals,
+        scalar_type="mwcovar",
+    )
+    assert proj2.shape == (2, 3)
+
+
+def test_pca_fit_to_mean_structure_runs_natively():
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[5.0, 2.0, 0.0], [6.0, 2.0, 0.0]],
+            [[10.0, -3.0, 0.0], [11.0, -3.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    traj = _DummyTraj(coords)
+    system = _DummySystem(coords.shape[1])
+
+    proj, (evals, evecs) = pca(traj, system, mask="all", n_vecs=1, fit=True, ref=None)
+    assert proj.shape == (1, 3)
+    assert evals.shape == (1,)
+    assert evecs.shape == (1, 6)

@@ -5,9 +5,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-
-AGENT_REQUEST_SCHEMA_VERSION = "warp-md.agent.v1"
-AGENT_RESULT_SCHEMA_VERSION = AGENT_REQUEST_SCHEMA_VERSION
+from . import contract as _contract
+from .contract_constants import AGENT_REQUEST_SCHEMA_VERSION, AGENT_RESULT_SCHEMA_VERSION
 
 # Structured error codes for agent consumption
 ErrorCode = Literal[
@@ -37,90 +36,11 @@ ErrorCode = Literal[
     "E_INTERNAL",               # Unexpected internal error
 ]
 
-AnalysisName = Literal[
-    "rg",
-    "rmsd",
-    "msd",
-    "rotacf",
-    "conductivity",
-    "dielectric",
-    "dipole_alignment",
-    "ion_pair_correlation",
-    "structure_factor",
-    "water_count",
-    "free_volume",
-    "bondi_ffv",
-    "equipartition",
-    "hbond",
-    "rdf",
-    "end_to_end",
-    "contour_length",
-    "chain_rg",
-    "bond_length_distribution",
-    "bond_angle_distribution",
-    "persistence_length",
-    "docking",
-    # New analyses
-    "dssp",
-    "diffusion",
-    "pca",
-    "rmsf",
-    "density",
-    "native_contacts",
-    # Additional analyses
-    "volmap",
-    "surf",
-    "molsurf",
-    "watershell",
-    "tordiff",
-    "projection",
-    # High priority analyses
-    "gist",
-    "nmr",
-    "jcoupling",
-]
-
+_ANALYSIS_NAMES = tuple(sorted(_contract.ANALYSIS_METADATA))
+AnalysisName = Literal.__getitem__(_ANALYSIS_NAMES)
 _ANALYSIS_REQUIRED_FIELDS: Dict[str, tuple[str, ...]] = {
-    "rg": ("selection",),
-    "rmsd": ("selection",),
-    "msd": ("selection",),
-    "rotacf": ("selection",),
-    "conductivity": ("selection", "charges", "temperature"),
-    "dielectric": ("selection", "charges"),
-    "dipole_alignment": ("selection", "charges"),
-    "ion_pair_correlation": ("selection", "rclust_cat", "rclust_ani"),
-    "structure_factor": ("selection", "bins", "r_max", "q_bins", "q_max"),
-    "water_count": ("water_selection", "center_selection", "box_unit", "region_size"),
-    "free_volume": ("selection", "center_selection"),
-    "bondi_ffv": ("selection",),
-    "equipartition": ("selection",),
-    "hbond": ("donors", "acceptors", "dist_cutoff"),
-    "rdf": ("sel_a", "sel_b", "bins", "r_max"),
-    "end_to_end": ("selection",),
-    "contour_length": ("selection",),
-    "chain_rg": ("selection",),
-    "bond_length_distribution": ("selection", "bins", "r_max"),
-    "bond_angle_distribution": ("selection", "bins"),
-    "persistence_length": ("selection",),
-    "docking": ("receptor_mask", "ligand_mask"),
-    # New analyses (optional params have no required fields)
-    "dssp": (),
-    "diffusion": (),
-    "pca": ("mask",),
-    "rmsf": (),
-    "density": (),
-    "native_contacts": (),
-    # Additional analyses
-    "volmap": (),
-    "surf": (),
-    "molsurf": (),
-    "watershell": ("solute_mask",),
-    "tordiff": ("mask",),
-    "projection": ("mask",),
-    # High priority analyses
-    "gist": ("solute", "solvent"),
-    "nmr": ("selection",),
-    "jcoupling": ("dihedrals",),
+    name: tuple(_contract.ANALYSIS_METADATA[name].required_fields)
+    for name in _ANALYSIS_NAMES
 }
 
 
@@ -226,10 +146,10 @@ class AnalysisRequest(BaseModel):
     def _validate_name(cls, value: Any) -> str:
         if not isinstance(value, str):
             raise TypeError("analysis name must be a string")
-        name = value.strip().replace("-", "_")
+        name = value.strip()
         if not name:
             raise ValueError("analysis name cannot be empty")
-        return name
+        return _contract._resolve_analysis_name(name)
 
     @model_validator(mode="after")
     def _validate_required_fields(self) -> "AnalysisRequest":

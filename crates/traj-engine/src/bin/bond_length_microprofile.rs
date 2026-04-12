@@ -275,7 +275,60 @@ fn output_checksum(out: &PlanOutput) -> f64 {
         PlanOutput::Rdf(r) => r.counts.iter().map(|&v| v as f64).sum(),
         PlanOutput::Persistence(p) => p.bond_autocorrelation.iter().map(|&x| x as f64).sum(),
         PlanOutput::Dielectric(d) => d.rot_sq.iter().map(|&x| x as f64).sum(),
+        PlanOutput::Current(c) => {
+            c.conductivity.iter().map(|&x| x as f64).sum::<f64>()
+                + c.md_sq.iter().map(|&x| x as f64).sum::<f64>()
+                + c.mj_sq.iter().map(|&x| x as f64).sum::<f64>()
+        }
+        PlanOutput::Bundle(b) => {
+            b.top.iter().map(|&x| x as f64).sum::<f64>()
+                + b.bottom.iter().map(|&x| x as f64).sum::<f64>()
+                + b.length.iter().map(|&x| x as f64).sum::<f64>()
+        }
+        PlanOutput::H2Order(h) => {
+            h.order.iter().map(|&x| x as f64).sum::<f64>()
+                + h.dipole.iter().map(|&x| x as f64).sum::<f64>()
+        }
+        PlanOutput::Helix(h) => {
+            h.radius.iter().map(|&x| x as f64).sum::<f64>()
+                + h.twist.iter().map(|&x| x as f64).sum::<f64>()
+                + h.rise.iter().map(|&x| x as f64).sum::<f64>()
+                + h.helicity_fraction.iter().map(|&x| x as f64).sum::<f64>()
+        }
+        PlanOutput::HelixOrient(h) => {
+            h.axis.iter().map(|&x| x as f64).sum::<f64>()
+                + h.center.iter().map(|&x| x as f64).sum::<f64>()
+                + h.rotation.iter().map(|&x| x as f64).sum::<f64>()
+        }
+        PlanOutput::HydOrder(h) => {
+            h.sg_grid.iter().map(|&x| x as f64).sum::<f64>()
+                + h.sk_grid.iter().map(|&x| x as f64).sum::<f64>()
+                + h.interface_lower.iter().map(|&x| x as f64).sum::<f64>()
+                + h.interface_upper.iter().map(|&x| x as f64).sum::<f64>()
+        }
+        PlanOutput::SOrient(s) => {
+            s.mean_cos_theta1.iter().map(|&x| x as f64).sum::<f64>()
+                + s.mean_p2_theta2.iter().map(|&x| x as f64).sum::<f64>()
+                + s.count_density.iter().map(|&x| x as f64).sum::<f64>()
+        }
+        PlanOutput::Spol(s) => {
+            s.cumulative_count.iter().map(|&x| x as f64).sum::<f64>()
+                + s.average_dipole as f64
+                + s.average_radial_dipole as f64
+        }
+        PlanOutput::Potential(p) => {
+            p.charge_density.iter().map(|&x| x as f64).sum::<f64>()
+                + p.field.iter().map(|&x| x as f64).sum::<f64>()
+                + p.potential.iter().map(|&x| x as f64).sum::<f64>()
+        }
         PlanOutput::StructureFactor(s) => s.s_q.iter().map(|&x| x as f64).sum(),
+        PlanOutput::VanHove(v) => v.matrix.iter().map(|&x| x as f64).sum(),
+        PlanOutput::Mdmat(m) => {
+            m.mean_matrix.iter().map(|&x| x as f64).sum::<f64>()
+                + m.frame_matrices.iter().map(|&x| x as f64).sum::<f64>()
+                + m.mean_contact_atoms.iter().map(|&x| x as f64).sum::<f64>()
+        }
+        PlanOutput::DensityMap(d) => d.matrix.iter().map(|&x| x as f64).sum(),
         PlanOutput::Grid(g) => g.mean.iter().map(|&x| x as f64).sum(),
         PlanOutput::Pca(p) => p.eigenvalues.iter().map(|&x| x as f64).sum(),
         PlanOutput::Clustering(c) => c.labels.iter().map(|&x| x as f64).sum(),

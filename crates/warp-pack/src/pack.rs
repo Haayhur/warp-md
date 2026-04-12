@@ -2,6 +2,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
+pub use warp_structure::{AtomRecord, AtomRecordKind, PackOutput};
 
 use crate::atom_params::{build_atom_params, max_radius, scale_atom_params, AtomParams};
 use crate::config::PackConfig;
@@ -23,28 +24,6 @@ use crate::relax::relax_overlaps;
 use crate::restart::{read_restart, write_restart, RestartEntry};
 use crate::spatial_hash::{SpatialHash, SpatialHashParamsExt, SpatialHashV2};
 use crate::streaming::{PackingPhase, StreamEmitter};
-
-#[derive(Clone, Debug)]
-pub struct AtomRecord {
-    pub record_kind: AtomRecordKind,
-    pub name: String,
-    pub element: String,
-    pub resname: String,
-    pub resid: i32,
-    pub chain: char,
-    pub segid: String,
-    pub charge: f32,
-    pub position: Vec3,
-    pub mol_id: i32,
-}
-
-#[derive(Clone, Debug)]
-pub struct PackOutput {
-    pub atoms: Vec<AtomRecord>,
-    pub bonds: Vec<(usize, usize)>,
-    pub box_size: [f32; 3],
-    pub ter_after: Vec<usize>,
-}
 
 #[derive(Default)]
 struct PackProfile {
@@ -111,6 +90,7 @@ fn maybe_write_gencan_snapshot(
             bonds: bonds.to_vec(),
             box_size,
             ter_after: ter_after.to_vec(),
+            box_vectors: None,
         };
         let add_box_sides = cfg.add_box_sides || cfg.pbc;
         let box_fix = cfg.add_box_sides_fix.unwrap_or(0.0);
@@ -129,12 +109,6 @@ fn maybe_write_gencan_snapshot(
     }
     *last_write = Instant::now();
     Ok(())
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AtomRecordKind {
-    Atom,
-    HetAtom,
 }
 
 pub fn run(config: &PackConfig) -> PackResult<PackOutput> {
@@ -1071,6 +1045,7 @@ fn run_once(
         bonds,
         box_size,
         ter_after,
+        box_vectors: None,
     })
 }
 

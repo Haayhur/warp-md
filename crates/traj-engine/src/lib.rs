@@ -5,25 +5,29 @@ pub mod plans;
 
 pub use correlators::{LagMode, LagSettings};
 pub use executor::{
-    collect_selected_frames, count_frames, normalize_frame_indices, ClusteringOutput, Device,
-    DielectricOutput, Executor, GridOutput, PcaOutput, PersistenceOutput, Plan, PlanOutput,
-    RdfOutput, SelectedFrame, SelectedFramesReader, StructureFactorOutput,
+    collect_selected_frames, count_frames, normalize_frame_indices, BundleOutput, ClusteringOutput,
+    CurrentOutput, DensityMapOutput, Device, DielectricOutput, Executor, GridOutput, H2OrderOutput,
+    HelixOrientOutput, HelixOutput, HydOrderOutput, MdmatOutput, PcaOutput, PersistenceOutput,
+    Plan, PlanOutput, PotentialOutput, RdfOutput, SOrientOutput, SelectedFrame,
+    SelectedFramesReader, SpolOutput, StructureFactorOutput, VanHoveOutput,
 };
 pub use feature_store::{
     ChunkIndex, FeatureIndex, FeatureSchema, FeatureStoreReader, FeatureStoreWriter,
 };
 pub use plans::analysis::{
-    AtomicCorrPlan, BondiFfvPlan, ClusterMethod, ConductivityPlan, CountInVoxelPlan, DensityPlan,
-    DielectricPlan, DipoleAlignmentPlan, DockingPlan, DsspPlan, EquipartitionPlan, FreeVolumePlan,
-    GistDirectPlan, GistGridPlan, GroupBy, GroupMap, GroupSpec, HbondPlan, IonPairCorrelationPlan,
-    MolSurfPlan, MsdPlan, MultiPuckerMode, MultiPuckerPlan, NmrIredPlan, RotAcfPlan,
+    AtomicCorrPlan, BondiFfvPlan, BundlePlan, ClusterMethod, ConductivityPlan, CountInVoxelPlan,
+    CurrentPlan, DensityMapPlan, DensityMapUnit, DensityPlan, DielectricPlan, DipoleAlignmentPlan,
+    DockingPlan, DsspPlan, EquipartitionPlan, FreeVolumePlan, GistDirectPlan, GistGridPlan,
+    GroupBy, GroupMap, GroupSpec, H2OrderPlan, HbondPlan, HelixOrientPlan, HelixPlan, HydOrderPlan,
+    IonPairCorrelationPlan, MdmatPlan, MolSurfPlan, MsdPlan, MultiPuckerMode, MultiPuckerPlan,
+    NmrIredPlan, PotentialPlan, RamaPlan, RotAcfPlan, SOrientPlan, SaltBridgePlan, SpolPlan,
     StructureFactorPlan, SurfAlgorithm, SurfPlan, ToroidalDiffusionPlan, TorsionDiffusionPlan,
-    TorsionStat, TrajectoryClusterPlan, VelocityAutoCorrPlan, VolmapPlan, WaterCountPlan,
-    WaveletPlan, XcorrPlan,
+    TorsionStat, TrajectoryClusterPlan, VanHovePlan, VelocityAutoCorrPlan, VolmapPlan,
+    WaterCountPlan, WaveletPlan, XcorrPlan,
 };
 pub use plans::{
-    AlignPlan, AlignPrincipalAxisPlan, AnalyzeModesPlan, AnglePlan, AtomMapPlan, AtomicFluctPlan,
-    AutoImagePlan, AverageFramePlan, BfactorsPlan, BondAngleDistributionPlan,
+    AlignPlan, AlignPrincipalAxisPlan, AnalyzeModesPlan, AnglePlan, AtomMapPlan, AtomicAdpPlan,
+    AtomicFluctPlan, AutoImagePlan, AverageFramePlan, BfactorsPlan, BondAngleDistributionPlan,
     BondLengthDistributionPlan, CenterMode, CenterOfGeometryPlan, CenterOfMassPlan,
     CenterTrajectoryPlan, ChainRgPlan, CheckChiralityPlan, CheckStructurePlan, ClosestAtomPlan,
     ClosestPlan, ContourLengthPlan, DihedralPlan, DihedralRmsPlan, DistancePlan, DistanceRmsdPlan,

@@ -26,6 +26,7 @@ try:
         PyRmsdPerResPlan as RmsdPerResPlan,
         PyRmsfPlan as RmsfPlan,
         PyBfactorsPlan as BfactorsPlan,
+        PyAtomicAdpPlan as AtomicAdpPlan,
         PyAtomicFluctPlan as AtomicFluctPlan,
         PyDistancePlan as DistancePlan,
         PyLowestCurvePlan as LowestCurvePlan,
@@ -80,15 +81,25 @@ try:
         PyMsdPlan as MsdPlan,
         PyAtomicCorrPlan as AtomicCorrPlan,
         PyVelocityAutoCorrPlan as VelocityAutoCorrPlan,
+        PyVanHovePlan as VanHovePlan,
         PyRotAcfPlan as RotAcfPlan,
         PyConductivityPlan as ConductivityPlan,
+        PyCurrentPlan as CurrentPlan,
         PyDielectricPlan as DielectricPlan,
+        PyH2OrderPlan as H2OrderPlan,
+        PyHydOrderPlan as HydOrderPlan,
+        PySOrientPlan as SOrientPlan,
+        PySpolPlan as SpolPlan,
+        PyPotentialPlan as PotentialPlan,
         PyDipoleAlignmentPlan as DipoleAlignmentPlan,
         PyIonPairCorrelationPlan as IonPairCorrelationPlan,
+        PySaltBridgePlan as SaltBridgePlan,
         PyStructureFactorPlan as StructureFactorPlan,
+        PyRamaPlan as RamaPlan,
         PyWaterCountPlan as WaterCountPlan,
         PyCountInVoxelPlan as CountInVoxelPlan,
         PyDensityPlan as DensityPlan,
+        PyDensityMapPlan as DensityMapPlan,
         PyVolmapPlan as VolmapPlan,
         PyFreeVolumePlan as FreeVolumePlan,
         PyBondiFfvPlan as BondiFfvPlan,
@@ -110,6 +121,46 @@ try:
         PyBondAngleDistributionPlan as BondAngleDistributionPlan,
         PyPersistenceLengthPlan as PersistenceLengthPlan,
     )
+    try:
+        from .traj_py import PyBundlePlan as BundlePlan
+    except Exception:  # pragma: no cover - older extension builds
+        class _MissingBundlePlan:
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError(
+                    "BundlePlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
+                )
+
+        BundlePlan = _MissingBundlePlan
+    try:
+        from .traj_py import PyHelixPlan as HelixPlan
+    except Exception:  # pragma: no cover - older extension builds
+        class _MissingHelixPlan:
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError(
+                    "HelixPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
+                )
+
+        HelixPlan = _MissingHelixPlan
+    try:
+        from .traj_py import PyMdmatPlan as MdmatPlan
+    except Exception:  # pragma: no cover - older extension builds
+        class _MissingMdmatPlan:
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError(
+                    "MdmatPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
+                )
+
+        MdmatPlan = _MissingMdmatPlan
+    try:
+        from .traj_py import PyHelixOrientPlan as HelixOrientPlan
+    except Exception:  # pragma: no cover - older extension builds
+        class _MissingHelixOrientPlan:
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError(
+                    "HelixOrientPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
+                )
+
+        HelixOrientPlan = _MissingHelixOrientPlan
     try:
         from .traj_py import PyDockingPlan as DockingPlan
     except Exception:  # pragma: no cover - older extension builds
@@ -185,6 +236,7 @@ except Exception as exc:  # pragma: no cover - allow CLI help without bindings
     RmsdPerResPlan = _Missing
     RmsfPlan = _Missing
     BfactorsPlan = _Missing
+    AtomicAdpPlan = _Missing
     AtomicFluctPlan = _Missing
     DistancePlan = _Missing
     LowestCurvePlan = _Missing
@@ -239,12 +291,25 @@ except Exception as exc:  # pragma: no cover - allow CLI help without bindings
     MsdPlan = _Missing
     AtomicCorrPlan = _Missing
     VelocityAutoCorrPlan = _Missing
+    VanHovePlan = _Missing
     RotAcfPlan = _Missing
     ConductivityPlan = _Missing
+    CurrentPlan = _Missing
     DielectricPlan = _Missing
+    H2OrderPlan = _Missing
+    BundlePlan = _Missing
+    HelixPlan = _Missing
+    MdmatPlan = _Missing
+    HelixOrientPlan = _Missing
+    HydOrderPlan = _Missing
+    SOrientPlan = _Missing
+    SpolPlan = _Missing
+    PotentialPlan = _Missing
     DipoleAlignmentPlan = _Missing
     IonPairCorrelationPlan = _Missing
+    SaltBridgePlan = _Missing
     StructureFactorPlan = _Missing
+    RamaPlan = _Missing
     DockingPlan = _Missing
     GistGridPlan = _Missing
     GistDirectPlan = _Missing
@@ -280,6 +345,16 @@ from .builder import (
 )
 from .analysis import (
     acorr,
+    current,
+    bundle,
+    h2order,
+    helixorient,
+    helix,
+    mdmat,
+    hydorder,
+    sorient,
+    spol,
+    potential,
     align,
     align_principal_axis,
     superpose,
@@ -288,6 +363,8 @@ from .analysis import (
     dssp,
     dssp_allatoms,
     dssp_allresidues,
+    rama,
+    saltbr,
     energy_analysis,
     ene_decomp,
     esander,
@@ -327,6 +404,7 @@ from .analysis import (
     ti,
     timecorr,
     velocity_autocorrelation,
+    vanhove,
     xcorr,
     pca,
     projection,
@@ -388,6 +466,7 @@ __all__ = [
     "RmsdPerResPlan",
     "RmsfPlan",
     "BfactorsPlan",
+    "AtomicAdpPlan",
     "AtomicFluctPlan",
     "DistancePlan",
     "LowestCurvePlan",
@@ -442,12 +521,25 @@ __all__ = [
     "MsdPlan",
     "AtomicCorrPlan",
     "VelocityAutoCorrPlan",
+    "VanHovePlan",
     "RotAcfPlan",
     "ConductivityPlan",
+    "CurrentPlan",
     "DielectricPlan",
+    "H2OrderPlan",
+    "BundlePlan",
+    "HelixOrientPlan",
+    "HelixPlan",
+    "MdmatPlan",
+    "HydOrderPlan",
+    "SOrientPlan",
+    "SpolPlan",
+    "PotentialPlan",
     "DipoleAlignmentPlan",
     "IonPairCorrelationPlan",
+    "SaltBridgePlan",
     "StructureFactorPlan",
+    "RamaPlan",
     "DockingPlan",
     "GistGridPlan",
     "GistDirectPlan",
@@ -483,12 +575,25 @@ __all__ = [
     "align_principal_axis",
     "superpose",
     "acorr",
+    "current",
+    "bundle",
+    "h2order",
+    "helixorient",
+    "helix",
+    "mdmat",
+    "hydorder",
+    "sorient",
+    "spol",
+    "potential",
     "xcorr",
     "timecorr",
     "velocity_autocorrelation",
+    "vanhove",
     "dssp",
     "dssp_allatoms",
     "dssp_allresidues",
+    "rama",
+    "saltbr",
     "energy_analysis",
     "esander",
     "lie",

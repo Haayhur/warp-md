@@ -185,6 +185,7 @@ pub struct GroAtom {
 #[derive(Clone, Debug)]
 pub struct GroParseResult {
     pub atoms: Vec<GroAtom>,
+    pub box_vectors: Option<[[f32; 3]; 3]>,
 }
 
 pub fn parse_gro_reader<R: BufRead>(mut reader: R, strict: bool) -> TrajResult<GroParseResult> {
@@ -250,11 +251,49 @@ pub fn parse_gro_reader<R: BufRead>(mut reader: R, strict: bool) -> TrajResult<G
         });
     }
 
+    let mut box_line = String::new();
+    reader.read_line(&mut box_line)?;
+    let box_vectors = parse_gro_box_line(&box_line, strict)?;
+
     if atoms.is_empty() {
         return Err(TrajError::Parse("no atoms found in GRO".into()));
     }
 
-    Ok(GroParseResult { atoms })
+    Ok(GroParseResult { atoms, box_vectors })
+}
+
+fn parse_gro_box_line(line: &str, strict: bool) -> TrajResult<Option<[[f32; 3]; 3]>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return if strict {
+            Err(TrajError::Parse("GRO missing box line".into()))
+        } else {
+            Ok(None)
+        };
+    }
+    let values: Vec<f32> = trimmed
+        .split_whitespace()
+        .map(|token| {
+            token
+                .parse::<f32>()
+                .map_err(|_| TrajError::Parse(format!("invalid GRO box value '{token}'")))
+        })
+        .collect::<Result<_, _>>()?;
+    match values.as_slice() {
+        [xx, yy, zz] => Ok(Some([[*xx, 0.0, 0.0], [0.0, *yy, 0.0], [0.0, 0.0, *zz]])),
+        [xx, yy, zz, xy, xz, yx, yz, zx, zy] => {
+            Ok(Some([[*xx, *xy, *xz], [*yx, *yy, *yz], [*zx, *zy, *zz]]))
+        }
+        _ => {
+            if strict {
+                Err(TrajError::Parse(
+                    "GRO box line must contain 3 or 9 values".into(),
+                ))
+            } else {
+                Ok(None)
+            }
+        }
+    }
 }
 
 fn slice_trim_opt(line: &str, start: usize, end: usize) -> Option<&str> {
@@ -415,5 +454,36 @@ ENDMDL\n"
         assert_eq!(parsed.atoms.len(), 2);
         assert!((parsed.atoms[0].position[0] - 1.0).abs() < 1e-6);
         assert!((parsed.atoms[1].position[0] - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_pdb_reader_preserves_metadata_fields() {
+        let fixture = format!(
+            "{record:<6}{serial:5} {name:<4}{altloc}{resname:<4}{chain}{resid:4}{icode}   {x:8.3}{y:8.3}{z:8.3}{occ:6.2}{temp:6.2}      {segid:<4}{element:>2}{charge}\n",
+            record = "ATOM",
+            serial = 1,
+            name = "CA",
+            altloc = 'A',
+            resname = "GLY",
+            chain = 'A',
+            resid = 7,
+            icode = 'B',
+            x = 12.0,
+            y = 13.5,
+            z = 14.25,
+            occ = 0.5,
+            temp = 33.33,
+            segid = "SEG1",
+            element = "C",
+            charge = "2+",
+        );
+        let parsed = parse_pdb_reader(Cursor::new(fixture), &PdbParseOptions::default())
+            .expect("parse metadata fixture");
+        let atom = &parsed.atoms[0];
+        assert!((atom.occupancy - 0.5).abs() < 1e-6);
+        assert!((atom.temp_factor - 33.33).abs() < 1e-6);
+        assert_eq!(atom.altloc, 'A');
+        assert_eq!(atom.icode, 'B');
+        assert_eq!(atom.charge, "2+");
     }
 }

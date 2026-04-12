@@ -70,6 +70,7 @@ const AMU_TO_GRAM: f64 = 1.660_539_066_60e-24;
 const WATER_MOLARITY: f64 = 55.5;
 const WATER_MASS_AMU: f64 = 18.015_28;
 const DEFAULT_PACKING_FRACTION: f64 = 0.80;
+const PACK_DATA_DIR_ENV: &str = "WARP_MD_PACK_DATA_DIR";
 const ION_REGISTRY_ENV: &str = "WARP_MD_ION_REGISTRY";
 const SALT_REGISTRY_ENV: &str = "WARP_MD_SALT_REGISTRY";
 
@@ -452,9 +453,50 @@ pub struct ValidateSuccessEnvelope {
     pub schema_version: String,
     pub status: String,
     pub valid: bool,
-    pub normalized_request: Value,
-    pub resolved_inputs: Value,
+    pub normalized_request: BuildRequest,
+    pub resolved_inputs: ResolvedInputsSummary,
     pub warnings: Vec<ErrorDetail>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum OneOrManyStrings {
+    One(String),
+    Many(Vec<String>),
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct NeutralizationPreconditions {
+    pub requested: bool,
+    pub satisfied: bool,
+    pub missing_charge_components: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct SaltSummary {
+    pub name: Option<String>,
+    pub formula: Option<String>,
+    pub species: BTreeMap<String, usize>,
+    pub molar: Option<f32>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ResolvedInputsSummary {
+    pub morphology_mode: String,
+    pub component_inventory_count: usize,
+    pub component_instance_count: usize,
+    pub polymer_build_handoff_present: bool,
+    pub polymer_build_manifest_version: Option<OneOrManyStrings>,
+    pub topology_graph_present: bool,
+    pub topology_graph_version: Option<OneOrManyStrings>,
+    pub output_format: String,
+    pub md_package: String,
+    pub write_conect: bool,
+    pub preserve_topology_graph: bool,
+    pub charge_source_kind: Option<String>,
+    pub charge_source_kinds: Vec<String>,
+    pub neutralization_preconditions: NeutralizationPreconditions,
+    pub salt: Option<SaltSummary>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -526,13 +568,13 @@ struct TranslationMetadata {
     water_count: usize,
     ion_counts: BTreeMap<String, usize>,
     salt_pair_count: usize,
-    component_inventory: Vec<Value>,
-    component_charge_resolution: Vec<Value>,
-    source_solute_artifact: Value,
-    built_solute_artifact: Option<Value>,
-    polymer_build_handoff: Option<Value>,
-    polymer_artifact: Option<Value>,
-    polymer_controls: Option<Value>,
+    component_inventory: Vec<ComponentInventoryItem>,
+    component_charge_resolution: Vec<ComponentChargeResolution>,
+    source_solute_artifact: SourceArtifactDetail,
+    built_solute_artifact: Option<BuiltSoluteArtifact>,
+    polymer_build_handoff: Option<PolymerBuildHandoffSummary>,
+    polymer_artifact: Option<PolymerArtifactSummary>,
+    polymer_controls: Option<PolymerControlsSummary>,
     charge_manifest_path: Option<String>,
     charge_manifest_paths: Vec<String>,
     charge_source_kinds: Vec<String>,
@@ -557,16 +599,355 @@ struct ResolvedComponent {
     forcefield_ref: Option<String>,
     connectivity_hint: Option<String>,
     parameter_source: Option<String>,
-    source_detail: Value,
-    built_artifact: Option<Value>,
-    polymer_build_handoff: Option<Value>,
-    polymer_artifact: Option<Value>,
-    polymer_controls: Option<Value>,
+    source_detail: SourceArtifactDetail,
+    built_artifact: Option<BuiltSoluteArtifact>,
+    polymer_build_handoff: Option<PolymerBuildHandoffSummary>,
+    polymer_artifact: Option<PolymerArtifactSummary>,
+    polymer_controls: Option<PolymerControlsSummary>,
     context: SoluteContext,
     per_instance_net_charge: Option<f32>,
     charge_source: Option<String>,
     charge_source_kinds: Vec<String>,
     fixed_rotation_euler: Option<[f32; 3]>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct TopologyGraphInventorySummary {
+    schema_version: String,
+    build_mode: String,
+    architecture: String,
+    motif_count: usize,
+    cycle_count: usize,
+    branch_point_count: usize,
+    open_port_count: usize,
+    applied_cap_count: usize,
+    port_class_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SourceArtifactDetail {
+    kind: String,
+    path: String,
+    topology: Option<String>,
+    topology_graph: Option<String>,
+    charge_manifest: Option<String>,
+    build_manifest: Option<String>,
+    connectivity_hint: Option<String>,
+    parameter_source: Option<String>,
+    forcefield_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_structure_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_topology_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_sequence_tokens: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template_sequence_resnames: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    applied_residue_resnames: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BuiltSoluteArtifact {
+    path: String,
+    build_manifest: String,
+    build_mode: Option<String>,
+    target_n_repeat: Option<usize>,
+    conformation_mode: Option<String>,
+    seed: Option<u64>,
+    source_bundle: Value,
+    forcefield_ref: Option<String>,
+    source_sequence_tokens: Option<Vec<String>>,
+    template_sequence_resnames: Option<Vec<String>>,
+    applied_residue_resnames: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ChainInstanceMapping {
+    copy_index: usize,
+    source_chain_indices: Vec<usize>,
+    packed_chain_indices: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PolymerBuildHandoffSummary {
+    build_manifest: String,
+    manifest_version: Option<String>,
+    coordinates: String,
+    charge_manifest: Option<String>,
+    topology: Option<String>,
+    topology_graph: Option<String>,
+    forcefield_ref: Option<String>,
+    source_bundle: Value,
+    summary: Value,
+    source_structure_path: Option<String>,
+    source_topology_path: Option<String>,
+    source_sequence_tokens: Option<Vec<String>>,
+    template_sequence_resnames: Option<Vec<String>>,
+    applied_residue_resnames: Option<Vec<String>>,
+    copy_count: usize,
+    source_chain_count_per_copy: usize,
+    chain_instance_mapping: Vec<ChainInstanceMapping>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PolymerArtifactSummary {
+    build_manifest: String,
+    source_ref: Value,
+    target: Value,
+    realization: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PolymerControlsSummary {
+    handoff_source: String,
+    target: Value,
+    realization: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ComponentChargeResolution {
+    name: String,
+    count: usize,
+    source_kind: String,
+    charge_manifest: Option<String>,
+    topology: Option<String>,
+    per_instance_net_charge_e: Option<f32>,
+    total_component_charge_e: Option<f32>,
+    charge_source: Option<String>,
+    charge_source_kinds: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ComponentInventoryItem {
+    name: String,
+    count: usize,
+    source_kind: String,
+    kind: String,
+    path: String,
+    topology: Option<String>,
+    topology_graph: Option<String>,
+    topology_graph_summary: Option<TopologyGraphInventorySummary>,
+    charge_manifest: Option<String>,
+    build_manifest: Option<String>,
+    forcefield_ref: Option<String>,
+    connectivity_hint: Option<String>,
+    parameter_source: Option<String>,
+    aligned_euler: Option<[f32; 3]>,
+    polymer_md_handoff: Option<PolymerBuildHandoffSummary>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ComponentInputDigest {
+    name: String,
+    coordinates: Option<String>,
+    topology: Option<String>,
+    topology_graph: Option<String>,
+    charge_manifest: Option<String>,
+    build_manifest: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackBuildMetadata {
+    git_commit: Option<String>,
+    build_timestamp: Option<String>,
+    target_triple: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackProvenance {
+    cli_version: String,
+    binary_version: String,
+    schema_version: String,
+    request_hash: String,
+    engine_config_hash: String,
+    build_metadata: PackBuildMetadata,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackArtifactDigests {
+    coordinates: Option<String>,
+    md_package: Option<String>,
+    component_inputs: Vec<ComponentInputDigest>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackEngineDecisions {
+    normalized_pack_config_hash: String,
+    request_charge_sources: Vec<String>,
+    details: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SourceSoluteManifestArtifact {
+    kind: String,
+    path: String,
+    topology: Option<String>,
+    topology_graph: Option<String>,
+    charge_manifest: Option<String>,
+    build_manifest: Option<String>,
+    connectivity_hint: Option<String>,
+    parameter_source: Option<String>,
+    forcefield_ref: Option<String>,
+    source_structure_path: Option<String>,
+    source_topology_path: Option<String>,
+    source_sequence_tokens: Option<Vec<String>>,
+    template_sequence_resnames: Option<Vec<String>>,
+    applied_residue_resnames: Option<Vec<String>>,
+    atom_count: usize,
+    built_solute_artifact: Option<BuiltSoluteArtifact>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SolventInventoryItem {
+    name: String,
+    kind: String,
+    model: Option<String>,
+    molecule_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct IonInventoryItem {
+    name: String,
+    kind: String,
+    molecule_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+enum ManifestInventoryItem {
+    Component(ComponentInventoryItem),
+    Solvent(SolventInventoryItem),
+    Ion(IonInventoryItem),
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct FinalBoxDimensions {
+    lx: f32,
+    ly: f32,
+    lz: f32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CoordinatesOutputMetadata {
+    path: String,
+    format: String,
+    write_conect: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PathFormatMetadata {
+    path: String,
+    format: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MdPackageOutputMetadata {
+    path: String,
+    format: String,
+    preserve_topology_graph: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct OutputMetadata {
+    coordinates: CoordinatesOutputMetadata,
+    manifest: PathFormatMetadata,
+    md_package: MdPackageOutputMetadata,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct OutputSummary {
+    coordinates: String,
+    manifest: String,
+    md_package: String,
+    format: String,
+    write_conect: bool,
+    preserve_topology_graph: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MorphologySummary {
+    mode: String,
+    alignment_axis: Option<String>,
+    target_density_g_cm3: Option<f32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackManifestSchema {
+    schema_version: String,
+    run_id: Option<String>,
+    source_solute_artifact: SourceSoluteManifestArtifact,
+    built_solute_artifact: Option<BuiltSoluteArtifact>,
+    polymer_build_handoff: Option<PolymerBuildHandoffSummary>,
+    md_ready_polymer_handoff: Option<PolymerBuildHandoffSummary>,
+    polymer_artifact: Option<PolymerArtifactSummary>,
+    polymer_controls: Option<PolymerControlsSummary>,
+    charge_manifest_path: Option<String>,
+    charge_manifest_paths: Vec<String>,
+    charge_source_kinds: Vec<String>,
+    component_charge_resolution: Vec<ComponentChargeResolution>,
+    final_box_size_angstrom: [f32; 3],
+    final_box_vectors_angstrom: [[f32; 3]; 3],
+    final_box_dimensions_angstrom: FinalBoxDimensions,
+    component_inventory: Vec<ManifestInventoryItem>,
+    warnings: Vec<ErrorDetail>,
+    polymer_chain_count: usize,
+    residue_counts: BTreeMap<String, usize>,
+    water_count: usize,
+    ion_counts: BTreeMap<String, usize>,
+    net_charge_before_neutralization: Option<f32>,
+    neutralization_policy_applied: String,
+    target_salt_name: Option<String>,
+    target_salt_concentration_molar: Option<f32>,
+    target_salt_formula: Option<String>,
+    achieved_salt_count: usize,
+    achieved_salt_counts_by_species: BTreeMap<String, usize>,
+    morphology_mode: String,
+    morphology: MorphologySummary,
+    output_metadata: OutputMetadata,
+    artifact_digests: PackArtifactDigests,
+    engine_decisions: PackEngineDecisions,
+    outputs: OutputSummary,
+    provenance: PackProvenance,
+    summary: RunSummary,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PackManifestPath {
+    path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MdReadyCoordinates {
+    path: String,
+    format: String,
+    write_conect: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct OpenMmHelpers {
+    coordinates: String,
+    pack_manifest: String,
+    polymer_build_handoff: Option<PolymerBuildHandoffSummary>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MdEngineHelpers {
+    openmm: OpenMmHelpers,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MdReadyPackageSchema {
+    schema_version: String,
+    run_id: Option<String>,
+    coordinates: MdReadyCoordinates,
+    pack_manifest: PackManifestPath,
+    md_package_path: String,
+    preserve_topology_graph: bool,
+    topology_graphs: Vec<String>,
+    polymer_build_handoff: Option<PolymerBuildHandoffSummary>,
+    component_inventory: Vec<ComponentInventoryItem>,
+    md_engine_helpers: MdEngineHelpers,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -772,15 +1153,36 @@ fn sha256_file(path: &Path) -> PackResult<String> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-fn canonical_json_string(value: &Value) -> PackResult<String> {
+fn canonical_json_string<T: Serialize>(value: &T) -> PackResult<String> {
     serde_json::to_string(value).map_err(|err| PackError::Parse(err.to_string()))
 }
 
-fn hash_value(value: &Value) -> PackResult<String> {
+fn hash_value<T: Serialize>(value: &T) -> PackResult<String> {
     let text = canonical_json_string(value)?;
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn value_string(value: &Value) -> Option<String> {
+    value.as_str().map(ToOwned::to_owned)
+}
+
+fn value_usize(value: &Value) -> Option<usize> {
+    value.as_u64().and_then(|raw| raw.try_into().ok())
+}
+
+fn value_u64(value: &Value) -> Option<u64> {
+    value.as_u64()
+}
+
+fn value_string_vec(value: &Value) -> Option<Vec<String>> {
+    value.as_array().map(|items| {
+        items
+            .iter()
+            .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+            .collect::<Vec<_>>()
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -1030,8 +1432,10 @@ fn resolved_md_package_path(outputs: &OutputRequest) -> String {
 }
 
 fn pack_data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../python/warp_md/pack/data")
+    if let Some(path) = std::env::var_os(PACK_DATA_DIR_ENV).map(PathBuf::from) {
+        return path;
+    }
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/warp_md/pack/data")
 }
 
 fn water_template_path(model: &str) -> String {
@@ -1075,7 +1479,10 @@ fn normalize_salt_formula_key(formula: &str) -> String {
 
 fn parse_ion_registry_file(path: &Path) -> PackResult<Vec<IonRegistryEntry>> {
     let text = fs::read_to_string(path).map_err(|err| {
-        PackError::Invalid(format!("failed to read ion registry '{}': {err}", path.display()))
+        PackError::Invalid(format!(
+            "failed to read ion registry '{}': {err}",
+            path.display()
+        ))
     })?;
     let mut file: IonRegistryFile = serde_json::from_str(&text).map_err(|err| {
         PackError::Invalid(format!(
@@ -1095,7 +1502,10 @@ fn parse_ion_registry_file(path: &Path) -> PackResult<Vec<IonRegistryEntry>> {
 
 fn parse_salt_registry_file(path: &Path) -> PackResult<Vec<SaltRegistryEntry>> {
     let text = fs::read_to_string(path).map_err(|err| {
-        PackError::Invalid(format!("failed to read salt registry '{}': {err}", path.display()))
+        PackError::Invalid(format!(
+            "failed to read salt registry '{}': {err}",
+            path.display()
+        ))
     })?;
     let file: SaltRegistryFile = serde_json::from_str(&text).map_err(|err| {
         PackError::Invalid(format!(
@@ -1244,7 +1654,10 @@ fn supported_ion_species() -> PackResult<Vec<String>> {
     Ok(ion_registry()?.supported_species.clone())
 }
 
-fn build_salt_registry(entries: Vec<SaltRegistryEntry>, ions: &IonRegistry) -> PackResult<SaltRegistry> {
+fn build_salt_registry(
+    entries: Vec<SaltRegistryEntry>,
+    ions: &IonRegistry,
+) -> PackResult<SaltRegistry> {
     let mut canonical_entries = BTreeMap::new();
     for entry in entries {
         let canonical_key = normalize_salt_name_key(&entry.name);
@@ -1334,17 +1747,38 @@ fn supported_salt_names() -> PackResult<Vec<String>> {
 }
 
 fn chemistry_catalog_for_request(ions: &IonRequest) -> PackResult<ChemistryCatalog> {
+    if !ions.requires_registry_data() {
+        return Ok(ChemistryCatalog {
+            ions: IonRegistry {
+                supported_species: Vec::new(),
+                by_lookup: BTreeMap::new(),
+                by_symbol: BTreeMap::new(),
+                ambiguous_symbols: BTreeSet::new(),
+            },
+            salts: SaltRegistry {
+                supported_names: Vec::new(),
+                by_lookup: BTreeMap::new(),
+                by_formula: BTreeMap::new(),
+            },
+        });
+    }
     let mut ion_entries = base_ion_registry_entries()?;
-    ion_entries.extend(ions.catalog.ions.iter().cloned().map(|entry| IonRegistryEntry {
-        species: entry.species,
-        aliases: entry.aliases,
-        template: entry.template,
-        formula_symbol: entry.formula_symbol,
-        charge_e: entry.charge_e,
-        mass_amu: entry.mass_amu,
-        topology_kind: None,
-        atom_count: None,
-    }));
+    ion_entries.extend(
+        ions.catalog
+            .ions
+            .iter()
+            .cloned()
+            .map(|entry| IonRegistryEntry {
+                species: entry.species,
+                aliases: entry.aliases,
+                template: entry.template,
+                formula_symbol: entry.formula_symbol,
+                charge_e: entry.charge_e,
+                mass_amu: entry.mass_amu,
+                topology_kind: None,
+                atom_count: None,
+            }),
+    );
     let ion_registry = build_ion_registry(ion_entries)?;
 
     let mut salt_entries = base_salt_registry_entries()?;
@@ -1391,7 +1825,10 @@ fn catalog_salt_spec_for_formula_with(
 }
 
 fn catalog_salt_spec_for_formula(formula: &str) -> PackResult<Option<NormalizedSaltSpec>> {
-    Ok(catalog_salt_spec_for_formula_with(salt_registry()?, formula))
+    Ok(catalog_salt_spec_for_formula_with(
+        salt_registry()?,
+        formula,
+    ))
 }
 
 fn ion_species_info_with(ions: &IonRegistry, species: &str) -> Option<IonSpeciesInfo> {
@@ -1412,20 +1849,20 @@ fn ion_species_for_formula_symbol_with(ions: &IonRegistry, symbol: &str) -> Pack
             symbol
         )));
     }
-    ions
-        .by_symbol
+    ions.by_symbol
         .get(symbol)
         .cloned()
-        .ok_or_else(|| {
-            PackError::Invalid(format!("unsupported salt.formula symbol '{}'", symbol))
-        })
+        .ok_or_else(|| PackError::Invalid(format!("unsupported salt.formula symbol '{}'", symbol)))
 }
 
 fn ion_species_for_formula_symbol(symbol: &str) -> PackResult<String> {
     ion_species_for_formula_symbol_with(ion_registry()?, symbol)
 }
 
-fn validate_salt_species_map_with(ions: &IonRegistry, species: &BTreeMap<String, usize>) -> PackResult<()> {
+fn validate_salt_species_map_with(
+    ions: &IonRegistry,
+    species: &BTreeMap<String, usize>,
+) -> PackResult<()> {
     if species.is_empty() {
         return Err(PackError::Invalid(
             "salt.species must include at least one ion species".into(),
@@ -1436,9 +1873,7 @@ fn validate_salt_species_map_with(ions: &IonRegistry, species: &BTreeMap<String,
     let mut has_negative = false;
     for (name, count) in species {
         if *count == 0 {
-            return Err(PackError::Invalid(
-                "salt.species counts must be > 0".into(),
-            ));
+            return Err(PackError::Invalid("salt.species counts must be > 0".into()));
         }
         let info = ion_species_info_with(ions, name)
             .ok_or_else(|| PackError::Invalid(format!("unsupported ion species '{name}'")))?;
@@ -1486,7 +1921,10 @@ fn parse_salt_formula_with(
         .cloned()
         .collect::<Vec<_>>();
     complex_symbols.sort_by(|left, right| right.len().cmp(&left.len()));
-    if let Some(symbol) = complex_symbols.into_iter().find(|symbol| compact.contains(symbol)) {
+    if let Some(symbol) = complex_symbols
+        .into_iter()
+        .find(|symbol| compact.contains(symbol))
+    {
         return Err(PackError::Invalid(format!(
             "salt.formula '{}' references polyatomic symbol '{}'; use salt.name or salt.species instead",
             formula, symbol
@@ -1521,9 +1959,8 @@ fn parse_salt_formula_with(
                 PackError::Invalid(format!("invalid count in salt.formula '{}'", formula))
             })?
         };
-        let species_name = ion_species_for_formula_symbol_with(ions, &symbol).map_err(|err| {
-            PackError::Invalid(format!("{err} in '{}'", formula))
-        })?;
+        let species_name = ion_species_for_formula_symbol_with(ions, &symbol)
+            .map_err(|err| PackError::Invalid(format!("{err} in '{}'", formula)))?;
         *species.entry(species_name.to_string()).or_insert(0) += count;
     }
     validate_salt_species_map_with(ions, &species)?;
@@ -1534,7 +1971,10 @@ fn parse_salt_formula(formula: &str) -> PackResult<BTreeMap<String, usize>> {
     parse_salt_formula_with(ion_registry()?, salt_registry()?, formula)
 }
 
-fn canonical_salt_formula_with(ions: &IonRegistry, species: &BTreeMap<String, usize>) -> PackResult<String> {
+fn canonical_salt_formula_with(
+    ions: &IonRegistry,
+    species: &BTreeMap<String, usize>,
+) -> PackResult<String> {
     validate_salt_species_map_with(ions, species)?;
     let mut positive = Vec::new();
     let mut negative = Vec::new();
@@ -1570,7 +2010,11 @@ fn looks_like_simple_formula_symbol(symbol: &str) -> bool {
     }
 }
 
-fn salt_stoichiometry_with(ions: &IonRegistry, cation: &str, anion: &str) -> PackResult<BTreeMap<String, usize>> {
+fn salt_stoichiometry_with(
+    ions: &IonRegistry,
+    cation: &str,
+    anion: &str,
+) -> PackResult<BTreeMap<String, usize>> {
     let cation_info = ion_species_info_with(ions, cation)
         .ok_or_else(|| PackError::Invalid(format!("unsupported cation '{cation}'")))?;
     let anion_info = ion_species_info_with(ions, anion)
@@ -1616,6 +2060,17 @@ impl NeutralizeRequest {
 }
 
 impl IonRequest {
+    fn requires_registry_data(&self) -> bool {
+        self.neutralize.enabled()
+            || self.neutralize.preferred_ion().is_some()
+            || self.salt.is_some()
+            || self.salt_molar.is_some()
+            || self.cation.is_some()
+            || self.anion.is_some()
+            || !self.catalog.ions.is_empty()
+            || !self.catalog.salts.is_empty()
+    }
+
     fn legacy_cation(&self) -> String {
         self.cation.clone().unwrap_or_else(default_na)
     }
@@ -1628,12 +2083,14 @@ impl IonRequest {
         self.salt_molar.is_some() || self.cation.is_some() || self.anion.is_some()
     }
 
-    fn normalized_salt_with(&self, chemistry: &ChemistryCatalog) -> PackResult<Option<NormalizedSaltSpec>> {
+    fn normalized_salt_with(
+        &self,
+        chemistry: &ChemistryCatalog,
+    ) -> PackResult<Option<NormalizedSaltSpec>> {
         if let Some(salt) = &self.salt {
             if self.uses_legacy_salt_fields() {
                 return Err(PackError::Invalid(
-                    "use either ions.salt or legacy ions.salt_molar/cation/anion, not both"
-                        .into(),
+                    "use either ions.salt or legacy ions.salt_molar/cation/anion, not both".into(),
                 ));
             }
             let populated = [
@@ -1657,13 +2114,19 @@ impl IonRequest {
                 }
                 (Some(name), None, None) => named_salt_spec_with(&chemistry.salts, name)?,
                 (None, Some(formula), None) => {
-                    if let Some(spec) = catalog_salt_spec_for_formula_with(&chemistry.salts, formula) {
+                    if let Some(spec) =
+                        catalog_salt_spec_for_formula_with(&chemistry.salts, formula)
+                    {
                         spec
                     } else {
                         NormalizedSaltSpec {
                             name: None,
                             formula: Some(formula.clone()),
-                            species: parse_salt_formula_with(&chemistry.ions, &chemistry.salts, formula)?,
+                            species: parse_salt_formula_with(
+                                &chemistry.ions,
+                                &chemistry.salts,
+                                formula,
+                            )?,
                             molar: None,
                         }
                     }
@@ -1681,8 +2144,10 @@ impl IonRequest {
             };
             normalized.molar = salt.molar;
             if normalized.formula.is_none() {
-                normalized.formula =
-                    Some(canonical_salt_formula_with(&chemistry.ions, &normalized.species)?);
+                normalized.formula = Some(canonical_salt_formula_with(
+                    &chemistry.ions,
+                    &normalized.species,
+                )?);
             }
             Ok(Some(normalized))
         } else if self.salt_molar.is_some() {
@@ -3356,9 +3821,8 @@ fn total_ion_mass_amu_with(
     ion_counts: &BTreeMap<String, usize>,
 ) -> PackResult<f64> {
     ion_counts.iter().try_fold(0.0, |total, (species, count)| {
-        let info = ion_species_info_with(ions, species).ok_or_else(|| {
-            PackError::Invalid(format!("unsupported ion species '{species}'"))
-        })?;
+        let info = ion_species_info_with(ions, species)
+            .ok_or_else(|| PackError::Invalid(format!("unsupported ion species '{species}'")))?;
         Ok(total + info.mass_amu * *count as f64)
     })
 }
@@ -3435,8 +3899,10 @@ fn resolve_chemistry_value(req: &ChemistryResolveRequest) -> PackResult<Value> {
     let box_size = value_to_triplet(&req.box_size_angstrom)?;
     let occupied_volume = req.occupied_volume_angstrom3.unwrap_or(0.0).max(0.0) as f64;
     let normalized_salt = ion_request.normalized_salt_with(&chemistry)?;
-    let salt_pair_count =
-        estimate_salt_formula_units(box_size, normalized_salt.as_ref().and_then(|salt| salt.molar));
+    let salt_pair_count = estimate_salt_formula_units(
+        box_size,
+        normalized_salt.as_ref().and_then(|salt| salt.molar),
+    );
 
     let salt_stoich = normalized_salt
         .as_ref()
@@ -3584,6 +4050,50 @@ fn component_count(metadata: &TranslationMetadata) -> usize {
             .count()
 }
 
+fn topology_graph_inventory_summary(graph: &TopologyGraph) -> TopologyGraphInventorySummary {
+    TopologyGraphInventorySummary {
+        schema_version: graph.schema_version.clone(),
+        build_mode: graph.build_plan.target_mode.clone(),
+        architecture: graph_architecture_label(graph).to_string(),
+        motif_count: graph.motif_instances.len(),
+        cycle_count: graph.cycle_basis.len(),
+        branch_point_count: graph.branch_points.len(),
+        open_port_count: graph.open_ports.len(),
+        applied_cap_count: graph.applied_caps.len(),
+        port_class_count: graph_port_classes(graph).len(),
+    }
+}
+
+fn salt_summary(
+    name: Option<String>,
+    formula: Option<String>,
+    species: BTreeMap<String, usize>,
+    molar: Option<f32>,
+) -> SaltSummary {
+    SaltSummary {
+        name,
+        formula,
+        species,
+        molar,
+    }
+}
+
+fn one_or_many_strings(values: BTreeSet<String>) -> Option<OneOrManyStrings> {
+    match values.len() {
+        0 => None,
+        1 => values.into_iter().next().map(OneOrManyStrings::One),
+        _ => Some(OneOrManyStrings::Many(values.into_iter().collect())),
+    }
+}
+
+fn pack_build_metadata() -> PackBuildMetadata {
+    PackBuildMetadata {
+        git_commit: option_env!("VERGEN_GIT_SHA").map(str::to_string),
+        build_timestamp: option_env!("VERGEN_BUILD_TIMESTAMP").map(str::to_string),
+        target_triple: option_env!("TARGET").map(str::to_string),
+    }
+}
+
 fn is_prmtop_path(path: &str) -> bool {
     Path::new(path)
         .extension()
@@ -3632,8 +4142,22 @@ fn resolve_artifact_component(
         forcefield_ref: None,
         connectivity_hint: artifact.connectivity_hint.clone(),
         parameter_source: artifact.parameter_source.clone(),
-        source_detail: serde_json::to_value(artifact)
-            .map_err(|err| PackError::Parse(err.to_string()))?,
+        source_detail: SourceArtifactDetail {
+            kind: artifact.kind.clone().unwrap_or_else(|| "assembly".into()),
+            path: artifact.path.clone(),
+            topology: artifact.topology.clone(),
+            topology_graph: None,
+            charge_manifest: artifact.charge_manifest.clone(),
+            build_manifest: None,
+            connectivity_hint: artifact.connectivity_hint.clone(),
+            parameter_source: artifact.parameter_source.clone(),
+            forcefield_ref: None,
+            source_structure_path: None,
+            source_topology_path: None,
+            source_sequence_tokens: None,
+            template_sequence_resnames: None,
+            applied_residue_resnames: None,
+        },
         built_artifact: None,
         polymer_build_handoff: None,
         polymer_artifact: None,
@@ -3683,34 +4207,29 @@ fn resolve_polymer_build_component(
     let source_structure_path = loaded
         .manifest
         .pointer("/resolved_inputs/resolved_source_artifacts/coordinates")
-        .cloned()
-        .unwrap_or(Value::Null);
+        .and_then(value_string);
     let source_topology_path = loaded
         .manifest
         .pointer("/resolved_inputs/resolved_source_artifacts/topology")
-        .cloned()
-        .unwrap_or(Value::Null);
+        .and_then(value_string);
     let source_sequence_tokens = build_summary
         .get("resolved_sequence")
-        .cloned()
-        .unwrap_or(Value::Null);
+        .and_then(value_string_vec);
     let template_sequence_resnames = build_summary
         .get("template_sequence_resnames")
-        .cloned()
-        .unwrap_or(Value::Null);
+        .and_then(value_string_vec);
     let applied_residue_resnames = build_summary
         .get("applied_residue_resnames")
-        .cloned()
-        .unwrap_or(Value::Null);
+        .and_then(value_string_vec);
     let chain_instance_mapping = (0..count)
         .map(|copy_idx| {
             let packed_start = copy_idx * context.chain_count + 1;
             let packed_end = packed_start + context.chain_count.saturating_sub(1);
-            json!({
-                "copy_index": copy_idx + 1,
-                "source_chain_indices": (1..=context.chain_count).collect::<Vec<_>>(),
-                "packed_chain_indices": (packed_start..=packed_end).collect::<Vec<_>>(),
-            })
+            ChainInstanceMapping {
+                copy_index: copy_idx + 1,
+                source_chain_indices: (1..=context.chain_count).collect::<Vec<_>>(),
+                packed_chain_indices: (packed_start..=packed_end).collect::<Vec<_>>(),
+            }
         })
         .collect::<Vec<_>>();
     if let Some(graph) = loaded.topology_graph.as_ref() {
@@ -3752,6 +4271,23 @@ fn resolve_polymer_build_component(
         charge_source = estimate.source;
     }
 
+    let source_detail = SourceArtifactDetail {
+        kind: "polymer_chain".into(),
+        path: loaded.coordinates_path.clone(),
+        topology: loaded.topology.clone(),
+        topology_graph: loaded.topology_graph_path.clone(),
+        charge_manifest: loaded.charge_manifest_path.clone(),
+        build_manifest: Some(loaded.manifest_path.clone()),
+        connectivity_hint: Some("polymer_build_handoff".into()),
+        parameter_source: Some("warp-build.agent.v1".into()),
+        forcefield_ref: loaded.forcefield_ref.clone(),
+        source_structure_path: source_structure_path.clone(),
+        source_topology_path: source_topology_path.clone(),
+        source_sequence_tokens: source_sequence_tokens.clone(),
+        template_sequence_resnames: template_sequence_resnames.clone(),
+        applied_residue_resnames: applied_residue_resnames.clone(),
+    };
+
     Ok(ResolvedComponent {
         name,
         count,
@@ -3766,70 +4302,62 @@ fn resolve_polymer_build_component(
         forcefield_ref: loaded.forcefield_ref.clone(),
         connectivity_hint: Some("polymer_build_handoff".into()),
         parameter_source: Some("warp-build.agent.v1".into()),
-        source_detail: json!({
-            "kind": "polymer_chain",
-            "path": loaded.coordinates_path,
-            "topology": loaded.topology,
-            "topology_graph": loaded.topology_graph_path,
-            "charge_manifest": loaded.charge_manifest_path,
-            "build_manifest": loaded.manifest_path,
-            "connectivity_hint": "polymer_build_handoff",
-            "parameter_source": "warp-build.agent.v1",
-            "forcefield_ref": loaded.forcefield_ref,
-            "source_structure_path": source_structure_path,
-            "source_topology_path": source_topology_path,
-            "source_sequence_tokens": source_sequence_tokens,
-            "template_sequence_resnames": template_sequence_resnames,
-            "applied_residue_resnames": applied_residue_resnames,
+        source_detail: source_detail.clone(),
+        built_artifact: Some(BuiltSoluteArtifact {
+            path: loaded.coordinates_path.clone(),
+            build_manifest: loaded.manifest_path.clone(),
+            build_mode: build_summary.get("build_mode").and_then(value_string),
+            target_n_repeat: build_summary
+                .get("total_repeat_units")
+                .and_then(value_usize),
+            conformation_mode: build_realization
+                .get("conformation_mode")
+                .and_then(value_string),
+            seed: build_realization.get("seed").and_then(value_u64),
+            source_bundle: source_bundle.clone(),
+            forcefield_ref: loaded.forcefield_ref.clone(),
+            source_sequence_tokens: source_sequence_tokens.clone(),
+            template_sequence_resnames: template_sequence_resnames.clone(),
+            applied_residue_resnames: applied_residue_resnames.clone(),
         }),
-        built_artifact: Some(json!({
-            "path": loaded.coordinates_path.clone(),
-            "build_manifest": loaded.manifest_path.clone(),
-            "build_mode": build_summary.get("build_mode").cloned().unwrap_or(Value::Null),
-            "target_n_repeat": build_summary.get("total_repeat_units").cloned().unwrap_or(Value::Null),
-            "conformation_mode": build_realization.get("conformation_mode").cloned().unwrap_or(Value::Null),
-            "seed": build_realization.get("seed").cloned().unwrap_or(Value::Null),
-            "source_bundle": source_bundle.clone(),
-            "forcefield_ref": loaded.forcefield_ref.clone(),
-            "source_sequence_tokens": source_sequence_tokens.clone(),
-            "template_sequence_resnames": template_sequence_resnames.clone(),
-            "applied_residue_resnames": applied_residue_resnames.clone(),
-        })),
-        polymer_build_handoff: Some(json!({
-            "build_manifest": loaded.manifest_path.clone(),
-            "manifest_version": loaded
+        polymer_build_handoff: Some(PolymerBuildHandoffSummary {
+            build_manifest: loaded.manifest_path.clone(),
+            manifest_version: loaded
                 .manifest
                 .get("schema_version")
+                .and_then(value_string)
+                .or_else(|| loaded.manifest.get("version").and_then(value_string)),
+            coordinates: loaded.coordinates_path.clone(),
+            charge_manifest: loaded.charge_manifest_path.clone(),
+            topology: loaded.topology.clone(),
+            topology_graph: loaded.topology_graph_path.clone(),
+            forcefield_ref: loaded.forcefield_ref.clone(),
+            source_bundle: source_bundle.clone(),
+            summary: build_summary.clone(),
+            source_structure_path: source_detail.source_structure_path.clone(),
+            source_topology_path: source_detail.source_topology_path.clone(),
+            source_sequence_tokens: source_sequence_tokens.clone(),
+            template_sequence_resnames: template_sequence_resnames.clone(),
+            applied_residue_resnames: applied_residue_resnames.clone(),
+            copy_count: count,
+            source_chain_count_per_copy: context.chain_count,
+            chain_instance_mapping,
+        }),
+        polymer_artifact: Some(PolymerArtifactSummary {
+            build_manifest: loaded.manifest_path.clone(),
+            source_ref: loaded
+                .manifest
+                .pointer("/normalized_request/source_ref")
                 .cloned()
-                .or_else(|| loaded.manifest.get("version").cloned())
                 .unwrap_or(Value::Null),
-            "coordinates": loaded.coordinates_path.clone(),
-            "charge_manifest": loaded.charge_manifest_path.clone(),
-            "topology": loaded.topology.clone(),
-            "topology_graph": loaded.topology_graph_path.clone(),
-            "forcefield_ref": loaded.forcefield_ref.clone(),
-            "source_bundle": source_bundle.clone(),
-            "summary": build_summary.clone(),
-            "source_structure_path": source_structure_path,
-            "source_topology_path": source_topology_path,
-            "source_sequence_tokens": source_sequence_tokens,
-            "template_sequence_resnames": template_sequence_resnames,
-            "applied_residue_resnames": applied_residue_resnames,
-            "copy_count": count,
-            "source_chain_count_per_copy": context.chain_count,
-            "chain_instance_mapping": chain_instance_mapping,
-        })),
-        polymer_artifact: Some(json!({
-            "build_manifest": loaded.manifest_path.clone(),
-            "source_ref": loaded.manifest.pointer("/normalized_request/source_ref").cloned().unwrap_or(Value::Null),
-            "target": build_target.clone(),
-            "realization": build_realization.clone(),
-        })),
-        polymer_controls: Some(json!({
-            "handoff_source": WARP_BUILD_MANIFEST_VERSION,
-            "target": build_target,
-            "realization": build_realization,
-        })),
+            target: build_target.clone(),
+            realization: build_realization.clone(),
+        }),
+        polymer_controls: Some(PolymerControlsSummary {
+            handoff_source: WARP_BUILD_MANIFEST_VERSION.into(),
+            target: build_target,
+            realization: build_realization,
+        }),
         context,
         per_instance_net_charge,
         charge_source,
@@ -4097,17 +4625,19 @@ fn build_pack_config(
         for kind in &component.charge_source_kinds {
             charge_source_kind_set.insert(kind.clone());
         }
-        component_charge_resolution.push(json!({
-            "name": component.name,
-            "count": component.count,
-            "source_kind": component.source_kind,
-            "charge_manifest": component.charge_manifest_path,
-            "topology": component.topology,
-            "per_instance_net_charge_e": component.per_instance_net_charge,
-            "total_component_charge_e": component.per_instance_net_charge.map(|value| value * component.count as f32),
-            "charge_source": component.charge_source,
-            "charge_source_kinds": component.charge_source_kinds,
-        }));
+        component_charge_resolution.push(ComponentChargeResolution {
+            name: component.name.clone(),
+            count: component.count,
+            source_kind: component.source_kind.clone(),
+            charge_manifest: component.charge_manifest_path.clone(),
+            topology: component.topology.clone(),
+            per_instance_net_charge_e: component.per_instance_net_charge,
+            total_component_charge_e: component
+                .per_instance_net_charge
+                .map(|value| value * component.count as f32),
+            charge_source: component.charge_source.clone(),
+            charge_source_kinds: component.charge_source_kinds.clone(),
+        });
     }
     if req.environment.ions.neutralize.enabled() {
         let mut total_charge = 0.0f32;
@@ -4157,9 +4687,7 @@ fn build_pack_config(
                     .map(|info| info.charge_e.unsigned_abs() as f32)
                     .unwrap_or(1.0);
                 let neutralizers = (net_charge.abs() / cation_valence).ceil() as usize;
-                *ion_counts
-                    .entry(counterion)
-                    .or_insert(0) += neutralizers;
+                *ion_counts.entry(counterion).or_insert(0) += neutralizers;
             } else if net_charge > 0.0 {
                 let counterion = req
                     .environment
@@ -4169,9 +4697,7 @@ fn build_pack_config(
                     .map(|info| info.charge_e.unsigned_abs() as f32)
                     .unwrap_or(1.0);
                 let neutralizers = (net_charge.abs() / anion_valence).ceil() as usize;
-                *ion_counts
-                    .entry(counterion)
-                    .or_insert(0) += neutralizers;
+                *ion_counts.entry(counterion).or_insert(0) += neutralizers;
             }
         }
     }
@@ -4329,34 +4855,25 @@ fn build_pack_config(
         .ok_or_else(|| PackError::Invalid("no components resolved".into()))?;
     let component_inventory = components
         .iter()
-        .map(|component| {
-            json!({
-                "name": component.name,
-                "count": component.count,
-                "source_kind": component.source_kind,
-                "kind": component.kind,
-                "path": component.coordinates_path,
-                "topology": component.topology,
-                "topology_graph": component.topology_graph_path,
-                "topology_graph_summary": component.topology_graph.as_ref().map(|graph| json!({
-                    "schema_version": graph.schema_version,
-                    "build_mode": graph.build_plan.target_mode,
-                    "architecture": graph_architecture_label(graph),
-                    "motif_count": graph.motif_instances.len(),
-                    "cycle_count": graph.cycle_basis.len(),
-                    "branch_point_count": graph.branch_points.len(),
-                    "open_port_count": graph.open_ports.len(),
-                    "applied_cap_count": graph.applied_caps.len(),
-                    "port_class_count": graph_port_classes(graph).len(),
-                })),
-                "charge_manifest": component.charge_manifest_path,
-                "build_manifest": component.build_manifest_path,
-                "forcefield_ref": component.forcefield_ref,
-                "connectivity_hint": component.connectivity_hint,
-                "parameter_source": component.parameter_source,
-                "aligned_euler": component.fixed_rotation_euler,
-                "polymer_md_handoff": component.polymer_build_handoff,
-            })
+        .map(|component| ComponentInventoryItem {
+            name: component.name.clone(),
+            count: component.count,
+            source_kind: component.source_kind.clone(),
+            kind: component.kind.clone(),
+            path: component.coordinates_path.clone(),
+            topology: component.topology.clone(),
+            topology_graph: component.topology_graph_path.clone(),
+            topology_graph_summary: component
+                .topology_graph
+                .as_ref()
+                .map(topology_graph_inventory_summary),
+            charge_manifest: component.charge_manifest_path.clone(),
+            build_manifest: component.build_manifest_path.clone(),
+            forcefield_ref: component.forcefield_ref.clone(),
+            connectivity_hint: component.connectivity_hint.clone(),
+            parameter_source: component.parameter_source.clone(),
+            aligned_euler: component.fixed_rotation_euler,
+            polymer_md_handoff: component.polymer_build_handoff.clone(),
         })
         .collect::<Vec<_>>();
     let charge_source_kinds = charge_source_kind_set.into_iter().collect::<Vec<_>>();
@@ -4458,157 +4975,185 @@ fn build_manifest(
     coordinates_format: &str,
     md_package_path: &str,
     md_package_digest: Option<String>,
-) -> PackResult<Value> {
+) -> PackResult<PackManifestSchema> {
     let normalized_salt = req.environment.ions.normalized_salt_with(chemistry)?;
-    let request_value =
-        serde_json::to_value(req).map_err(|err| PackError::Parse(err.to_string()))?;
-    let cfg_value = serde_json::to_value(cfg).map_err(|err| PackError::Parse(err.to_string()))?;
     let component_input_digests = metadata
         .component_inventory
         .iter()
-        .map(|item| {
-            json!({
-                "name": item.get("name").cloned().unwrap_or(Value::Null),
-                "coordinates": item.get("path").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
-                "topology": item.get("topology").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
-                "topology_graph": item.get("topology_graph").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
-                "charge_manifest": item.get("charge_manifest").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
-                "build_manifest": item.get("build_manifest").and_then(Value::as_str).and_then(|path| sha256_file(Path::new(path)).ok()),
-            })
+        .map(|item| ComponentInputDigest {
+            name: item.name.clone(),
+            coordinates: sha256_file(Path::new(&item.path)).ok(),
+            topology: item
+                .topology
+                .as_deref()
+                .and_then(|path| sha256_file(Path::new(path)).ok()),
+            topology_graph: item
+                .topology_graph
+                .as_deref()
+                .and_then(|path| sha256_file(Path::new(path)).ok()),
+            charge_manifest: item
+                .charge_manifest
+                .as_deref()
+                .and_then(|path| sha256_file(Path::new(path)).ok()),
+            build_manifest: item
+                .build_manifest
+                .as_deref()
+                .and_then(|path| sha256_file(Path::new(path)).ok()),
         })
         .collect::<Vec<_>>();
-    let build_metadata = json!({
-        "git_commit": option_env!("VERGEN_GIT_SHA"),
-        "build_timestamp": option_env!("VERGEN_BUILD_TIMESTAMP"),
-        "target_triple": option_env!("TARGET"),
-    });
-    let provenance = json!({
-        "cli_version": env!("CARGO_PKG_VERSION"),
-        "binary_version": env!("CARGO_PKG_VERSION"),
-        "schema_version": AGENT_SCHEMA_VERSION,
-        "request_hash": hash_value(&request_value)?,
-        "engine_config_hash": hash_value(&cfg_value)?,
-        "build_metadata": build_metadata,
-    });
-    let artifact_digests = json!({
-        "coordinates": sha256_file(Path::new(coordinates_path)).ok(),
-        "md_package": md_package_digest,
-        "component_inputs": component_input_digests,
-    });
-    let engine_decisions = json!({
-        "normalized_pack_config_hash": hash_value(&cfg_value)?,
-        "request_charge_sources": metadata.charge_manifest_paths,
-        "details": metadata.engine_decisions,
-    });
+    let provenance = PackProvenance {
+        cli_version: env!("CARGO_PKG_VERSION").into(),
+        binary_version: env!("CARGO_PKG_VERSION").into(),
+        schema_version: AGENT_SCHEMA_VERSION.into(),
+        request_hash: hash_value(req)?,
+        engine_config_hash: hash_value(cfg)?,
+        build_metadata: pack_build_metadata(),
+    };
+    let artifact_digests = PackArtifactDigests {
+        coordinates: sha256_file(Path::new(coordinates_path)).ok(),
+        md_package: md_package_digest,
+        component_inputs: component_input_digests,
+    };
+    let engine_decisions = PackEngineDecisions {
+        normalized_pack_config_hash: hash_value(cfg)?,
+        request_charge_sources: metadata.charge_manifest_paths.clone(),
+        details: metadata.engine_decisions.clone(),
+    };
 
-    let mut inventory = metadata.component_inventory.clone();
-    let mut primary = metadata.source_solute_artifact.clone();
-    if let Some(obj) = primary.as_object_mut() {
-        obj.insert("path".into(), Value::String(cfg.structures[0].path.clone()));
-        obj.insert(
-            "atom_count".into(),
-            Value::Number(serde_json::Number::from(metadata.solute_context.atoms)),
-        );
-        if let Some(built) = metadata.built_solute_artifact.clone() {
-            obj.insert("built_solute_artifact".into(), built);
-        }
-    }
+    let mut inventory = metadata
+        .component_inventory
+        .iter()
+        .cloned()
+        .map(ManifestInventoryItem::Component)
+        .collect::<Vec<_>>();
+    let primary = SourceSoluteManifestArtifact {
+        kind: metadata.source_solute_artifact.kind.clone(),
+        path: cfg.structures[0].path.clone(),
+        topology: metadata.source_solute_artifact.topology.clone(),
+        topology_graph: metadata.source_solute_artifact.topology_graph.clone(),
+        charge_manifest: metadata.source_solute_artifact.charge_manifest.clone(),
+        build_manifest: metadata.source_solute_artifact.build_manifest.clone(),
+        connectivity_hint: metadata.source_solute_artifact.connectivity_hint.clone(),
+        parameter_source: metadata.source_solute_artifact.parameter_source.clone(),
+        forcefield_ref: metadata.source_solute_artifact.forcefield_ref.clone(),
+        source_structure_path: metadata
+            .source_solute_artifact
+            .source_structure_path
+            .clone(),
+        source_topology_path: metadata.source_solute_artifact.source_topology_path.clone(),
+        source_sequence_tokens: metadata
+            .source_solute_artifact
+            .source_sequence_tokens
+            .clone(),
+        template_sequence_resnames: metadata
+            .source_solute_artifact
+            .template_sequence_resnames
+            .clone(),
+        applied_residue_resnames: metadata
+            .source_solute_artifact
+            .applied_residue_resnames
+            .clone(),
+        atom_count: metadata.solute_context.atoms,
+        built_solute_artifact: metadata.built_solute_artifact.clone(),
+    };
 
     if metadata.water_count > 0 {
-        inventory.push(json!({
-            "name": "solvent",
-            "kind": "water",
-            "model": req.environment.solvent.model,
-            "molecule_count": metadata.water_count,
+        inventory.push(ManifestInventoryItem::Solvent(SolventInventoryItem {
+            name: "solvent".into(),
+            kind: "water".into(),
+            model: req.environment.solvent.model.clone(),
+            molecule_count: metadata.water_count,
         }));
     }
     for (species, count) in &metadata.ion_counts {
         if *count > 0 {
-            inventory.push(json!({
-                "name": species,
-                "kind": "ion",
-                "molecule_count": count,
+            inventory.push(ManifestInventoryItem::Ion(IonInventoryItem {
+                name: species.clone(),
+                kind: "ion".into(),
+                molecule_count: *count,
             }));
         }
     }
 
-    Ok(json!({
-        "schema_version": AGENT_SCHEMA_VERSION,
-        "run_id": req.run_id,
-        "source_solute_artifact": metadata.source_solute_artifact,
-        "built_solute_artifact": metadata.built_solute_artifact,
-        "polymer_build_handoff": metadata.polymer_build_handoff,
-        "md_ready_polymer_handoff": metadata.polymer_build_handoff,
-        "polymer_artifact": metadata.polymer_artifact,
-        "polymer_controls": metadata.polymer_controls,
-        "charge_manifest_path": metadata.charge_manifest_path,
-        "charge_manifest_paths": metadata.charge_manifest_paths,
-        "charge_source_kinds": metadata.charge_source_kinds,
-        "component_charge_resolution": metadata.component_charge_resolution,
-        "final_box_size_angstrom": metadata.resolved_box_size,
-        "final_box_vectors_angstrom": [
+    Ok(PackManifestSchema {
+        schema_version: AGENT_SCHEMA_VERSION.into(),
+        run_id: req.run_id.clone(),
+        source_solute_artifact: primary,
+        built_solute_artifact: metadata.built_solute_artifact.clone(),
+        polymer_build_handoff: metadata.polymer_build_handoff.clone(),
+        md_ready_polymer_handoff: metadata.polymer_build_handoff.clone(),
+        polymer_artifact: metadata.polymer_artifact.clone(),
+        polymer_controls: metadata.polymer_controls.clone(),
+        charge_manifest_path: metadata.charge_manifest_path.clone(),
+        charge_manifest_paths: metadata.charge_manifest_paths.clone(),
+        charge_source_kinds: metadata.charge_source_kinds.clone(),
+        component_charge_resolution: metadata.component_charge_resolution.clone(),
+        final_box_size_angstrom: metadata.resolved_box_size,
+        final_box_vectors_angstrom: [
             [metadata.resolved_box_size[0], 0.0, 0.0],
             [0.0, metadata.resolved_box_size[1], 0.0],
             [0.0, 0.0, metadata.resolved_box_size[2]],
         ],
-        "final_box_dimensions_angstrom": {
-            "lx": metadata.resolved_box_size[0],
-            "ly": metadata.resolved_box_size[1],
-            "lz": metadata.resolved_box_size[2],
+        final_box_dimensions_angstrom: FinalBoxDimensions {
+            lx: metadata.resolved_box_size[0],
+            ly: metadata.resolved_box_size[1],
+            lz: metadata.resolved_box_size[2],
         },
-        "component_inventory": inventory,
-        "warnings": metadata.warnings,
-        "polymer_chain_count": metadata.solute_context.chain_count,
-        "residue_counts": metadata.solute_context.residue_counts,
-        "water_count": metadata.water_count,
-        "ion_counts": metadata.ion_counts,
-        "net_charge_before_neutralization": metadata.net_charge_before_neutralization,
-        "neutralization_policy_applied": metadata.neutralization_policy,
-        "target_salt_name": normalized_salt.as_ref().and_then(|salt| salt.name.clone()),
-        "target_salt_concentration_molar": normalized_salt.as_ref().and_then(|salt| salt.molar),
-        "target_salt_formula": normalized_salt.as_ref().and_then(|salt| salt.formula.clone()),
-        "achieved_salt_count": metadata.salt_pair_count,
-        "achieved_salt_counts_by_species": metadata.ion_counts,
-        "morphology_mode": req.environment.morphology.mode,
-        "morphology": {
-            "mode": req.environment.morphology.mode,
-            "alignment_axis": req.environment.morphology.alignment_axis,
-            "target_density_g_cm3": req.environment.morphology.target_density_g_cm3,
+        component_inventory: inventory,
+        warnings: metadata.warnings.clone(),
+        polymer_chain_count: metadata.solute_context.chain_count,
+        residue_counts: metadata.solute_context.residue_counts.clone(),
+        water_count: metadata.water_count,
+        ion_counts: metadata.ion_counts.clone(),
+        net_charge_before_neutralization: metadata.net_charge_before_neutralization,
+        neutralization_policy_applied: metadata.neutralization_policy.clone(),
+        target_salt_name: normalized_salt.as_ref().and_then(|salt| salt.name.clone()),
+        target_salt_concentration_molar: normalized_salt.as_ref().and_then(|salt| salt.molar),
+        target_salt_formula: normalized_salt
+            .as_ref()
+            .and_then(|salt| salt.formula.clone()),
+        achieved_salt_count: metadata.salt_pair_count,
+        achieved_salt_counts_by_species: metadata.ion_counts.clone(),
+        morphology_mode: req.environment.morphology.mode.clone(),
+        morphology: MorphologySummary {
+            mode: req.environment.morphology.mode.clone(),
+            alignment_axis: req.environment.morphology.alignment_axis.clone(),
+            target_density_g_cm3: req.environment.morphology.target_density_g_cm3,
         },
-        "output_metadata": {
-            "coordinates": {
-                "path": coordinates_path,
-                "format": coordinates_format,
-                "write_conect": req.outputs.write_conect,
+        output_metadata: OutputMetadata {
+            coordinates: CoordinatesOutputMetadata {
+                path: coordinates_path.into(),
+                format: coordinates_format.into(),
+                write_conect: req.outputs.write_conect,
             },
-            "manifest": {
-                "path": req.outputs.manifest,
-                "format": "json",
+            manifest: PathFormatMetadata {
+                path: req.outputs.manifest.clone(),
+                format: "json".into(),
             },
-            "md_package": {
-                "path": md_package_path,
-                "format": "json",
-                "preserve_topology_graph": req.outputs.preserve_topology_graph,
-            }
+            md_package: MdPackageOutputMetadata {
+                path: md_package_path.into(),
+                format: "json".into(),
+                preserve_topology_graph: req.outputs.preserve_topology_graph,
+            },
         },
-        "artifact_digests": artifact_digests,
-        "engine_decisions": engine_decisions,
-        "outputs": {
-            "coordinates": coordinates_path,
-            "manifest": req.outputs.manifest,
-            "md_package": md_package_path,
-            "format": coordinates_format,
-            "write_conect": req.outputs.write_conect,
-            "preserve_topology_graph": req.outputs.preserve_topology_graph,
+        artifact_digests,
+        engine_decisions,
+        outputs: OutputSummary {
+            coordinates: coordinates_path.into(),
+            manifest: req.outputs.manifest.clone(),
+            md_package: md_package_path.into(),
+            format: coordinates_format.into(),
+            write_conect: req.outputs.write_conect,
+            preserve_topology_graph: req.outputs.preserve_topology_graph,
         },
-        "provenance": provenance,
-        "summary": {
-            "component_count": component_count(metadata),
-            "total_atoms": total_atoms,
-            "water_count": metadata.water_count,
-            "ion_counts": metadata.ion_counts,
+        provenance,
+        summary: RunSummary {
+            component_count: component_count(metadata),
+            total_atoms,
+            water_count: metadata.water_count,
+            ion_counts: metadata.ion_counts.clone(),
         },
-    }))
+    })
 }
 
 fn build_md_ready_package(
@@ -4617,49 +5162,45 @@ fn build_md_ready_package(
     coordinates_path: &str,
     coordinates_format: &str,
     md_package_path: &str,
-) -> Value {
+) -> MdReadyPackageSchema {
     let preserved_topology_graphs = if req.outputs.preserve_topology_graph {
         metadata
             .component_inventory
             .iter()
-            .filter_map(|item| item.get("topology_graph").cloned())
-            .filter(|value| !value.is_null())
+            .filter_map(|item| item.topology_graph.clone())
             .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
-    json!({
-        "schema_version": "warp-md.md-ready-package.v1",
-        "run_id": req.run_id,
-        "coordinates": {
-            "path": coordinates_path,
-            "format": coordinates_format,
-            "write_conect": req.outputs.write_conect,
+    let preserved_handoff = if req.outputs.preserve_topology_graph {
+        metadata.polymer_build_handoff.clone()
+    } else {
+        None
+    };
+    MdReadyPackageSchema {
+        schema_version: "warp-md.md-ready-package.v1".into(),
+        run_id: req.run_id.clone(),
+        coordinates: MdReadyCoordinates {
+            path: coordinates_path.into(),
+            format: coordinates_format.into(),
+            write_conect: req.outputs.write_conect,
         },
-        "pack_manifest": {
-            "path": req.outputs.manifest,
+        pack_manifest: PackManifestPath {
+            path: req.outputs.manifest.clone(),
         },
-        "md_package_path": md_package_path,
-        "preserve_topology_graph": req.outputs.preserve_topology_graph,
-        "topology_graphs": preserved_topology_graphs,
-        "polymer_build_handoff": if req.outputs.preserve_topology_graph {
-            metadata.polymer_build_handoff.clone()
-        } else {
-            None
+        md_package_path: md_package_path.into(),
+        preserve_topology_graph: req.outputs.preserve_topology_graph,
+        topology_graphs: preserved_topology_graphs,
+        polymer_build_handoff: preserved_handoff.clone(),
+        component_inventory: metadata.component_inventory.clone(),
+        md_engine_helpers: MdEngineHelpers {
+            openmm: OpenMmHelpers {
+                coordinates: coordinates_path.into(),
+                pack_manifest: req.outputs.manifest.clone(),
+                polymer_build_handoff: preserved_handoff,
+            },
         },
-        "component_inventory": metadata.component_inventory,
-        "md_engine_helpers": {
-            "openmm": {
-                "coordinates": coordinates_path,
-                "pack_manifest": req.outputs.manifest,
-                "polymer_build_handoff": if req.outputs.preserve_topology_graph {
-                    metadata.polymer_build_handoff.clone()
-                } else {
-                    None
-                },
-            }
-        }
-    })
+    }
 }
 
 fn validate_warnings(req: &BuildRequest) -> PackResult<Vec<ErrorDetail>> {
@@ -4667,7 +5208,7 @@ fn validate_warnings(req: &BuildRequest) -> PackResult<Vec<ErrorDetail>> {
     Ok(collect_warnings(req, &components))
 }
 
-fn resolved_inputs(req: &BuildRequest) -> PackResult<Value> {
+fn resolved_inputs(req: &BuildRequest) -> PackResult<ResolvedInputsSummary> {
     let components = resolve_components(req)?;
     let chemistry = chemistry_catalog_for_request(&req.environment.ions)?;
     let normalized_salt = req.environment.ions.normalized_salt_with(&chemistry)?;
@@ -4687,9 +5228,7 @@ fn resolved_inputs(req: &BuildRequest) -> PackResult<Value> {
             component
                 .polymer_build_handoff
                 .as_ref()
-                .and_then(|value| value.get("manifest_version"))
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
+                .and_then(|value| value.manifest_version.clone())
         })
         .collect::<BTreeSet<_>>();
     let charge_source_kinds = components
@@ -4701,46 +5240,46 @@ fn resolved_inputs(req: &BuildRequest) -> PackResult<Value> {
         .filter(|component| component.per_instance_net_charge.is_none())
         .map(|component| component.name.clone())
         .collect::<Vec<_>>();
-    Ok(json!({
-        "morphology_mode": req.environment.morphology.mode,
-        "component_inventory_count": components.len(),
-        "component_instance_count": total_instances,
-        "polymer_build_handoff_present": components.iter().any(|component| component.source_kind == "polymer_build"),
-        "polymer_build_manifest_version": if build_manifest_versions.len() == 1 {
-            build_manifest_versions.iter().next().cloned().map(Value::String).unwrap_or(Value::Null)
-        } else {
-            Value::Array(build_manifest_versions.into_iter().map(Value::String).collect())
+    let charge_source_kind = if charge_source_kinds.len() == 1 {
+        charge_source_kinds.iter().next().cloned()
+    } else if charge_source_kinds.is_empty() {
+        None
+    } else {
+        Some("mixed".into())
+    };
+    Ok(ResolvedInputsSummary {
+        morphology_mode: req.environment.morphology.mode.clone(),
+        component_inventory_count: components.len(),
+        component_instance_count: total_instances,
+        polymer_build_handoff_present: components
+            .iter()
+            .any(|component| component.source_kind == "polymer_build"),
+        polymer_build_manifest_version: one_or_many_strings(build_manifest_versions),
+        topology_graph_present: components
+            .iter()
+            .any(|component| component.topology_graph.is_some()),
+        topology_graph_version: one_or_many_strings(graph_versions),
+        output_format: resolved_output_format(&req.outputs),
+        md_package: resolved_md_package_path(&req.outputs),
+        write_conect: req.outputs.write_conect,
+        preserve_topology_graph: req.outputs.preserve_topology_graph,
+        charge_source_kind,
+        charge_source_kinds: charge_source_kinds.into_iter().collect::<Vec<_>>(),
+        neutralization_preconditions: NeutralizationPreconditions {
+            requested: req.environment.ions.neutralize.enabled(),
+            satisfied: !req.environment.ions.neutralize.enabled()
+                || missing_neutralization.is_empty(),
+            missing_charge_components: missing_neutralization,
         },
-        "topology_graph_present": components.iter().any(|component| component.topology_graph.is_some()),
-        "topology_graph_version": if graph_versions.len() == 1 {
-            graph_versions.iter().next().cloned().map(Value::String).unwrap_or(Value::Null)
-        } else {
-            Value::Array(graph_versions.into_iter().map(Value::String).collect())
-        },
-        "output_format": resolved_output_format(&req.outputs),
-        "md_package": resolved_md_package_path(&req.outputs),
-        "write_conect": req.outputs.write_conect,
-        "preserve_topology_graph": req.outputs.preserve_topology_graph,
-        "charge_source_kind": if charge_source_kinds.len() == 1 {
-            charge_source_kinds.iter().next().cloned().map(Value::String).unwrap_or(Value::Null)
-        } else if charge_source_kinds.is_empty() {
-            Value::Null
-        } else {
-            Value::String("mixed".into())
-        },
-        "charge_source_kinds": charge_source_kinds.into_iter().collect::<Vec<_>>(),
-        "neutralization_preconditions": {
-            "requested": req.environment.ions.neutralize.enabled(),
-            "satisfied": !req.environment.ions.neutralize.enabled() || missing_neutralization.is_empty(),
-            "missing_charge_components": missing_neutralization,
-        },
-        "salt": normalized_salt.as_ref().map(|salt| json!({
-            "name": salt.name,
-            "formula": salt.formula,
-            "species": salt.species,
-            "molar": salt.molar,
-        })),
-    }))
+        salt: normalized_salt.as_ref().map(|salt| {
+            salt_summary(
+                salt.name.clone(),
+                salt.formula.clone(),
+                salt.species.clone(),
+                salt.molar,
+            )
+        }),
+    })
 }
 
 fn error_to_envelope(run_id: Option<String>, err: PackError) -> RunErrorEnvelope {
@@ -4962,36 +5501,32 @@ pub fn resolve_chemistry_json(text: &str) -> PackResult<Value> {
 
 pub fn validate_request_json(text: &str) -> (i32, Value) {
     match load_agent_request(text) {
-        Ok(req) => {
-            let normalized_request = serde_json::to_value(&req)
-                .unwrap_or_else(|_| json!({"schema_version": AGENT_SCHEMA_VERSION}));
-            match resolved_inputs(&req) {
-                Ok(resolved_inputs) => (
-                    0,
-                    json!(ValidateSuccessEnvelope {
-                        schema_version: AGENT_SCHEMA_VERSION.into(),
-                        status: "ok".into(),
-                        valid: true,
-                        normalized_request,
-                        resolved_inputs,
-                        warnings: validate_warnings(&req).unwrap_or_default(),
+        Ok(req) => match resolved_inputs(&req) {
+            Ok(resolved_inputs) => (
+                0,
+                json!(ValidateSuccessEnvelope {
+                    schema_version: AGENT_SCHEMA_VERSION.into(),
+                    status: "ok".into(),
+                    valid: true,
+                    normalized_request: req.clone(),
+                    resolved_inputs,
+                    warnings: validate_warnings(&req).unwrap_or_default(),
+                }),
+            ),
+            Err(err) => {
+                let envelope = error_to_envelope(req.run_id.clone(), err);
+                (
+                    envelope.exit_code,
+                    json!({
+                        "schema_version": AGENT_SCHEMA_VERSION,
+                        "status": "error",
+                        "valid": false,
+                        "errors": envelope.errors,
+                        "warnings": envelope.warnings,
                     }),
-                ),
-                Err(err) => {
-                    let envelope = error_to_envelope(req.run_id.clone(), err);
-                    (
-                        envelope.exit_code,
-                        json!({
-                            "schema_version": AGENT_SCHEMA_VERSION,
-                            "status": "error",
-                            "valid": false,
-                            "errors": envelope.errors,
-                            "warnings": envelope.warnings,
-                        }),
-                    )
-                }
+                )
             }
-        }
+        },
         Err(err) => (
             err.exit_code,
             json!({
@@ -5026,20 +5561,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         }
     };
 
-    let request_value = match serde_json::to_value(&req) {
-        Ok(value) => value,
-        Err(err) => {
-            let envelope = error_to_envelope(
-                req.run_id.clone(),
-                PackError::Parse(format!("request serialization failed: {err}")),
-            );
-            return (
-                envelope.exit_code,
-                serde_json::to_value(envelope).unwrap_or_else(|_| json!({"status":"error"})),
-            );
-        }
-    };
-    let request_hash = hash_value(&request_value).unwrap_or_else(|_| "warp-pack-run".into());
+    let request_hash = hash_value(&req).unwrap_or_else(|_| "warp-pack-run".into());
     let run_id = req
         .run_id
         .clone()
@@ -5087,9 +5609,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 artifact: metadata
                     .built_solute_artifact
                     .as_ref()
-                    .and_then(|value| value.get("path"))
-                    .and_then(|value| value.as_str())
-                    .map(ToOwned::to_owned),
+                    .map(|value| value.path.clone()),
             },
             stream_ndjson,
         );
@@ -5128,7 +5648,11 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             );
         }
 
-        if req.environment.ions.normalized_salt_with(&chemistry)?.is_some()
+        if req
+            .environment
+            .ions
+            .normalized_salt_with(&chemistry)?
+            .is_some()
             || req.environment.ions.neutralize.enabled()
         {
             emit_event(

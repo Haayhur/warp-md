@@ -8,49 +8,14 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from ._chunk_io import read_chunk_fields
+from ._runtime import (
+    load_native_symbol,
+    native_inputs,
+    native_selection,
+    read_all_frames,
+    subset_frames,
+)
 from .trajectory import ArrayTrajectory
-
-
-def _all_resid_mask(system) -> str:
-    atoms = system.atom_table()
-    resids = atoms.get("resid", [])
-    if not resids:
-        return "resid 0:0"
-    return f"resid {min(resids)}:{max(resids)}"
-
-
-def _selection_indices(system, mask: Optional[str]) -> np.ndarray:
-    if mask in ("", "*", "all", None):
-        mask = None
-    if mask:
-        sel = system.select(mask)
-    else:
-        sel = system.select(_all_resid_mask(system))
-    return np.asarray(list(sel.indices), dtype=np.int64)
-
-
-def _read_all(traj, chunk_frames: Optional[int]):
-    max_chunk = chunk_frames or 128
-    coords_list = []
-    box_list = []
-    time_list = []
-    chunk = read_chunk_fields(traj, max_chunk, include_box=True, include_time=True)
-    if chunk is None:
-        return None, None, None
-    while chunk is not None:
-        coords_list.append(np.asarray(chunk["coords"], dtype=np.float64))
-        box = chunk.get("box")
-        if box is not None:
-            box_list.append(np.asarray(box, dtype=np.float64))
-        time = chunk.get("time") or chunk.get("time_ps")
-        if time is not None:
-            time_list.append(np.asarray(time, dtype=np.float64))
-        chunk = read_chunk_fields(traj, max_chunk, include_box=True, include_time=True)
-    coords = np.concatenate(coords_list, axis=0) if coords_list else np.empty((0, 0, 3))
-    box = np.concatenate(box_list, axis=0) if box_list else None
-    time = np.concatenate(time_list, axis=0) if time_list else None
-    return coords, box, time
 
 
 def autoimage(
@@ -61,45 +26,38 @@ def autoimage(
     chunk_frames: Optional[int] = None,
 ) -> ArrayTrajectory:
     """Move selected atoms into primary unit cell (orthorhombic only)."""
-    coords, box, time = _read_all(traj, chunk_frames)
+    coords, box, time = read_all_frames(traj, chunk_frames, include_box=True, include_time=True)
     if coords is None:
         raise ValueError("trajectory has no frames")
+    coords, box, time = subset_frames(coords, frame_indices, box=box, time=time)
+    coords = np.asarray(coords, dtype=np.float32)
     if coords.size == 0:
-        return ArrayTrajectory(coords.astype(np.float32), box=box, time_ps=time)
+        return ArrayTrajectory(coords, box=box, time_ps=time)
     if box is None:
         raise ValueError("autoimage requires box lengths")
 
-    n_frames = coords.shape[0]
-    if frame_indices is not None:
-        select = []
-        for i in frame_indices:
-            j = int(i)
-            if j < 0:
-                j = n_frames + j
-            if 0 <= j < n_frames:
-                select.append(j)
-        coords = coords[select]
-        box = box[select]
-        if time is not None:
-            time = time[select]
-        n_frames = coords.shape[0]
-
-    idx = _selection_indices(system, mask)
-    if idx.size == 0:
-        raise ValueError("selection resolved to empty set")
-
-    out = coords.copy()
-    for f in range(n_frames):
-        lx, ly, lz = box[f]
-        if lx <= 0 or ly <= 0 or lz <= 0:
-            continue
-        sel = out[f, idx, :]
-        sel[:, 0] -= np.floor(sel[:, 0] / lx) * lx
-        sel[:, 1] -= np.floor(sel[:, 1] / ly) * ly
-        sel[:, 2] -= np.floor(sel[:, 2] / lz) * lz
-        out[f, idx, :] = sel
-
-    return ArrayTrajectory(out.astype(np.float32), box=box, time_ps=time)
+    plan_cls = load_native_symbol("AutoImagePlan")
+    if plan_cls is None:
+        raise RuntimeError("AutoImagePlan binding unavailable")
+    source = ArrayTrajectory(coords, box=np.asarray(box, dtype=np.float32), time_ps=time)
+    native_traj, native_system = native_inputs(
+        source,
+        system,
+        chunk_frames,
+        include_box=True,
+    )
+    if native_traj is None or native_system is None:
+        raise RuntimeError("failed to prepare native autoimage inputs")
+    try:
+        selection = native_selection(system, native_system, mask)
+        plan = plan_cls(selection)
+        values = np.asarray(
+            plan.run(native_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            dtype=np.float32,
+        ).reshape(coords.shape)
+    except Exception as exc:
+        raise RuntimeError("native AutoImagePlan execution failed") from exc
+    return ArrayTrajectory(values, box=np.asarray(box, dtype=np.float32), time_ps=time)
 
 
 __all__ = ["autoimage"]

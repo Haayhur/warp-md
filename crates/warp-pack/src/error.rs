@@ -1,5 +1,6 @@
 use thiserror::Error;
 use traj_core::TrajError;
+use warp_structure::StructureError;
 
 #[derive(Debug, Error)]
 pub enum PackError {
@@ -24,6 +25,16 @@ impl From<TrajError> for PackError {
             TrajError::Mismatch(msg) => PackError::Invalid(msg),
             TrajError::InvalidSelection(msg) => PackError::Invalid(msg),
             TrajError::Invalid(msg) => PackError::Invalid(msg),
+        }
+    }
+}
+
+impl From<StructureError> for PackError {
+    fn from(err: StructureError) -> Self {
+        match err {
+            StructureError::Io(source) => Self::Io(source),
+            StructureError::Parse(message) => Self::Parse(message),
+            StructureError::Invalid(message) => Self::Invalid(message),
         }
     }
 }

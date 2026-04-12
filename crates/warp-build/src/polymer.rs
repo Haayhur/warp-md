@@ -1,18 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use traj_core::{parse_pdb_reader, PdbParseOptions, PdbParseResult, PdbRecordKind, Vec3};
-use warp_pack::io::{
-    read_prmtop_atom_charges, read_prmtop_topology, read_prmtop_total_charge, write_minimal_prmtop,
-    write_output, AmberTopology,
+use traj_core::{
+    center_of_geometry, normalize_vec3 as normalize, rotate_about_axis_vec3 as rotate_about_axis,
+    rotate_from_to_vec3 as rotate_from_to, Vec3,
 };
-use warp_pack::pack::AtomRecordKind;
-use warp_pack::{AtomRecord, OutputSpec, PackError, PackOutput, PackResult};
+use warp_pack::{PackError, PackResult};
+use warp_structure::io::{
+    read_molecule, read_prmtop_atom_charges, read_prmtop_topology, read_prmtop_total_charge,
+    write_minimal_prmtop, write_output, AmberTopology, MoleculeData,
+};
+use warp_structure::{AtomRecord, OutputSpec, PackOutput};
 
 pub const CHARGE_MANIFEST_VERSION: &str = "warp-build.charge-manifest.v1";
 pub const LEGACY_CHARGE_MANIFEST_VERSION: &str = "warp-pack.charge-manifest.v1";
@@ -229,60 +230,9 @@ struct BuildResidueSpec {
     applied_resname: String,
 }
 
-fn normalize(v: Vec3) -> Vec3 {
-    let norm = v.norm();
-    if norm <= 1.0e-12 {
-        return Vec3::new(1.0, 0.0, 0.0);
-    }
-    v.scale(1.0 / norm)
-}
-
 fn centroid_of_atoms(atoms: &[AtomRecord]) -> Vec3 {
-    if atoms.is_empty() {
-        return Vec3::new(0.0, 0.0, 0.0);
-    }
-    let mut center = Vec3::new(0.0, 0.0, 0.0);
-    for atom in atoms {
-        center = center.add(atom.position);
-    }
-    center.scale(1.0 / atoms.len() as f32)
-}
-
-fn rotate_from_to(v: Vec3, source_axis: Vec3, target_axis: Vec3) -> Vec3 {
-    let source = normalize(source_axis);
-    let target = normalize(target_axis);
-    let dot = source.dot(target).clamp(-1.0, 1.0);
-    if dot > 1.0 - 1.0e-6 {
-        return v;
-    }
-    if dot < -1.0 + 1.0e-6 {
-        let basis = if source.x.abs() < 0.9 {
-            Vec3::new(1.0, 0.0, 0.0)
-        } else {
-            Vec3::new(0.0, 1.0, 0.0)
-        };
-        let axis = normalize(source.cross(basis));
-        return axis.scale(2.0 * axis.dot(v)).sub(v);
-    }
-    let axis = normalize(source.cross(target));
-    let theta = dot.acos();
-    let cos_t = theta.cos();
-    let sin_t = theta.sin();
-    v.scale(cos_t)
-        .add(axis.cross(v).scale(sin_t))
-        .add(axis.scale(axis.dot(v) * (1.0 - cos_t)))
-}
-
-fn rotate_about_axis(v: Vec3, axis: Vec3, theta: f32) -> Vec3 {
-    if theta.abs() <= 1.0e-8 {
-        return v;
-    }
-    let axis = normalize(axis);
-    let cos_t = theta.cos();
-    let sin_t = theta.sin();
-    v.scale(cos_t)
-        .add(axis.cross(v).scale(sin_t))
-        .add(axis.scale(axis.dot(v) * (1.0 - cos_t)))
+    let positions: Vec<Vec3> = atoms.iter().map(|atom| atom.position).collect();
+    center_of_geometry(&positions)
 }
 
 fn normalize_label(label: Option<&str>, fallback: &str) -> String {
@@ -317,15 +267,15 @@ fn tacticity_phase(tacticity_mode: &str, idx: usize, rng: &mut StdRng) -> PackRe
     }
 }
 
-fn group_residues(parsed: PdbParseResult) -> PackResult<Vec<ResidueTemplate>> {
+fn group_residues(molecule: MoleculeData) -> PackResult<Vec<ResidueTemplate>> {
     let mut grouped = Vec::new();
     let mut current_key: Option<(char, i32)> = None;
     let mut current_atoms = Vec::new();
     let mut current_resname = String::new();
     let mut residue_starts = Vec::new();
     let mut residue_ends = Vec::new();
-    let atoms = parsed.atoms;
-    let bonds = parsed.bonds;
+    let atoms = molecule.atoms;
+    let bonds = molecule.bonds;
 
     for (global_idx, atom) in atoms.into_iter().enumerate() {
         let key = (atom.chain, atom.resid);
@@ -352,10 +302,7 @@ fn group_residues(parsed: PdbParseResult) -> PackResult<Vec<ResidueTemplate>> {
             atom.resname.clone()
         };
         current_atoms.push(AtomRecord {
-            record_kind: match atom.record_kind {
-                PdbRecordKind::Atom => AtomRecordKind::Atom,
-                PdbRecordKind::HetAtom => AtomRecordKind::HetAtom,
-            },
+            record_kind: atom.record_kind,
             name: atom.name,
             element: atom.element,
             resname: current_resname.clone(),
@@ -363,8 +310,9 @@ fn group_residues(parsed: PdbParseResult) -> PackResult<Vec<ResidueTemplate>> {
             chain: if atom.chain == ' ' { 'A' } else { atom.chain },
             segid: atom.segid,
             charge: 0.0,
-            position: Vec3::new(atom.position[0], atom.position[1], atom.position[2]),
+            position: Vec3::new(atom.position.x, atom.position.y, atom.position.z),
             mol_id: 1,
+            pdb_metadata: atom.pdb_metadata,
         });
     }
 
@@ -386,25 +334,46 @@ fn group_residues(parsed: PdbParseResult) -> PackResult<Vec<ResidueTemplate>> {
     }
 
     for (residue_idx, template) in grouped.iter_mut().enumerate() {
-        let start = residue_starts[residue_idx];
-        let end = residue_ends[residue_idx];
-        let mut local_bonds = Vec::new();
-        for &(a, b) in &bonds {
-            if a >= start && a < end && b >= start && b < end {
-                let i = a - start;
-                let j = b - start;
-                let (i, j) = if i <= j { (i, j) } else { (j, i) };
-                if i != j {
-                    local_bonds.push((i, j));
+        template.local_bonds = if bonds.is_empty() {
+            infer_local_bonds(&template.atoms)
+        } else {
+            let start = residue_starts[residue_idx];
+            let end = residue_ends[residue_idx];
+            let mut local_bonds = Vec::new();
+            for &(a, b) in &bonds {
+                if a >= start && a < end && b >= start && b < end {
+                    let i = a - start;
+                    let j = b - start;
+                    let (i, j) = if i <= j { (i, j) } else { (j, i) };
+                    if i != j {
+                        local_bonds.push((i, j));
+                    }
                 }
             }
-        }
-        local_bonds.sort_unstable();
-        local_bonds.dedup();
-        template.local_bonds = local_bonds;
+            local_bonds.sort_unstable();
+            local_bonds.dedup();
+            local_bonds
+        };
     }
 
     Ok(grouped)
+}
+
+fn infer_local_bonds(atoms: &[AtomRecord]) -> Vec<(usize, usize)> {
+    let mut bonds = Vec::new();
+    for i in 0..atoms.len() {
+        for j in (i + 1)..atoms.len() {
+            let max_distance = (covalent_radius_angstrom(&atoms[i].element)
+                + covalent_radius_angstrom(&atoms[j].element)
+                + 0.45)
+                .clamp(0.9, 2.2);
+            let distance = atoms[i].position.sub(atoms[j].position).norm();
+            if distance >= 0.35 && distance <= max_distance {
+                bonds.push((i, j));
+            }
+        }
+    }
+    bonds
 }
 
 fn atoms_len_from_grouped(grouped: &[ResidueTemplate]) -> usize {
@@ -412,20 +381,8 @@ fn atoms_len_from_grouped(grouped: &[ResidueTemplate]) -> usize {
 }
 
 fn load_training_templates(path: &Path) -> PackResult<Vec<ResidueTemplate>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let parsed = parse_pdb_reader(
-        reader,
-        &PdbParseOptions {
-            include_conect: true,
-            non_standard_conect: true,
-            include_ter: true,
-            strict: false,
-            only_first_model: true,
-        },
-    )
-    .map_err(|err| PackError::Parse(err.to_string()))?;
-    group_residues(parsed)
+    let molecule = read_molecule(path, None, false, true, None)?;
+    group_residues(molecule)
 }
 
 fn residue_charge_sums(templates: &[ResidueTemplate], atom_charges: &[f32]) -> Vec<f32> {
@@ -916,6 +873,7 @@ fn solve_rotatable_edges(
                     bonds: output.bonds.clone(),
                     box_size: output.box_size,
                     ter_after: output.ter_after.clone(),
+                    box_vectors: output.box_vectors,
                 };
                 let report = recompute_build_qc_report(&candidate_output, qc_context);
                 let score = solver_score(&report, &candidate_output);
@@ -1279,7 +1237,7 @@ pub fn resolve_polymer_param_source(
                     .or_else(|| bundle.charge_manifest.map(|value| base.join(value))),
             });
         }
-        if ext == "pdb" {
+        if matches!(ext.as_str(), "pdb" | "cif" | "mmcif" | "pdbx") {
             return Ok(PolymerSourceResolved {
                 artifact_path: artifact_path.clone(),
                 training_structure_path: artifact_path.clone(),
@@ -1288,7 +1246,7 @@ pub fn resolve_polymer_param_source(
             });
         }
         return Err(PackError::Invalid(
-            "polymer param artifact must be a .json bundle or .pdb training structure".into(),
+            "polymer param artifact must be a .json bundle or a .pdb/.cif/.mmcif/.pdbx training structure".into(),
         ));
     }
 
@@ -1297,8 +1255,17 @@ pub fn resolve_polymer_param_source(
             artifact_path.join("polymer_param.json"),
             artifact_path.join("polymer_source.json"),
             artifact_path.join("training_oligomer.pdb"),
+            artifact_path.join("training_oligomer.cif"),
+            artifact_path.join("training_oligomer.mmcif"),
+            artifact_path.join("training_oligomer.pdbx"),
             artifact_path.join("oligomer.pdb"),
+            artifact_path.join("oligomer.cif"),
+            artifact_path.join("oligomer.mmcif"),
+            artifact_path.join("oligomer.pdbx"),
             artifact_path.join("source.pdb"),
+            artifact_path.join("source.cif"),
+            artifact_path.join("source.mmcif"),
+            artifact_path.join("source.pdbx"),
         ];
         for candidate in candidates {
             if candidate.exists() {
@@ -2207,7 +2174,7 @@ pub fn write_polymer_prmtop_from_source(
         &built.output.bonds,
     )?;
 
-    write_minimal_prmtop(
+    Ok(write_minimal_prmtop(
         out_path,
         &AmberTopology {
             atom_names,
@@ -2256,7 +2223,7 @@ pub fn write_polymer_prmtop_from_source(
             radius_set: source.radius_set.clone(),
             ipol: source.ipol,
         },
-    )
+    )?)
 }
 
 fn stage_polymer_output_path(final_coordinates_path: &str) -> PathBuf {
@@ -2622,6 +2589,7 @@ pub fn build_linear_sequence_polymer(
         bonds,
         box_size: [0.0, 0.0, 0.0],
         ter_after,
+        box_vectors: None,
     };
     let qc_context = BuildQcContext {
         inter_residue_bond_count: sequence_specs.len().saturating_sub(1),
@@ -3014,6 +2982,7 @@ pub fn build_polymer_graph(
         bonds,
         box_size: [0.0, 0.0, 0.0],
         ter_after,
+        box_vectors: None,
     };
     let qc_context = BuildQcContext {
         inter_residue_bond_count: edge_specs.len(),
@@ -3165,6 +3134,23 @@ pub fn build_polymer_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(label: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!(
+            "warp_build_polymer_test_{}_{}_{}",
+            label,
+            std::process::id(),
+            nanos
+        ));
+        path
+    }
 
     #[test]
     fn polymer_prmtop_transfer_rebuilds_term_type_indices() {
@@ -3264,6 +3250,49 @@ mod tests {
         assert_eq!(rebuilt.bond_type_indices, vec![1, 2, 2, 2, 2, 3]);
         assert_eq!(rebuilt.angle_type_indices, vec![1, 2, 2, 2, 3]);
         assert_eq!(rebuilt.dihedral_type_indices, vec![1, 2, 2, 3]);
+    }
+
+    #[test]
+    fn resolve_polymer_param_source_accepts_mmcif_training_structures() {
+        let dir = temp_path("mmcif_source");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let training = dir.join("training_oligomer.cif");
+        fs::write(
+            &training,
+            "data_warp_build\n\
+loop_\n\
+_atom_site.group_PDB\n\
+_atom_site.id\n\
+_atom_site.type_symbol\n\
+_atom_site.label_atom_id\n\
+_atom_site.label_comp_id\n\
+_atom_site.label_asym_id\n\
+_atom_site.label_seq_id\n\
+_atom_site.Cartn_x\n\
+_atom_site.Cartn_y\n\
+_atom_site.Cartn_z\n\
+ATOM 1 C C1 HDA A 1 0.000 0.000 0.000\n\
+ATOM 2 H H1 HDA A 1 1.090 0.000 0.000\n\
+ATOM 3 C C2 RPT A 2 3.000 0.000 0.000\n\
+ATOM 4 H H2 RPT A 2 4.090 0.000 0.000\n\
+ATOM 5 C C3 TLA A 3 6.000 0.000 0.000\n\
+ATOM 6 H H3 TLA A 3 7.090 0.000 0.000\n",
+        )
+        .expect("write mmcif");
+
+        let resolved = resolve_polymer_param_source(dir.to_string_lossy().as_ref(), None, None)
+            .expect("resolve mmcif source");
+        let templates =
+            load_training_templates(&resolved.training_structure_path).expect("load templates");
+
+        assert_eq!(resolved.training_structure_path, training);
+        assert_eq!(templates.len(), 3);
+        assert_eq!(templates[0].local_bonds, vec![(0, 1)]);
+        assert_eq!(templates[1].local_bonds, vec![(0, 1)]);
+        assert_eq!(templates[2].local_bonds, vec![(0, 1)]);
+
+        let _ = fs::remove_file(&training);
+        let _ = fs::remove_dir(&dir);
     }
 
     #[test]

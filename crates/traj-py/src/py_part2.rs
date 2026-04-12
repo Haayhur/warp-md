@@ -6,13 +6,14 @@ struct PyProjectionPlan {
 #[pymethods]
 impl PyProjectionPlan {
     #[new]
-    #[pyo3(signature = (selection, eigenvectors, n_components, n_features, mean=None))]
+    #[pyo3(signature = (selection, eigenvectors, n_components, n_features, mean=None, mass_weighted=false))]
     fn new(
         selection: &PySelection,
         eigenvectors: Vec<f64>,
         n_components: usize,
         n_features: usize,
         mean: Option<Vec<f64>>,
+        mass_weighted: bool,
     ) -> PyResult<Self> {
         let plan = ProjectionPlan::new(
             selection.selection.clone(),
@@ -20,6 +21,7 @@ impl PyProjectionPlan {
             n_components,
             n_features,
             mean,
+            mass_weighted,
         )
         .map_err(to_py_err)?;
         Ok(Self {
@@ -27,7 +29,7 @@ impl PyProjectionPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -35,10 +37,18 @@ impl PyProjectionPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray2<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
         match output {
             PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
@@ -149,7 +159,7 @@ impl PyBfactorsPlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -157,10 +167,18 @@ impl PyBfactorsPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
@@ -198,6 +216,49 @@ impl PyAtomicFluctPlan {
         let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+
+#[pyclass]
+struct PyAtomicAdpPlan {
+    plan: RefCell<AtomicAdpPlan>,
+}
+
+#[pymethods]
+impl PyAtomicAdpPlan {
+    #[new]
+    fn new(selection: &PySelection) -> Self {
+        let plan = AtomicAdpPlan::new(selection.selection.clone());
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<&'py PyArray2<f32>> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }

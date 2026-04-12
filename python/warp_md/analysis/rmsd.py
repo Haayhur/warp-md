@@ -4,46 +4,29 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional, Sequence
 
 import numpy as np
 
-from ._chunk_io import read_chunk_fields
+from ._runtime import (
+    load_native_symbol,
+    native_inputs,
+    native_selection,
+    normalize_frame_indices,
+    prepend_reference_frame,
+    read_all_frames,
+    reset_traj,
+    selection_indices,
+)
+from .trajectory import ArrayTrajectory
 
 
-def _all_resid_mask(system) -> str:
-    atoms = system.atom_table()
-    resids = atoms.get("resid", [])
-    if not resids:
-        return "resid 0:0"
-    return f"resid {min(resids)}:{max(resids)}"
+def _selection_indices(system, mask: str = "") -> np.ndarray:
+    return selection_indices(system, mask)
 
 
-def _selection_indices(system, mask: Optional[str]) -> np.ndarray:
-    if mask in ("", "*", "all", None):
-        mask = None
-    if mask:
-        sel = system.select(mask)
-    else:
-        sel = system.select(_all_resid_mask(system))
-    return np.asarray(list(sel.indices), dtype=np.int64)
-
-
-def _read_all(traj, chunk_frames: Optional[int]):
-    max_chunk = chunk_frames or 128
-    coords_list = []
-    box_list = []
-    chunk = read_chunk_fields(traj, max_chunk, include_box=True)
-    if chunk is None:
-        return None, None
-    while chunk is not None:
-        coords_list.append(np.asarray(chunk["coords"], dtype=np.float64))
-        box = chunk.get("box")
-        if box is not None:
-            box_list.append(np.asarray(box, dtype=np.float64))
-        chunk = read_chunk_fields(traj, max_chunk, include_box=True)
-    coords = np.concatenate(coords_list, axis=0) if coords_list else np.empty((0, 0, 3))
-    box = np.concatenate(box_list, axis=0) if box_list else None
+def _read_all(traj, chunk_frames: Optional[int] = None):
+    coords, box, _time = read_all_frames(traj, chunk_frames, include_box=True)
     return coords, box
 
 
@@ -74,7 +57,7 @@ def _rmsd_raw(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.sqrt((diff * diff).sum() / x.shape[0]))
 
 
-def _pair_distances_compact(coords: np.ndarray, pbc: str, box: Optional[np.ndarray]) -> np.ndarray:
+def _pair_distances(coords: np.ndarray, pbc: str, box: Optional[np.ndarray]) -> np.ndarray:
     n_atoms = coords.shape[0]
     n_pairs = n_atoms * (n_atoms - 1) // 2
     out = np.empty(n_pairs, dtype=np.float64)
@@ -94,33 +77,113 @@ def _pair_distances_compact(coords: np.ndarray, pbc: str, box: Optional[np.ndarr
     return out
 
 
-def _pair_distances(
-    coords: np.ndarray,
-    indices: np.ndarray,
+def _native_distance_rmsd(
+    traj,
+    system,
+    mask: str,
+    ref,
     pbc: str,
-    box: Optional[np.ndarray],
-) -> np.ndarray:
-    n_sel = indices.size
-    n_pairs = n_sel * (n_sel - 1) // 2
-    if n_pairs == 0:
-        return np.empty(0, dtype=np.float64)
-    out = np.empty(n_pairs, dtype=np.float64)
-    k = 0
-    if pbc == "orthorhombic":
-        if box is None or np.any(box == 0.0):
-            raise ValueError("pbc='orthorhombic' requires box lengths")
-    for i in range(n_sel):
-        a = coords[indices[i]]
-        for j in range(i + 1, n_sel):
-            b = coords[indices[j]]
-            dx, dy, dz = b - a
-            if pbc == "orthorhombic":
-                dx -= np.round(dx / box[0]) * box[0]
-                dy -= np.round(dy / box[1]) * box[1]
-                dz -= np.round(dz / box[2]) * box[2]
-            out[k] = np.sqrt(dx * dx + dy * dy + dz * dz)
-            k += 1
-    return out
+    length_scale: float,
+    chunk_frames: Optional[int],
+):
+    plan_cls = load_native_symbol("DistanceRmsdPlan")
+    if plan_cls is None:
+        raise RuntimeError("DistanceRmsdPlan binding unavailable")
+    native_traj, native_system = native_inputs(
+        traj,
+        system,
+        chunk_frames,
+        include_box=(pbc == "orthorhombic"),
+    )
+    if native_traj is None or native_system is None:
+        raise RuntimeError("failed to prepare native distance RMSD inputs")
+    try:
+        selection = native_selection(system, native_system, mask)
+        ref_index = int(ref)
+        run_traj = native_traj
+        trim_first = False
+        if ref_index == 0:
+            if not reset_traj(run_traj):
+                raise RuntimeError("failed to reset native trajectory")
+        else:
+            run_traj = prepend_reference_frame(
+                native_traj,
+                ref_index,
+                chunk_frames,
+                include_box=(pbc == "orthorhombic"),
+            )
+            if run_traj is None:
+                raise RuntimeError("failed to build native reference trajectory")
+            trim_first = True
+        plan = plan_cls(selection, reference="frame0", pbc=pbc)
+        values = np.asarray(
+            plan.run(run_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            dtype=np.float32,
+        )
+        if trim_first:
+            values = values[1:]
+        return values * np.float32(length_scale)
+    except Exception as exc:
+        raise RuntimeError("native DistanceRmsdPlan execution failed") from exc
+
+
+def _native_pairwise_rmsd(
+    traj,
+    system,
+    mask: str,
+    metric: str,
+    pbc: str,
+    length_scale: float,
+    frame_indices: Optional[Sequence[int]],
+    chunk_frames: Optional[int],
+):
+    plan_cls = load_native_symbol("PairwiseRmsdPlan")
+    if plan_cls is None:
+        raise RuntimeError("PairwiseRmsdPlan binding unavailable")
+    native_traj, native_system = native_inputs(
+        traj,
+        system,
+        chunk_frames,
+        include_box=(pbc == "orthorhombic"),
+    )
+    if native_traj is None or native_system is None or not reset_traj(native_traj):
+        raise RuntimeError("failed to prepare native pairwise RMSD inputs")
+    try:
+        selection = native_selection(system, native_system, mask)
+        plan = plan_cls(selection, metric=metric, pbc=pbc)
+        kwargs = {
+            "chunk_frames": chunk_frames,
+            "device": "auto",
+        }
+        if frame_indices is not None:
+            kwargs["frame_indices"] = list(frame_indices)
+        try:
+            values = np.asarray(
+                plan.run(
+                    native_traj,
+                    native_system,
+                    **kwargs,
+                ),
+                dtype=np.float32,
+            )
+        except TypeError:
+            if frame_indices is not None:
+                values = np.asarray(
+                    plan.run(
+                        native_traj,
+                        native_system,
+                        chunk_frames=chunk_frames,
+                        device="auto",
+                    ),
+                    dtype=np.float32,
+                )
+                selected = normalize_frame_indices(frame_indices, values.shape[0]) or []
+                values = values[np.ix_(selected, selected)]
+            else:
+                raise
+        return values * np.float32(length_scale)
+    except Exception as exc:
+        raise RuntimeError("native PairwiseRmsdPlan execution failed") from exc
 
 
 def distance_rmsd(
@@ -136,35 +199,22 @@ def distance_rmsd(
     pbc = pbc.lower()
     if pbc not in ("none", "orthorhombic"):
         raise ValueError("pbc must be 'none' or 'orthorhombic'")
-    indices = _selection_indices(system, mask)
-    coords, box = _read_all(traj, chunk_frames)
+
+    coords, box, _time = read_all_frames(traj, chunk_frames, include_box=True)
     if coords is None:
         raise ValueError("trajectory has no frames")
     if coords.size == 0:
         return np.empty(0, dtype=np.float32)
-    coords = coords * float(length_scale)
-    if box is not None:
-        box = box * float(length_scale)
-
-    n_frames = coords.shape[0]
-    ref_idx = ref
-    if ref_idx < 0:
-        ref_idx = n_frames + ref_idx
-    if ref_idx < 0 or ref_idx >= n_frames:
-        raise ValueError("ref index out of range")
-
-    ref_box = None if box is None else box[ref_idx]
-    ref_dists = _pair_distances(coords[ref_idx], indices, pbc, ref_box)
-    if ref_dists.size == 0:
-        return np.zeros(n_frames, dtype=np.float32)
-
-    out = np.empty(n_frames, dtype=np.float64)
-    for i in range(n_frames):
-        frame_box = None if box is None else box[i]
-        dists = _pair_distances(coords[i], indices, pbc, frame_box)
-        diff = dists - ref_dists
-        out[i] = np.sqrt(np.mean(diff * diff))
-    return out.astype(np.float32)
+    source = ArrayTrajectory(coords, box=box)
+    return _native_distance_rmsd(
+        source,
+        system,
+        mask,
+        ref,
+        pbc,
+        length_scale,
+        chunk_frames,
+    )
 
 
 def pairwise_rmsd(
@@ -191,67 +241,31 @@ def pairwise_rmsd(
     if pbc not in ("none", "orthorhombic"):
         raise ValueError("pbc must be 'none' or 'orthorhombic'")
 
-    coords, box = _read_all(traj, chunk_frames)
+    coords, box, _time = read_all_frames(traj, chunk_frames, include_box=True)
     if coords is None:
         raise ValueError("trajectory has no frames")
-    coords = coords * float(length_scale)
-    if box is not None:
-        box = box * float(length_scale)
-
-    idx = _selection_indices(system, mask)
-    frames = coords[:, idx, :]
-
-    n_frames = frames.shape[0]
-    if frame_indices is not None:
-        select = []
-        for i in frame_indices:
-            j = int(i)
-            if j < 0:
-                j = n_frames + j
-            if 0 <= j < n_frames:
-                select.append(j)
-        frames = frames[select]
-        if box is not None:
-            box = box[select]
-        n_frames = frames.shape[0]
-
-    if n_frames == 0:
-        return np.empty((0, 0), dtype=np.float32) if mat_type == "full" else np.empty((0,), dtype=np.float32)
-
-    if metric == "dme":
-        dist_vecs = []
-        for i in range(n_frames):
-            dist_vecs.append(_pair_distances_compact(frames[i], pbc, None if box is None else box[i]))
-        dist_vecs = np.asarray(dist_vecs, dtype=np.float64)
-
+    if coords.size == 0:
+        if mat_type == "full":
+            return np.empty((0, 0), dtype=np.float32)
+        return np.empty((0,), dtype=np.float32)
+    source = ArrayTrajectory(coords, box=box)
+    normalized_frames = normalize_frame_indices(frame_indices, coords.shape[0]) if frame_indices is not None else None
+    native_values = _native_pairwise_rmsd(
+        source,
+        system,
+        mask,
+        metric,
+        pbc,
+        length_scale,
+        normalized_frames,
+        chunk_frames,
+    )
     if mat_type == "full":
-        out = np.zeros((n_frames, n_frames), dtype=np.float64)
-        for i in range(n_frames):
-            for j in range(i + 1, n_frames):
-                if metric == "rms":
-                    val = _kabsch_rmsd(frames[i], frames[j])
-                elif metric == "nofit":
-                    val = _rmsd_raw(frames[i], frames[j])
-                else:
-                    diff = dist_vecs[i] - dist_vecs[j]
-                    val = float(np.sqrt(np.mean(diff * diff))) if diff.size else 0.0
-                out[i, j] = val
-                out[j, i] = val
-        return out.astype(np.float32)
+        return native_values
+    if native_values.size == 0:
+        return np.empty((0,), dtype=np.float32)
+    tri = np.triu_indices(native_values.shape[0], k=1)
+    return np.asarray(native_values[tri], dtype=np.float32)
 
-    # half
-    n_pairs = n_frames * (n_frames - 1) // 2
-    out = np.zeros(n_pairs, dtype=np.float64)
-    k = 0
-    for i in range(n_frames):
-        for j in range(i + 1, n_frames):
-            if metric == "rms":
-                val = _kabsch_rmsd(frames[i], frames[j])
-            elif metric == "nofit":
-                val = _rmsd_raw(frames[i], frames[j])
-            else:
-                diff = dist_vecs[i] - dist_vecs[j]
-                val = float(np.sqrt(np.mean(diff * diff))) if diff.size else 0.0
-            out[k] = val
-            k += 1
-    return out.astype(np.float32)
+
+__all__ = ["distance_rmsd", "pairwise_rmsd"]

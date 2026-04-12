@@ -1,7 +1,12 @@
+pub mod cpt;
 pub mod dcd;
 pub mod gro;
+pub mod gro_traj;
+pub mod gromos96_traj;
+pub mod h5md;
 pub mod pdb;
 pub mod pdb_traj;
+pub mod tng;
 pub mod trr;
 pub mod xtc;
 

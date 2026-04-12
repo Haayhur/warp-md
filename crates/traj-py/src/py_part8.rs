@@ -32,7 +32,7 @@ impl PyCountInVoxelPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -40,10 +40,18 @@ impl PyCountInVoxelPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<PyObject> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
         match output {
             PlanOutput::Grid(output) => grid_to_py(py, output),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
@@ -86,7 +94,7 @@ impl PyDensityPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -94,10 +102,18 @@ impl PyDensityPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<PyObject> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
         match output {
             PlanOutput::Grid(output) => grid_to_py(py, output),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
@@ -140,7 +156,7 @@ impl PyVolmapPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -148,10 +164,18 @@ impl PyVolmapPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<PyObject> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(&mut *plan, &mut traj_ref, &system.system.borrow(), chunk_frames, device)?;
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
         match output {
             PlanOutput::Grid(output) => grid_to_py(py, output),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
@@ -159,6 +183,132 @@ impl PyVolmapPlan {
     }
 }
 
+
+#[pyclass]
+struct PyDensityMapPlan {
+    plan: RefCell<DensityMapPlan>,
+}
+
+#[pymethods]
+impl PyDensityMapPlan {
+    #[new]
+    #[pyo3(signature = (selection, average="z", bin=0.25, n1=None, n2=None, xmin=None, xmax=None, unit="nm-3", length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        average: &str,
+        bin: f64,
+        n1: Option<usize>,
+        n2: Option<usize>,
+        xmin: Option<f64>,
+        xmax: Option<f64>,
+        unit: &str,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let average_axis = parse_axis(average)?;
+        let unit = parse_density_map_unit(unit)?;
+        let mut plan = DensityMapPlan::new(selection.selection.clone(), average_axis, bin, unit)
+            .with_bins(n1, n2)
+            .with_average_window(xmin, xmax);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::DensityMap(output) => density_map_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyPotentialPlan {
+    plan: RefCell<PotentialPlan>,
+}
+
+#[pymethods]
+impl PyPotentialPlan {
+    #[new]
+    #[pyo3(signature = (selection, charges, axis="z", bin=0.25, n_slices=None, center_selection=None, symmetrize=false, correct=false, discard_start=0, discard_end=0, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        charges: Vec<f64>,
+        axis: &str,
+        bin: f64,
+        n_slices: Option<usize>,
+        center_selection: Option<&PySelection>,
+        symmetrize: bool,
+        correct: bool,
+        discard_start: usize,
+        discard_end: usize,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let axis = parse_axis(axis)?;
+        let mut plan = PotentialPlan::new(selection.selection.clone(), axis, bin, charges)
+            .with_n_slices(n_slices)
+            .with_correct(correct)
+            .with_symmetrize(symmetrize)
+            .with_integration_discard(discard_start, discard_end);
+        if let Some(center_selection) = center_selection {
+            plan = plan.with_center_selection(center_selection.selection.clone());
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Potential(output) => potential_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
 
 #[pyclass]
 struct PyFreeVolumePlan {

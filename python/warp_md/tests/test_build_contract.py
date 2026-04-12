@@ -109,7 +109,7 @@ def test_inspect_source_passes_source_path(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_validate_request_writes_payload_file(monkeypatch) -> None:
-    payload = {"version": "warp-build.agent.v1"}
+    payload = {"schema_version": "warp-build.agent.v1"}
     request_payload: dict[str, Any] = {}
 
     def fake_run(cmd, capture_output, text, check):  # type: ignore[override]
@@ -131,9 +131,33 @@ def test_validate_request_writes_payload_file(monkeypatch) -> None:
     assert request_payload == payload
 
 
+def test_validate_request_injects_deep_validation_when_requested(monkeypatch) -> None:
+    payload = {"schema_version": "warp-build.agent.v1"}
+    request_payload: dict[str, Any] = {}
+
+    def fake_run(cmd, capture_output, text, check):  # type: ignore[override]
+        request_payload_path = Path(cmd[-1])
+        request_payload.update(json.loads(request_payload_path.read_text(encoding="utf-8")))
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            json.dumps({"valid": True, "errors": []}),
+            "",
+        )
+
+    monkeypatch.setattr(build_contract, "_native", lambda: None)
+    monkeypatch.setattr(build_contract, "_binary", lambda: "warp-build")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = build_contract.validate(payload, deep=True)
+    assert result["valid"] is True
+    assert request_payload["validation"]["depth"] == "deep"
+    assert payload.get("validation") is None
+
+
 def test_run_build_request_supports_stream_flag(monkeypatch) -> None:
     calls = {"cmd": None}
-    payload = {"version": "warp-build.agent.v1"}
+    payload = {"schema_version": "warp-build.agent.v1"}
 
     def fake_run(cmd, capture_output, text, check):  # type: ignore[override]
         calls["cmd"] = cmd

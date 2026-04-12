@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+pub use warp_structure::config::OutputSpec;
 
 use crate::constraints::ConstraintSpec;
 use crate::error::{PackError, PackResult};
@@ -169,15 +170,6 @@ pub struct StructureSpec {
     pub atom_constraints: Vec<AtomConstraintSpec>,
     #[serde(default)]
     pub rot_bounds: Option<[[f32; 2]; 3]>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OutputSpec {
-    pub path: String,
-    #[serde(default)]
-    pub format: String,
-    #[serde(default)]
-    pub scale: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -25,7 +25,7 @@ try:
 except ImportError:
     FastMCP = None  # type: ignore
 
-from .agent_schema import AnalysisName, _ANALYSIS_REQUIRED_FIELDS
+from . import contract
 
 
 def _get_mcp() -> "FastMCP":
@@ -159,7 +159,7 @@ def register_tools():
             - native_contacts: Native contact fraction
             - docking: Molecular docking interactions
         """
-        return list(AnalysisName.__args__)
+        return sorted(contract.ANALYSIS_METADATA.keys())
 
     @server.tool()
     def get_analysis_schema(name: str) -> Dict[str, Any]:
@@ -175,22 +175,29 @@ def register_tools():
             get_analysis_schema("rg")
             # Returns: {"name": "rg", "required": ["selection"], "optional": [...]}
         """
-        name_normalized = name.strip().replace("-", "_")
-        if name_normalized not in AnalysisName.__args__:
+        try:
+            schema = contract.get_plan_schema(name)
+        except ValueError:
             return {
                 "error": f"Unknown analysis: {name}",
-                "available": list(AnalysisName.__args__)[:10],
+                "available": sorted(contract.ANALYSIS_METADATA.keys())[:10],
             }
-        
-        required = _ANALYSIS_REQUIRED_FIELDS.get(name_normalized, ())
-        
-        # Common optional fields
-        optional = ["out", "device", "chunk_frames"]
-        
+
+        optional = list(
+            dict.fromkeys(
+                [*schema.get("optional_fields", []), "out", "device", "chunk_frames"]
+            )
+        )
+
         return {
-            "name": name_normalized,
-            "required": list(required),
+            "name": schema["name"],
+            "aliases": schema.get("aliases", []),
+            "description": schema.get("description", ""),
+            "required": list(schema.get("required_fields", [])),
             "optional": optional,
+            "fields": schema.get("fields", {}),
+            "outputs": schema.get("outputs", []),
+            "tags": schema.get("tags", []),
         }
 
     @server.tool()

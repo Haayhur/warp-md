@@ -1,4 +1,4 @@
-mod utils;
+pub(crate) mod utils;
 
 pub mod align;
 pub mod align_matrix;
@@ -27,7 +27,7 @@ pub use distance::{
 pub use neighbors::{ClosestAtomPlan, HausdorffPlan, MindistPlan, SearchNeighborsPlan};
 pub use pbc::{FixImageBondsPlan, RandomizeIonsPlan, ReplicateCellPlan, VolumePlan, XtalSymmPlan};
 pub use pucker::{PuckerMetric, PuckerPlan, RotateDihedralPlan, SetDihedralPlan};
-pub use rms::{AtomicFluctPlan, BfactorsPlan, RmsdPerResPlan, RmsfPlan};
+pub use rms::{AtomicAdpPlan, AtomicFluctPlan, BfactorsPlan, RmsdPerResPlan, RmsfPlan};
 pub use structure::{AtomMapPlan, CheckChiralityPlan, CheckStructurePlan, StripPlan};
 pub use trajectory::{
     AverageFramePlan, GetVelocityPlan, MakeStructurePlan, MeanStructurePlan, SetVelocityPlan,

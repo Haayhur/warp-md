@@ -200,6 +200,7 @@ pub(crate) fn transform_atoms(
             charge: a.charge,
             position: rotation.rotate_vec(a.position).add(center),
             mol_id,
+            pdb_metadata: a.pdb_metadata.clone(),
         })
         .collect()
 }
@@ -523,6 +524,7 @@ pub(crate) fn maybe_write_snapshot(
         bonds: bonds.to_vec(),
         box_size,
         ter_after: ter_after.to_vec(),
+        box_vectors: None,
     };
     let add_box_sides = cfg.add_box_sides || cfg.pbc;
     let box_fix = cfg.add_box_sides_fix.unwrap_or(0.0);
@@ -554,6 +556,7 @@ pub(crate) fn write_bad_snapshot(
         bonds: bonds.to_vec(),
         box_size,
         ter_after: ter_after.to_vec(),
+        box_vectors: None,
     };
     let add_box_sides = cfg.add_box_sides || cfg.pbc;
     let box_fix = cfg.add_box_sides_fix.unwrap_or(0.0);

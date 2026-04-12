@@ -323,6 +323,187 @@ Output:
   - first `n_types * n_types` entries are a row-major matrix
   - last column is total
 
+### CurrentPlan
+
+```python
+CurrentPlan(selection, charges=charges, temperature=300.0, group_by="resid",
+            length_scale=None, group_types=None, make_whole=True,
+            frame_decimation=None, dt_decimation=None, time_binning=None,
+            lag_mode=None, max_lag=None, memory_budget_bytes=None,
+            multi_tau_m=None, multi_tau_levels=None)
+
+out = plan.run(traj, system)
+```
+
+Output dict keys:
+- `conductivity_time`, `conductivity`, `conductivity_static`
+- `time`, `md_sq`, `mj_sq`, `md_mj`
+- `dielectric_rot`, `dielectric_total`, `mu_avg`
+- This v1 current contract does not yet expose direct velocity-current ACF outputs equivalent to `gmx current -caf/-mc`
+
+### PotentialPlan
+
+```python
+PotentialPlan(selection, charges=charges, axis="z", bin=0.25, n_slices=None,
+              center_selection=None, symmetrize=False, correct=False,
+              discard_start=0, discard_end=0, length_scale=None)
+
+out = plan.run(traj, system)
+```
+
+Output dict keys:
+- `coordinate`, `charge_density`, `field`, `potential`
+- `axis`, `bounds`, `slice_width`, `n_frames`
+- `used_box`, `centered`, `symmetrized`, `corrected`
+- `length_scale`, `discard_start`, `discard_end`
+- This v1 potential contract is planar only and does not yet expose spherical micelle mode from `gmx potential`
+
+### H2OrderPlan
+
+```python
+H2OrderPlan(oxygen_indices, hydrogen1_indices, hydrogen2_indices, charges,
+            axis="z", bin=0.25, n_slices=None, length_scale=None)
+
+out = plan.run(traj, system)
+```
+
+Output dict keys:
+- `coordinate`, `order`, `dipole`, `counts`
+- `axis`, `bounds`, `slice_width`, `n_frames`
+- `used_box`, `length_scale`, `dipole_unit`
+- `dipole` is shape `(n_slices, 3)` and is reported in Debye
+- This v1 `h2order` contract is planar only and does not yet expose `gmx h2order -nm` spherical micelle mode
+
+### HelixOrientPlan
+
+```python
+HelixOrientPlan(ca_selection, sidechain_selection=None,
+                incremental=False, length_scale=None)
+
+out = plan.run(traj, system)
+```
+
+Output dict keys:
+- `labels`, `time`
+- `axis`, `center`, `residue_vector`, `normal`
+- `rise`, `radius`, `twist`, `bending`
+- `tilt`, `rotation`, `theta1`, `theta2`, `theta3`
+- `frames`, `residues`, `use_sidechain`, `incremental`
+- `used_box`, `length_scale`
+- vector outputs are shaped `(n_frames, n_residues, 3)`
+- scalar outputs are shaped `(n_frames, n_residues)`
+- this v1 contract covers the local helix-axis geometry kernel and optional sidechain-vector mode; it does not mirror the legacy GROMACS text/xvg outputs directly
+
+### BundlePlan
+
+```python
+BundlePlan(top_selection, bottom_selection, n_axes,
+           kink_selection=None, use_z_reference=False,
+           mass_weighted=True, length_scale=None)
+
+out = plan.run(traj, system)
+```
+
+Output dict keys:
+- `labels`, `time`, `reference_axis`
+- `top`, `bottom`, `mid`, `direction`
+- `length`, `distance`, `z_shift`
+- `tilt`, `radial_tilt`, `lateral_tilt`
+- `kink`, `kink_angle`, `kink_radial`, `kink_lateral`
+- `frames`, `axes`, `has_kink`
+- `use_z_reference`, `mass_weighted`, `used_box`, `length_scale`
+- vector outputs are shaped `(n_frames, n_axes, 3)`
+- scalar outputs are shaped `(n_frames, n_axes)`
+- this v1 contract covers bundle-axis geometry in machine-readable form; it does not mirror the legacy GROMACS text/xvg outputs directly
+
+### MdmatPlan
+
+```python
+MdmatPlan(selection, truncate=1.5, include_contacts=False,
+          include_frames=False, length_scale=None)
+
+out = plan.run(traj, system)
+```
+
+Output dict keys:
+- `labels`, `mean_matrix`
+- `frames`, `residues`, `truncate`
+- `used_box`, `length_scale`
+- optional `time`, `frame_matrices`
+- optional `distinct_contact_atoms`, `mean_contact_atoms`, `contact_ratio`
+- optional `residue_atom_counts`, `mean_contact_atoms_per_residue_atom`
+- `mean_matrix` is shaped `(n_residues, n_residues)`
+- `frame_matrices` is shaped `(n_frames, n_residues, n_residues)` when enabled
+- `truncate` affects only the contact-summary outputs; it does not clip the distance matrices
+- residue grouping follows topology order and uses only the selected atoms inside each residue
+
+### HydOrderPlan
+
+```python
+HydOrderPlan(selection, axis="z", bin=1.0, tblock=1,
+             sgang1=None, sgang2=None, length_scale=None)
+
+out = plan.run(traj, system)
+```
+
+Output dict keys:
+- `sg_mean`, `sk_mean`
+- `sg_grid`, `sk_grid`, `counts`
+- `x`, `y`, `z`, `dims`, `bounds`, `bin_width`
+- `axis`, `plane_axes`, `n_frames`
+- `used_box`, `length_scale`
+- `interface_lower`, `interface_upper`, `interface_blocks`
+- `interface_threshold`, `block_size`
+- `sg_grid`, `sk_grid`, and `counts` are 3D arrays with shape `dims`
+- `interface_lower` and `interface_upper` are shape `(n_blocks, plane_dim0, plane_dim1)` and are emitted only when both `sgang1` and `sgang2` are supplied
+- This v1 `hydorder` contract covers the tetrahedral angle/distance order kernel plus optional block-averaged interface extraction; it does not mirror the legacy XPM/raw/spectrum file outputs directly
+
+### SOrientPlan
+
+```python
+SOrientPlan(solute_selection, atom1_indices, atom2_indices, atom3_indices,
+            r_min=0.0, r_max=0.5, cbin=0.02, rbin=0.02,
+            use_com=False, use_vector23=False,
+            r_profile_max=None, length_scale=None)
+
+out = plan.run(traj, system)
+```
+
+Output dict keys:
+- `cos_theta1`, `cos_theta1_distribution`
+- `abs_cos_theta2`, `abs_cos_theta2_distribution`
+- `r`, `mean_cos_theta1`, `mean_p2_theta2`
+- `cumulative_r`, `cumulative_cos_theta1`, `cumulative_p2_theta2`
+- `count_density`, `counts`
+- `window_count`, `average_shell_size`
+- `window_mean_cos_theta1`, `window_mean_p2_theta2`
+- `r_window`, `cbin`, `rbin`, `r_profile_max`
+- `use_com`, `use_vector23`, `n_frames`, `n_reference_positions`
+- `used_box`, `length_scale`
+- This v1 contract covers radial solvent orientation profiles and shell distributions, but does not yet mirror every `gmx sorient` presentation mode
+
+### SpolPlan
+
+```python
+SpolPlan(solute_selection, atom1_indices, atom2_indices, atom3_indices, charges,
+         r_min=0.0, r_max=0.32, bin=0.01, use_com=False, reference_atom=0,
+         direction_atoms=None, refdip=0.0, r_hist_max=None, length_scale=None,
+         molecule_atoms=None, molecule_offsets=None)
+
+out = plan.run(traj, system)
+```
+
+Output dict keys:
+- `r`, `cumulative_count`, `shell_count`, `shell_count_per_frame`
+- `average_shell_size`, `average_dipole`, `dipole_std`
+- `average_radial_dipole`, `average_radial_polarization`
+- `window_count`, `r_window`, `bin_width`, `r_hist_max`
+- `use_com`, `reference_atom`, `refdip`, `n_frames`
+- `used_box`, `length_scale`, `dipole_unit`
+- `direction_atoms` and `reference_atom` are zero-based local atom offsets within each solvent molecule
+- Whole-molecule solvent definitions are supported through `molecule_atoms` + `molecule_offsets`; explicit 3-atom triplets remain supported for water-style use cases
+- Python `analysis.spol.spol(...)` prefers `atom_table()['mol_id']` when present and otherwise falls back to residue-grouped molecules; solvent selections must cover whole molecules
+
 ### DielectricPlan
 
 ```python
@@ -460,6 +641,19 @@ These wrappers live under `python/warp_md/analysis/` and expose convenience APIs
   - `p2_legendre` is a strict boolean.
   - Unsupported combinations fail with explicit `ValueError`.
 - `analysis.diffusion.tordiff(..., return_transitions=False, transition_lag=1)` (`toroidal_diffusion` aliases `tordiff`)
+- `analysis.vanhove.vanhove(..., integral_radius=None, curve_lags=None, curve_step=None)`
+- `analysis.current.current(..., temperature=300.0, group_by="resid", lag_mode=None, max_lag=None)`
+- `analysis.h2order.h2order(..., axis="z", bin=0.25, n_slices=None, water_resnames=("HOH","WAT","SOL",...))`
+- `analysis.helix.helix(..., fit=True, check_each_frame=False, residue_start=None, residue_end=None, length_scale=None)`
+- `analysis.helixorient.helixorient(..., sidechain_selection=None, incremental=False, length_scale=None)`
+- `analysis.hydorder.hydorder(..., axis="z", bin=1.0, tblock=1, sgang1=None, sgang2=None)`
+- `analysis.sorient.sorient(..., r_min=0.0, r_max=0.5, cbin=0.02, rbin=0.02, use_com=False, use_vector23=False)`
+- `analysis.spol.spol(..., r_min=0.0, r_max=0.32, bin=0.01, use_com=False, reference_atom=0, direction_atom_offsets=(0,1,2), refdip=0.0, molecules=None)`
+- `analysis.potential.potential(..., axis="z", bin=0.25, n_slices=None, center=None, symmetrize=False, correct=False)`
+- `analysis.rama.rama(..., range360=False, frame_indices=None)`
+- `analysis.saltbr.saltbr(..., group_by="atom", truncate=None, contact_cutoff=None)`
+- `analysis.densmap.densmap(..., average="z", bin=0.25, n1=None, n2=None, xmin=None, xmax=None, unit="nm-3")`
+- `analysis.dssp.dssp(..., simplified=False)` now returns 8-state `C/H/B/E/G/I/T/S`; `simplified=True` collapses to `C/H/E`
 - `analysis.surf.surf(..., algorithm="sasa"|"bbox"|"auto", probe_radius=1.4, n_sphere_points=64, radii=None)`
 - `analysis.surf.molsurf(..., algorithm="sasa"|"bbox"|"auto", probe_radius=0.0, n_sphere_points=64, radii=None)`
 - Surf/Molsurf supported-mode contract:

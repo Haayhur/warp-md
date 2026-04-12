@@ -62,3 +62,5 @@ def test_matrix_shapes():
     cc = correl(traj, system, mask="all")
     assert cc.shape == (2, 2)
     assert np.allclose(np.diag(cc), 1.0, atol=1e-6)
+    np.testing.assert_allclose(cc[0, 1], 0.0, atol=1e-6)
+    np.testing.assert_allclose(cc[1, 0], 0.0, atol=1e-6)

@@ -8,17 +8,17 @@ pub mod rmsd;
 
 pub use analysis::{ClusterMethod, DsspPlan, MsdPlan, TrajectoryClusterPlan};
 pub use geometry::{
-    AlignPlan, AlignPrincipalAxisPlan, AnglePlan, AtomMapPlan, AtomicFluctPlan, AutoImagePlan,
-    AverageFramePlan, BfactorsPlan, CenterMode, CenterOfGeometryPlan, CenterOfMassPlan,
-    CenterTrajectoryPlan, CheckChiralityPlan, CheckStructurePlan, ClosestAtomPlan, ClosestPlan,
-    DihedralPlan, DihedralRmsPlan, DistancePlan, DistanceToPointPlan, DistanceToReferencePlan,
-    FixImageBondsPlan, GetVelocityPlan, HausdorffPlan, ImagePlan, LowestCurvePlan,
-    MakeStructurePlan, MeanStructurePlan, MindistPlan, MultiDihedralPlan, NativeContactsPlan,
-    PairwiseDistancePlan, PermuteDihedralsPlan, PrincipalAxesPlan, PuckerMetric, PuckerPlan,
-    RandomizeIonsPlan, ReplicateCellPlan, RmsdPerResPlan, RmsfPlan, RotateDihedralPlan, RotatePlan,
-    RotationMatrixPlan, ScalePlan, SearchNeighborsPlan, SetDihedralPlan, SetVelocityPlan,
-    StripPlan, SuperposePlan, TransformPlan, TranslatePlan, VectorPlan, VolumePlan, WatershellPlan,
-    XtalSymmPlan,
+    AlignPlan, AlignPrincipalAxisPlan, AnglePlan, AtomMapPlan, AtomicAdpPlan, AtomicFluctPlan,
+    AutoImagePlan, AverageFramePlan, BfactorsPlan, CenterMode, CenterOfGeometryPlan,
+    CenterOfMassPlan, CenterTrajectoryPlan, CheckChiralityPlan, CheckStructurePlan,
+    ClosestAtomPlan, ClosestPlan, DihedralPlan, DihedralRmsPlan, DistancePlan, DistanceToPointPlan,
+    DistanceToReferencePlan, FixImageBondsPlan, GetVelocityPlan, HausdorffPlan, ImagePlan,
+    LowestCurvePlan, MakeStructurePlan, MeanStructurePlan, MindistPlan, MultiDihedralPlan,
+    NativeContactsPlan, PairwiseDistancePlan, PermuteDihedralsPlan, PrincipalAxesPlan,
+    PuckerMetric, PuckerPlan, RandomizeIonsPlan, ReplicateCellPlan, RmsdPerResPlan, RmsfPlan,
+    RotateDihedralPlan, RotatePlan, RotationMatrixPlan, ScalePlan, SearchNeighborsPlan,
+    SetDihedralPlan, SetVelocityPlan, StripPlan, SuperposePlan, TransformPlan, TranslatePlan,
+    VectorPlan, VolumePlan, WatershellPlan, XtalSymmPlan,
 };
 pub use matrix::{AnalyzeModesPlan, MatrixMode, MatrixPlan, PcaPlan, ProjectionPlan};
 pub use polymer::{

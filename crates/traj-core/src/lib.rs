@@ -15,9 +15,11 @@ pub mod pbc_utils;
 pub mod pdb_gro;
 pub mod rng_utils;
 pub mod selection;
+pub mod selection_expression;
 pub mod spatial_hash;
 pub mod spatial_hash_v2;
 pub mod system;
+pub mod vec3_math;
 
 pub use centers::{center_of_coords, center_of_selection};
 pub use constraints::{ConstraintMode, ConstraintSpec, ShapeSpec};
@@ -37,6 +39,11 @@ pub use pdb_gro::{
 };
 pub use rng_utils::{gaussian_pair, next_f64, next_u64};
 pub use selection::Selection;
+pub use selection_expression::{
+    is_backbone_atom, is_protein_resname, is_sidechain_heavy_atom, parse_selection_expression,
+    ResidRange, SelectionExpr, SelectionPredicate,
+};
 pub use spatial_hash::SpatialHash;
 pub use spatial_hash_v2::{SpatialHashStats, SpatialHashV2};
 pub use system::{AtomTable, System};
+pub use vec3_math::{normalize_vec3, rotate_about_axis_vec3, rotate_from_to_vec3};

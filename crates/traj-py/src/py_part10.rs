@@ -130,11 +130,11 @@ fn load_structure_atoms(
                     chain: atom.chain,
                     segid: atom.segid,
                     element: atom.element,
-                    occupancy: 1.0,
-                    temp_factor: 0.0,
-                    altloc: ' ',
-                    icode: ' ',
-                    charge: String::new(),
+                    occupancy: atom.occupancy,
+                    temp_factor: atom.temp_factor,
+                    altloc: atom.altloc,
+                    icode: atom.icode,
+                    charge: atom.charge,
                 })
                 .collect()
         }
@@ -472,6 +472,8 @@ enum FrameEditOutputFormat {
     Gro,
     Dcd,
     Xtc,
+    H5md,
+    Tng,
     Trr,
 }
 
@@ -484,6 +486,8 @@ impl FrameEditOutputFormat {
 enum FrameEditTrajectoryWriter {
     Dcd(DcdWriter),
     Xtc(XtcWriter),
+    H5md(H5mdWriter),
+    Tng(TngWriter),
     Trr(TrrWriter),
 }
 
@@ -723,11 +727,14 @@ fn resolve_frame_edit_traj_format(
                 .unwrap_or("")
                 .to_ascii_lowercase()
         });
-    if matches!(format.as_str(), "dcd" | "xtc" | "trr" | "pdb" | "pdbqt") {
+    if matches!(
+        format.as_str(),
+        "dcd" | "xtc" | "gro" | "g96" | "cpt" | "h5md" | "tng" | "trr" | "pdb" | "pdbqt"
+    ) {
         Ok(format)
     } else {
         Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unsupported trajectory format '{format}'; expected one of: dcd, xtc, trr, pdb, pdbqt"
+            "unsupported trajectory format '{format}'; expected one of: dcd, xtc, gro, g96, cpt, h5md, tng, trr, pdb, pdbqt"
         )))
     }
 }
@@ -745,6 +752,8 @@ fn infer_frame_edit_output_format(path: &str) -> PyResult<FrameEditOutputFormat>
         "gro" => Ok(FrameEditOutputFormat::Gro),
         "dcd" => Ok(FrameEditOutputFormat::Dcd),
         "xtc" => Ok(FrameEditOutputFormat::Xtc),
+        "h5md" => Ok(FrameEditOutputFormat::H5md),
+        "tng" => Ok(FrameEditOutputFormat::Tng),
         "trr" => Ok(FrameEditOutputFormat::Trr),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unsupported output extension: .{other}"
@@ -780,6 +789,11 @@ fn open_frame_edit_trajectory(
     match traj_format {
         "dcd" => PyTrajectory::open_dcd(traj_path, system, traj_length_scale),
         "xtc" => PyTrajectory::open_xtc(traj_path, system),
+        "gro" => PyTrajectory::open_gro(traj_path, system),
+        "g96" => PyTrajectory::open_g96(traj_path, system),
+        "cpt" => PyTrajectory::open_cpt(traj_path, system),
+        "h5md" => PyTrajectory::open_h5md(traj_path, system),
+        "tng" => PyTrajectory::open_tng(traj_path, system),
         "trr" => PyTrajectory::open_trr(traj_path, system),
         "pdb" => PyTrajectory::open_pdb(traj_path, system),
         "pdbqt" => PyTrajectory::open_pdbqt(traj_path, system),
@@ -1050,8 +1064,14 @@ fn frame_edit_n_atoms(reader: &TrajKind) -> usize {
     match reader {
         TrajKind::Dcd { reader } => reader.n_atoms(),
         TrajKind::Xtc { reader } => reader.n_atoms(),
+        TrajKind::Gro { reader } => reader.n_atoms(),
+        TrajKind::G96 { reader } => reader.n_atoms(),
+        TrajKind::Cpt { reader } => reader.n_atoms(),
+        TrajKind::H5md { reader } => reader.n_atoms(),
+        TrajKind::Tng { reader } => reader.n_atoms(),
         TrajKind::Trr { reader } => reader.n_atoms(),
         TrajKind::Pdb { reader } => reader.n_atoms(),
+        TrajKind::Memory { reader } => reader.n_atoms(),
     }
 }
 
@@ -1059,8 +1079,14 @@ fn frame_edit_skip_frames(reader: &mut TrajKind, n_frames: usize) -> TrajResult<
     match reader {
         TrajKind::Dcd { reader } => reader.skip_frames(n_frames),
         TrajKind::Xtc { reader } => reader.skip_frames(n_frames),
+        TrajKind::Gro { reader } => reader.skip_frames(n_frames),
+        TrajKind::G96 { reader } => reader.skip_frames(n_frames),
+        TrajKind::Cpt { reader } => reader.skip_frames(n_frames),
+        TrajKind::H5md { reader } => reader.skip_frames(n_frames),
+        TrajKind::Tng { reader } => reader.skip_frames(n_frames),
         TrajKind::Trr { reader } => reader.skip_frames(n_frames),
         TrajKind::Pdb { reader } => reader.skip_frames(n_frames),
+        TrajKind::Memory { reader } => reader.skip_frames(n_frames),
     }
 }
 
@@ -1072,8 +1098,14 @@ fn frame_edit_read_chunk(
     match reader {
         TrajKind::Dcd { reader } => reader.read_chunk(max_frames, builder),
         TrajKind::Xtc { reader } => reader.read_chunk(max_frames, builder),
+        TrajKind::Gro { reader } => reader.read_chunk(max_frames, builder),
+        TrajKind::G96 { reader } => reader.read_chunk(max_frames, builder),
+        TrajKind::Cpt { reader } => reader.read_chunk(max_frames, builder),
+        TrajKind::H5md { reader } => reader.read_chunk(max_frames, builder),
+        TrajKind::Tng { reader } => reader.read_chunk(max_frames, builder),
         TrajKind::Trr { reader } => reader.read_chunk(max_frames, builder),
         TrajKind::Pdb { reader } => reader.read_chunk(max_frames, builder),
+        TrajKind::Memory { reader } => reader.read_chunk(max_frames, builder),
     }
 }
 
@@ -1118,6 +1150,8 @@ impl FrameEditTrajectoryWriter {
                 expected_frames,
             )?)),
             FrameEditOutputFormat::Xtc => Ok(Self::Xtc(XtcWriter::create(path, n_atoms)?)),
+            FrameEditOutputFormat::H5md => Ok(Self::H5md(H5mdWriter::create(path, n_atoms)?)),
+            FrameEditOutputFormat::Tng => Ok(Self::Tng(TngWriter::create(path, n_atoms)?)),
             FrameEditOutputFormat::Trr => Ok(Self::Trr(TrrWriter::create(path, n_atoms)?)),
             FrameEditOutputFormat::Pdb | FrameEditOutputFormat::Gro => Err(TrajError::Invalid(
                 "structure output requested from trajectory writer".into(),
@@ -1130,6 +1164,22 @@ impl FrameEditTrajectoryWriter {
         match self {
             Self::Dcd(writer) => writer.write_frame(&coords, frame.box_),
             Self::Xtc(writer) => writer.write_frame(&coords, frame.box_, frame.index, frame.time_ps),
+            Self::H5md(writer) => writer.write_frame(
+                &coords,
+                frame.box_,
+                frame.index,
+                frame.time_ps,
+                frame.velocities.as_deref(),
+                frame.forces.as_deref(),
+            ),
+            Self::Tng(writer) => writer.write_frame(
+                &coords,
+                frame.box_,
+                frame.index,
+                frame.time_ps,
+                frame.velocities.as_deref(),
+                frame.forces.as_deref(),
+            ),
             Self::Trr(writer) => writer.write_frame(
                 &coords,
                 frame.box_,
@@ -1146,6 +1196,8 @@ impl FrameEditTrajectoryWriter {
         match self {
             Self::Dcd(writer) => writer.flush(),
             Self::Xtc(writer) => writer.flush(),
+            Self::H5md(writer) => writer.flush(),
+            Self::Tng(writer) => writer.flush(),
             Self::Trr(writer) => writer.flush(),
         }
     }
@@ -1179,7 +1231,11 @@ fn write_frame_edit_structure_output(
                 frame.time_ps,
             )
         }
-        FrameEditOutputFormat::Dcd | FrameEditOutputFormat::Xtc | FrameEditOutputFormat::Trr => {
+        FrameEditOutputFormat::Dcd
+        | FrameEditOutputFormat::Xtc
+        | FrameEditOutputFormat::H5md
+        | FrameEditOutputFormat::Tng
+        | FrameEditOutputFormat::Trr => {
             Err(TrajError::Invalid(
                 "trajectory output requested from structure writer".into(),
             ))

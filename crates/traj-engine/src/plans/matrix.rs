@@ -13,6 +13,7 @@ pub enum MatrixMode {
     Distance,
     Covariance,
     MwCovariance,
+    Correlation,
 }
 
 pub struct MatrixPlan {
@@ -55,7 +56,7 @@ impl Plan for MatrixPlan {
             MatrixMode::Distance => {
                 self.sum_dist.resize(n_sel * n_sel, 0.0);
             }
-            MatrixMode::Covariance | MatrixMode::MwCovariance => {
+            MatrixMode::Covariance | MatrixMode::MwCovariance | MatrixMode::Correlation => {
                 self.sum.resize(n_features, 0.0);
                 self.sum_outer.resize(n_features * n_features, 0.0);
             }
@@ -107,7 +108,7 @@ impl Plan for MatrixPlan {
                     self.frames += 1;
                 }
             }
-            MatrixMode::Covariance | MatrixMode::MwCovariance => {
+            MatrixMode::Covariance | MatrixMode::MwCovariance | MatrixMode::Correlation => {
                 let n_sel = sel.len();
                 if n_sel == 0 {
                     self.frames += chunk.n_frames;
@@ -197,6 +198,61 @@ impl Plan for MatrixPlan {
                     data: out,
                     rows: n_features,
                     cols: n_features,
+                })
+            }
+            MatrixMode::Correlation => {
+                let n_sel = self.selection.indices.len();
+                let n_features = n_sel * 3;
+                if self.frames == 0 || n_sel == 0 {
+                    return Ok(PlanOutput::Matrix {
+                        data: Vec::new(),
+                        rows: n_sel,
+                        cols: n_sel,
+                    });
+                }
+                let inv = 1.0 / self.frames as f64;
+                let mut mean = vec![0.0f64; n_features];
+                for i in 0..n_features {
+                    mean[i] = self.sum[i] * inv;
+                }
+                let mut variance = vec![0.0f64; n_sel];
+                for atom in 0..n_sel {
+                    let base = atom * 3;
+                    let mut var = 0.0f64;
+                    for axis in 0..3 {
+                        let idx = base + axis;
+                        let row = idx * n_features;
+                        var += self.sum_outer[row + idx] * inv - mean[idx] * mean[idx];
+                    }
+                    variance[atom] = var.max(0.0);
+                }
+                let mut out = vec![0.0f32; n_sel * n_sel];
+                for i in 0..n_sel {
+                    for j in i..n_sel {
+                        let mut cov = 0.0f64;
+                        for axis in 0..3 {
+                            let row_idx = i * 3 + axis;
+                            let col_idx = j * 3 + axis;
+                            let row = row_idx * n_features;
+                            cov +=
+                                self.sum_outer[row + col_idx] * inv - mean[row_idx] * mean[col_idx];
+                        }
+                        let denom = (variance[i] * variance[j]).sqrt();
+                        let value = if denom > 0.0 {
+                            (cov / denom) as f32
+                        } else if i == j {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                        out[i * n_sel + j] = value;
+                        out[j * n_sel + i] = value;
+                    }
+                }
+                Ok(PlanOutput::Matrix {
+                    data: out,
+                    rows: n_sel,
+                    cols: n_sel,
                 })
             }
         }
@@ -379,7 +435,9 @@ pub struct ProjectionPlan {
     n_features: usize,
     eigenvectors: Vec<f64>,
     mean: Option<Vec<f64>>,
-    results: Vec<f32>,
+    mass_weighted: bool,
+    sum: Vec<f64>,
+    frame_data: Vec<f64>,
     frames: usize,
 }
 
@@ -390,6 +448,7 @@ impl ProjectionPlan {
         n_components: usize,
         n_features: usize,
         mean: Option<Vec<f64>>,
+        mass_weighted: bool,
     ) -> TrajResult<Self> {
         if n_components * n_features != eigenvectors.len() {
             return Err(TrajError::Mismatch("eigenvector length mismatch".into()));
@@ -405,7 +464,9 @@ impl ProjectionPlan {
             n_features,
             eigenvectors,
             mean,
-            results: Vec::new(),
+            mass_weighted,
+            sum: Vec::new(),
+            frame_data: Vec::new(),
             frames: 0,
         })
     }
@@ -417,15 +478,17 @@ impl Plan for ProjectionPlan {
     }
 
     fn init(&mut self, _system: &System, _device: &Device) -> TrajResult<()> {
-        self.results.clear();
         self.frames = 0;
+        self.sum.clear();
+        self.sum.resize(self.n_features, 0.0);
+        self.frame_data.clear();
         Ok(())
     }
 
     fn process_chunk(
         &mut self,
         chunk: &FrameChunk,
-        _system: &System,
+        system: &System,
         _device: &Device,
     ) -> TrajResult<()> {
         let n_atoms = chunk.n_atoms;
@@ -438,33 +501,59 @@ impl Plan for ProjectionPlan {
             return Ok(());
         }
         let mut frame_vec = vec![0.0f64; self.n_features];
-        let mean = self.mean.as_ref();
+        let masses = &system.atoms.mass;
         for frame in 0..chunk.n_frames {
             for (i, &idx) in sel.iter().enumerate() {
                 let atom_idx = idx as usize;
                 let p = chunk.coords[frame * n_atoms + atom_idx];
+                let weight = if self.mass_weighted {
+                    masses[atom_idx].max(0.0) as f64
+                } else {
+                    1.0
+                };
+                let w = if self.mass_weighted {
+                    weight.sqrt()
+                } else {
+                    1.0
+                };
                 let base = i * 3;
-                frame_vec[base] = p[0] as f64;
-                frame_vec[base + 1] = p[1] as f64;
-                frame_vec[base + 2] = p[2] as f64;
+                frame_vec[base] = p[0] as f64 * w;
+                frame_vec[base + 1] = p[1] as f64 * w;
+                frame_vec[base + 2] = p[2] as f64 * w;
             }
-            for comp in 0..self.n_components {
-                let mut dot = 0.0f64;
-                let row = comp * self.n_features;
-                for i in 0..self.n_features {
-                    let v = frame_vec[i] - mean.map(|m| m[i]).unwrap_or(0.0);
-                    dot += v * self.eigenvectors[row + i];
-                }
-                self.results.push(dot as f32);
+            for i in 0..self.n_features {
+                self.sum[i] += frame_vec[i];
             }
+            self.frame_data.extend_from_slice(&frame_vec);
             self.frames += 1;
         }
         Ok(())
     }
 
     fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        let mean = if let Some(mean) = &self.mean {
+            mean.clone()
+        } else if self.frames > 0 && self.n_features > 0 {
+            let inv = 1.0 / self.frames as f64;
+            self.sum.iter().map(|value| value * inv).collect()
+        } else {
+            vec![0.0; self.n_features]
+        };
+        let mut results = Vec::with_capacity(self.frames * self.n_components);
+        for frame in 0..self.frames {
+            let offset = frame * self.n_features;
+            let frame_vec = &self.frame_data[offset..offset + self.n_features];
+            for comp in 0..self.n_components {
+                let mut dot = 0.0f64;
+                let row = comp * self.n_features;
+                for i in 0..self.n_features {
+                    dot += (frame_vec[i] - mean[i]) * self.eigenvectors[row + i];
+                }
+                results.push(dot as f32);
+            }
+        }
         Ok(PlanOutput::Matrix {
-            data: std::mem::take(&mut self.results),
+            data: results,
             rows: self.frames,
             cols: self.n_components,
         })

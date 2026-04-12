@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
@@ -141,6 +142,35 @@ def test_contract_validate_valid_request():
     assert result.status == "ok"
     assert len(result.errors) == 0
     assert result.normalized_request is not None
+
+
+def test_contract_validate_request_uses_native_when_available(monkeypatch):
+    class Native:
+        @staticmethod
+        def warp_md_agent_validate_request(payload_json: str, strict: bool):
+            payload = json.loads(payload_json)
+            assert payload["analyses"][0]["name"] == "rg"
+            assert strict is True
+            return {
+                "schema_version": AGENT_REQUEST_SCHEMA_VERSION,
+                "status": "ok",
+                "valid": True,
+                "normalized_request": {"version": AGENT_REQUEST_SCHEMA_VERSION},
+                "errors": [],
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(contract, "_native", lambda: Native())
+    result = contract.validate_request(
+        {
+            "system": "topology.pdb",
+            "trajectory": "traj.xtc",
+            "analyses": [{"name": "rg", "selection": "protein"}],
+        },
+        strict=True,
+    )
+    assert result.valid
+    assert result.normalized_request == {"version": AGENT_REQUEST_SCHEMA_VERSION}
 
 
 def test_contract_validate_missing_required_field():
@@ -309,6 +339,17 @@ def test_contract_get_plan_schema_unknown_analysis():
         contract.get_plan_schema("not-a-real-analysis")
 
 
+def test_contract_field_spec_from_dict_accepts_null_choices():
+    spec = contract._field_spec_from_dict(
+        {
+            "type": "string",
+            "semantic_type": "string",
+            "choices": None,
+        }
+    )
+    assert spec.choices is None
+
+
 def test_contract_generate_template():
     """Test generating analysis templates."""
     template = contract.generate_template("rdf")
@@ -361,6 +402,18 @@ def test_contract_capabilities():
     assert "plan_catalog_hash" in caps
     assert caps["supports_streaming"] is True
     assert caps["supports_selection_linting"] is True
+
+
+def test_contract_catalog_hash_tracks_metadata_changes(monkeypatch):
+    before = contract._compute_catalog_hash()
+    rg_contract = contract.ANALYSIS_METADATA["rg"]
+    monkeypatch.setitem(
+        contract.ANALYSIS_METADATA,
+        "rg",
+        replace(rg_contract, aliases=[*rg_contract.aliases, "rg-alt-contract"]),
+    )
+    after = contract._compute_catalog_hash()
+    assert after != before
 
 
 def test_contract_resolve_analysis_name():
@@ -425,6 +478,30 @@ def test_lint_selection_valid_expression():
     assert result.error is None
 
 
+def test_lint_selection_uses_native_when_available(monkeypatch):
+    class Native:
+        @staticmethod
+        def warp_md_agent_lint_selection(expr: str, field_type: str, system_path: str | None):
+            assert expr == "protein"
+            assert field_type == "mask"
+            assert system_path is None
+            return {
+                "valid": True,
+                "expression": expr,
+                "field_type": field_type,
+                "matched_atoms": 10,
+                "total_atoms": 20,
+                "error": None,
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(contract, "_native", lambda: Native())
+    result = contract.lint_selection("protein", field_type="mask")
+    assert result.valid
+    assert result.matched_atoms == 10
+    assert result.total_atoms == 20
+
+
 def test_lint_selection_empty_expression():
     """Test that empty expressions are rejected."""
     result = contract.lint_selection("")
@@ -482,6 +559,37 @@ def test_suggest_analyses_radius_gyration():
     assert "radius" in reason_lower or "gyration" in reason_lower
 
 
+def test_suggest_analyses_uses_native_when_available(monkeypatch):
+    class Native:
+        @staticmethod
+        def warp_md_agent_suggest_analyses(goal: str, provided_fields, top_n: int):
+            assert goal == "radius of gyration"
+            assert provided_fields == ["selection"]
+            assert top_n == 2
+            return {
+                "goal": goal,
+                "total_analyses": 37,
+                "candidates": [
+                    {
+                        "name": "rg",
+                        "reason": "name match: rg",
+                        "missing_fields": [],
+                        "score": 10.0,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(contract, "_native", lambda: Native())
+    result = contract.suggest_analyses(
+        "radius of gyration",
+        provided_fields=["selection"],
+        top_n=2,
+    )
+    assert result.goal == "radius of gyration"
+    assert result.candidates[0].name == "rg"
+    assert result.candidates[0].missing_fields == []
+
+
 def test_suggest_analyses_diffusion():
     """Test suggesting diffusion/MSD analysis."""
     result = contract.suggest_analyses("I want to measure diffusion coefficient")
@@ -516,6 +624,7 @@ def test_suggest_analyses_hydrogen_bonds():
     assert len(result.candidates) > 0
     names = [c.name for c in result.candidates]
     assert "hbond" in names
+    assert result.candidates[0].name == "hbond"
 
 
 def test_suggest_analyses_docking():
@@ -531,6 +640,24 @@ def test_suggest_analyses_secondary_structure():
     assert len(result.candidates) > 0
     names = [c.name for c in result.candidates]
     assert "dssp" in names
+
+
+def test_suggest_analyses_water_count_avoids_docking():
+    result = contract.suggest_analyses("count waters around a protein")
+    assert len(result.candidates) > 0
+    assert result.candidates[0].name == "water_count"
+
+
+def test_suggest_analyses_interface_hbonds_avoid_docking():
+    result = contract.suggest_analyses("hydrogen bonds in protein water interface")
+    assert len(result.candidates) > 0
+    assert result.candidates[0].name == "hbond"
+
+
+def test_suggest_analyses_free_volume_prefers_generic_plan():
+    result = contract.suggest_analyses("measure free volume in polymer")
+    assert len(result.candidates) > 0
+    assert result.candidates[0].name == "free_volume"
 
 
 def test_suggest_analyses_top_n():

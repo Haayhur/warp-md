@@ -26,6 +26,7 @@ from .cli_config import _default_out, _load_config, example_config
 from .cli_output import _artifact_metadata, _save_output, _summary_from_output
 from .cli_parse import _load_system_from_args, _load_traj_from_args
 from .cli_specs import SPEC_BUILDERS
+from . import build_cli
 from .frame_edit import add_frame_edit_args, run_frame_edit
 from .pack.data import available_water_models, water_pdb
 from .atlas_api import (
@@ -1157,6 +1158,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="extract or stride trajectory frames into a new trajectory or structure file",
     )
     add_frame_edit_args(frames_cmd)
+    build_cmd = sub.add_parser(
+        "build",
+        help="run polymer-builder and build-contract commands",
+        description=(
+            "Forward arguments to the warp-build CLI.\n"
+            "Examples:\n"
+            "  warp-md build schema --kind request\n"
+            "  warp-md build capabilities\n"
+            "  warp-md build run request.json"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    build_cmd.add_argument(
+        "build_args",
+        nargs=argparse.REMAINDER,
+        metavar="ARGS",
+        help="arguments forwarded to warp-build",
+    )
     sub.add_parser("example", help="print example config")
     schema = sub.add_parser("schema", help="print run-config JSON schema for agents")
     schema.add_argument(
@@ -1361,6 +1380,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         exit_code, payload = run_frame_edit(args)
         print(json.dumps(payload, indent=2))
         return exit_code
+    if args.cmd == "build":
+        forwarded = list(args.build_args)
+        if forwarded[:1] == ["--"]:
+            forwarded = forwarded[1:]
+        if not forwarded:
+            forwarded = ["--help"]
+        return build_cli.main(forwarded)
     if args.cmd == "example":
         example_config()
         return 0

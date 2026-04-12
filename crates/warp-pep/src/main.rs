@@ -20,8 +20,9 @@ internal-coordinate geometry (bond lengths, angles, dihedrals) for all 20 \
 standard amino acids. Supports Amber force field naming conventions \
 (CYX, HID, HIE, HIP, ASH, GLH, LYN), Ramachandran angle presets \
 (alpha-helix, beta-sheet, polyproline-II), multi-chain construction, \
-disulfide bond detection, point mutations, and 7 output formats \
-(PDB, PDBx/CIF, XYZ, GRO, MOL2, CRD, LAMMPS).
+disulfide bond detection, point mutations, and shared structure-format \
+output (PDB, PQR, PDBx/CIF, XYZ, GRO, G96, MOL2, Amber INPCRD/RST/RST7, \
+CRD, LAMMPS).
 
 INPUT MODES (mutually exclusive):
   --sequence / -s     One-letter codes: ACDEFGHIKLMNPQRSTVWY
@@ -124,12 +125,12 @@ JSON SPEC SCHEMA (multi-chain):\n\
 
         /// Output file path. If omitted, writes PDB to stdout.
         /// Format auto-detected from extension:
-        ///   .pdb .cif .mmcif .xyz .gro .mol2 .crd .lmp .lammps
+        ///   .pdb .brk .ent .pqr .cif .mmcif .xyz .gro .g96 .mol2 .inpcrd .rst .rst7 .crd .lmp .lammps
         #[arg(short, long)]
         output: Option<String>,
 
         /// Explicit output format string (overrides extension detection).
-        /// Values: pdb, pdbx, xyz, gro, mol2, crd, lammps.
+        /// Values: pdb, pqr, pdbx, xyz, gro, g96, mol2, inpcrd, crd, lammps.
         #[arg(short, long)]
         format: Option<String>,
 
@@ -181,7 +182,7 @@ JSON SPEC SCHEMA (multi-chain):\n\
   warp-pep mutate -t ALA-CYX-HID -m H3W --detect-ss")]
     Mutate {
         /// Input structure file to mutate. Supported formats:
-        ///   PDB, PDBx/CIF, XYZ, GRO, MOL2, Amber CRD, LAMMPS.
+        ///   PDB/BRK/ENT, PQR, PDBx/CIF, XYZ, GRO, G96, MOL2, Amber INPCRD/RST/RST7/CRD, LAMMPS.
         /// If omitted, build from --sequence or --three-letter instead.
         #[arg(short, long)]
         input: Option<String>,
@@ -207,7 +208,7 @@ JSON SPEC SCHEMA (multi-chain):\n\
         output: Option<String>,
 
         /// Explicit output format (overrides extension detection).
-        /// Values: pdb, pdbx, xyz, gro, mol2, crd, lammps.
+        /// Values: pdb, pqr, pdbx, xyz, gro, g96, mol2, inpcrd, crd, lammps.
         #[arg(short, long)]
         format: Option<String>,
 

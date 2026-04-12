@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 jobs:
-  publish-cpu:
+  build-cpu-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,6 +103,126 @@ jobs:
 
       - name: Build CPU sdist
         run: maturin sdist
+
+      - name: Upload CPU Linux wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-wheels-linux
+          path: target/wheels/warp_md-*.whl
+
+      - name: Upload CPU sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-sdist
+          path: target/wheels/*.tar.gz
+
+  build-cpu-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: relver
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Update version files
+        env:
+          RELEASE_VERSION: ${{ steps.relver.outputs.version }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["RELEASE_VERSION"]
+
+          def update(path: Path) -> None:
+            text = path.read_text()
+            text = re.sub(r'(?m)^version = ".*?"$', f'version = "{version}"', text)
+            path.write_text(text)
+
+          update(Path("pyproject.toml"))
+          for cargo in Path("crates").rglob("Cargo.toml"):
+            update(cargo)
+          PY
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install maturin==1.5.1
+
+      - name: Build CPU wheel (Windows)
+        env:
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+        shell: bash
+        run: python -m maturin build --release --interpreter python
+
+      - name: Smoke test installed Windows wheel
+        shell: bash
+        run: |
+          WHEEL=$(python - <<'PY'
+          import glob
+          import sys
+
+          tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+          wheels = sorted(glob.glob(f"target/wheels/warp_md-*-{tag}-{tag}-win_amd64.whl"))
+          if not wheels:
+              raise SystemExit(f"no Windows wheel for {tag}")
+          print(wheels[0])
+          PY
+          )
+          python -m pip install --force-reinstall "$WHEEL"
+          python -c "import warp_md; print(warp_md.__file__)"
+
+      - name: Upload CPU Windows wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-wheels-windows-py${{ matrix.python-version }}
+          path: target/wheels/warp_md-*.whl
+
+  publish-cpu:
+    runs-on: ubuntu-latest
+    needs: [build-cpu-linux, build-cpu-windows]
+    steps:
+      - name: Download CPU Linux wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: cpu-wheels-linux
+          path: target/wheels
+
+      - name: Download CPU Windows wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cpu-wheels-windows-*
+          path: target/wheels
+          merge-multiple: true
+
+      - name: Download CPU sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: cpu-sdist
+          path: target/wheels
 
       - name: Publish CPU package to PyPI (warp-md)
         uses: pypa/gh-action-pypi-publish@release/v1

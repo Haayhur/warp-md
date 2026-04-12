@@ -10,7 +10,18 @@ from typing import Optional, Sequence, Union
 
 import numpy as np
 
-from .rmsd import _kabsch_rmsd, _rmsd_raw, _read_all, _selection_indices
+from ._runtime import (
+    kabsch_rmsd,
+    load_native_symbol,
+    native_inputs,
+    native_selection,
+    prepend_reference_frame,
+    read_all_frames,
+    reset_traj,
+    rmsd_raw,
+    selection_indices,
+)
+from .trajectory import ArrayTrajectory
 
 
 RefLike = Union[int, str]
@@ -123,7 +134,7 @@ def _best_remapped_rmsd(
     max_permutations: int,
 ) -> float:
     if not groups:
-        return float(_kabsch_rmsd(cur, ref) if fit else _rmsd_raw(cur, ref))
+        return float(kabsch_rmsd(cur, ref) if fit else rmsd_raw(cur, ref))
 
     total = _permutation_budget(groups)
     if total > max_permutations:
@@ -137,10 +148,49 @@ def _best_remapped_rmsd(
         trial = cur.copy()
         for positions, perm in zip(groups, combo):
             trial[positions] = cur[np.asarray(perm, dtype=np.int64)]
-        val = float(_kabsch_rmsd(trial, ref) if fit else _rmsd_raw(trial, ref))
+        val = float(kabsch_rmsd(trial, ref) if fit else rmsd_raw(trial, ref))
         if val < best:
             best = val
     return best
+
+
+def _native_symmrmsd(
+    traj,
+    system,
+    mask: str,
+    ref: RefLike,
+    fit: bool,
+    chunk_frames: Optional[int],
+):
+    plan_cls = load_native_symbol("SymmRmsdPlan")
+    if plan_cls is None:
+        raise RuntimeError("SymmRmsdPlan binding unavailable")
+    native_traj, native_system = native_inputs(traj, system, chunk_frames)
+    if native_traj is None or native_system is None:
+        raise RuntimeError("failed to prepare native symmrmsd inputs")
+    try:
+        selection = native_selection(system, native_system, mask)
+        ref_index = int(ref)
+        run_traj = native_traj
+        trim_first = False
+        if ref_index == 0:
+            if not reset_traj(run_traj):
+                raise RuntimeError("failed to reset native trajectory")
+        else:
+            run_traj = prepend_reference_frame(native_traj, ref_index, chunk_frames)
+            if run_traj is None:
+                raise RuntimeError("failed to build native reference trajectory")
+            trim_first = True
+        plan = plan_cls(selection, reference="frame0", align=fit)
+        values = np.asarray(
+            plan.run(run_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            dtype=np.float32,
+        )
+        if trim_first:
+            values = values[1:]
+        return values
+    except Exception as exc:
+        raise RuntimeError("native SymmRmsdPlan execution failed") from exc
 
 
 def symmrmsd(
@@ -163,11 +213,30 @@ def symmrmsd(
     if max_permutations <= 0:
         raise ValueError("max_permutations must be positive")
 
-    coords, _box = _read_all(traj, chunk_frames)
+    coords, _box, _time = read_all_frames(traj, chunk_frames, include_box=True)
     if coords is None:
         raise ValueError("trajectory has no frames")
     if coords.size == 0:
         return np.empty((0,), dtype=np.float32)
+
+    idx = selection_indices(system, mask)
+    if idx.size == 0:
+        raise ValueError("selection resolved to empty set")
+
+    if ref_mask is None:
+        ref_mask = mask
+    ref_idx = selection_indices(system, ref_mask)
+    if ref_idx.size != idx.size:
+        raise ValueError("mask and ref_mask selections must have same size")
+
+    if (
+        not remap
+        and ref_mask == mask
+        and frame_indices is None
+        and isinstance(ref, int)
+    ):
+        source = ArrayTrajectory(np.asarray(coords, dtype=np.float32))
+        return _native_symmrmsd(source, system, mask, ref, fit, chunk_frames)
 
     n_frames = coords.shape[0]
     if frame_indices is not None:
@@ -180,16 +249,6 @@ def symmrmsd(
                 select.append(j)
         coords = coords[select]
         n_frames = coords.shape[0]
-
-    idx = _selection_indices(system, mask)
-    if idx.size == 0:
-        raise ValueError("selection resolved to empty set")
-
-    if ref_mask is None:
-        ref_mask = mask
-    ref_idx = _selection_indices(system, ref_mask)
-    if ref_idx.size != idx.size:
-        raise ValueError("mask and ref_mask selections must have same size")
 
     ref_coords = _resolve_reference(coords, system, ref)
     ref_sel = ref_coords[ref_idx]

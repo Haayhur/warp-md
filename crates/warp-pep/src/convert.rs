@@ -1,15 +1,15 @@
-//! Conversions between warp-pep's Structure and warp-pack's PackOutput / MoleculeData.
+//! Conversions between warp-pep's Structure and shared structure IO/types.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use warp_pack::io::{read_molecule, write_output, MoleculeData};
-use warp_pack::{AtomRecord, OutputSpec, PackOutput};
+use warp_structure::io::{read_molecule, write_output, MoleculeData};
+use warp_structure::{AtomRecord, AtomRecordKind, OutputSpec, PackOutput, Vec3};
 
 use crate::coord::Vec3 as PepVec3;
 use crate::residue::{parse_amber_name, Atom, Chain, Residue, Structure};
 
-/// Convert warp-pep Structure → warp-pack PackOutput for multi-format writing.
+/// Convert warp-pep Structure → shared PackOutput for multi-format writing.
 pub fn structure_to_pack_output(struc: &Structure) -> PackOutput {
     let mut atoms = Vec::new();
     let mut ter_after = Vec::new();
@@ -18,7 +18,7 @@ pub fn structure_to_pack_output(struc: &Structure) -> PackOutput {
         for res in &chain.residues {
             for atom in &res.atoms {
                 atoms.push(AtomRecord {
-                    record_kind: warp_pack::pack::AtomRecordKind::Atom,
+                    record_kind: AtomRecordKind::Atom,
                     name: atom.name.clone(),
                     element: atom.element.clone(),
                     resname: res.amber_name().to_string(),
@@ -26,12 +26,13 @@ pub fn structure_to_pack_output(struc: &Structure) -> PackOutput {
                     chain: chain.id,
                     segid: String::new(),
                     charge: 0.0,
-                    position: warp_pack::geom::Vec3::new(
+                    position: Vec3::new(
                         atom.coord.x as f32,
                         atom.coord.y as f32,
                         atom.coord.z as f32,
                     ),
                     mol_id: 0,
+                    pdb_metadata: None,
                 });
             }
         }
@@ -61,10 +62,11 @@ pub fn structure_to_pack_output(struc: &Structure) -> PackOutput {
         bonds: ss_bonds,
         box_size: [0.0; 3],
         ter_after,
+        box_vectors: None,
     }
 }
 
-/// Convert warp-pack MoleculeData → warp-pep Structure (for reading input files).
+/// Convert shared MoleculeData → warp-pep Structure (for reading input files).
 pub fn molecule_data_to_structure(mol: &MoleculeData) -> Result<Structure, String> {
     let mut struc = Structure::new_empty();
     let mut chain_index_by_id: HashMap<char, usize> = HashMap::new();
@@ -122,7 +124,7 @@ pub fn molecule_data_to_structure(mol: &MoleculeData) -> Result<Structure, Strin
     Ok(struc)
 }
 
-/// Read a structure from any supported file format via warp-pack.
+/// Read a structure from any supported file format via shared structure IO.
 pub fn read_structure(path: &str) -> Result<Structure, String> {
     let p = Path::new(path);
     let mol = read_molecule(p, None, false, false, None)
@@ -133,16 +135,22 @@ pub fn read_structure(path: &str) -> Result<Structure, String> {
 /// Infer output format from file extension.
 pub fn infer_format(path: &str) -> &str {
     let lower = path.to_lowercase();
-    if lower.ends_with(".pdb") {
+    if lower.ends_with(".pdb") || lower.ends_with(".brk") || lower.ends_with(".ent") {
         "pdb"
+    } else if lower.ends_with(".pqr") {
+        "pqr"
     } else if lower.ends_with(".cif") || lower.ends_with(".mmcif") {
         "pdbx"
     } else if lower.ends_with(".xyz") {
         "xyz"
     } else if lower.ends_with(".gro") {
         "gro"
+    } else if lower.ends_with(".g96") {
+        "g96"
     } else if lower.ends_with(".mol2") {
         "mol2"
+    } else if lower.ends_with(".inpcrd") || lower.ends_with(".rst") || lower.ends_with(".rst7") {
+        "inpcrd"
     } else if lower.ends_with(".crd") {
         "crd"
     } else if lower.ends_with(".lmp") || lower.ends_with(".lammps") {
@@ -286,11 +294,11 @@ mod tests {
 
     #[test]
     fn test_unknown_residue_rejected() {
-        use warp_pack::geom::Vec3 as PackVec3;
+        use warp_structure::Vec3 as PackVec3;
         // Fabricate MoleculeData with an unknown residue name
         let mol = MoleculeData {
             atoms: vec![AtomRecord {
-                record_kind: warp_pack::pack::AtomRecordKind::Atom,
+                record_kind: AtomRecordKind::Atom,
                 name: "CA".into(),
                 element: "C".into(),
                 resname: "ZZZ".into(),
@@ -300,9 +308,11 @@ mod tests {
                 charge: 0.0,
                 position: PackVec3::new(0.0, 0.0, 0.0),
                 mol_id: 0,
+                pdb_metadata: None,
             }],
             bonds: vec![],
             ter_after: vec![],
+            box_vectors: None,
         };
         let result = molecule_data_to_structure(&mol);
         assert!(result.is_err());
@@ -311,10 +321,10 @@ mod tests {
 
     #[test]
     fn test_non_contiguous_chain_segments_reuse_chain_ids() {
-        use warp_pack::geom::Vec3 as PackVec3;
+        use warp_structure::Vec3 as PackVec3;
         let mk =
             |name: &str, elem: &str, resname: &str, resid: i32, chain: char, x: f32| AtomRecord {
-                record_kind: warp_pack::pack::AtomRecordKind::Atom,
+                record_kind: AtomRecordKind::Atom,
                 name: name.into(),
                 element: elem.into(),
                 resname: resname.into(),
@@ -324,6 +334,7 @@ mod tests {
                 charge: 0.0,
                 position: PackVec3::new(x, 0.0, 0.0),
                 mol_id: 0,
+                pdb_metadata: None,
             };
         let mol = MoleculeData {
             atoms: vec![
@@ -333,6 +344,7 @@ mod tests {
             ],
             bonds: vec![],
             ter_after: vec![],
+            box_vectors: None,
         };
 
         let struc = molecule_data_to_structure(&mol).unwrap();
@@ -340,5 +352,15 @@ mod tests {
         assert_eq!(struc.chains.iter().filter(|c| c.id == 'A').count(), 1);
         assert_eq!(struc.chain_by_id('A').unwrap().residues.len(), 2);
         assert_eq!(struc.chain_by_id('B').unwrap().residues.len(), 1);
+    }
+
+    #[test]
+    fn test_infer_format_covers_shared_io_aliases() {
+        assert_eq!(infer_format("model.g96"), "g96");
+        assert_eq!(infer_format("model.ent"), "pdb");
+        assert_eq!(infer_format("model.brk"), "pdb");
+        assert_eq!(infer_format("model.pqr"), "pqr");
+        assert_eq!(infer_format("coords.inpcrd"), "inpcrd");
+        assert_eq!(infer_format("restart.rst7"), "inpcrd");
     }
 }

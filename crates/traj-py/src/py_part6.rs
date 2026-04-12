@@ -371,6 +371,78 @@ impl PyVelocityAutoCorrPlan {
 }
 
 #[pyclass]
+struct PyVanHovePlan {
+    plan: RefCell<VanHovePlan>,
+}
+
+#[pymethods]
+impl PyVanHovePlan {
+    #[new]
+    #[pyo3(signature = (selection, r_bin=0.1, r_max=10.0, length_scale=None, max_lag=None, sqrt_time_bin=None, scale_to_average_box=true, remove_pbc_jumps=true, time_scale=None))]
+    fn new(
+        selection: &PySelection,
+        r_bin: f64,
+        r_max: f64,
+        length_scale: Option<f64>,
+        max_lag: Option<usize>,
+        sqrt_time_bin: Option<f64>,
+        scale_to_average_box: bool,
+        remove_pbc_jumps: bool,
+        time_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let mut plan = VanHovePlan::new(selection.selection.clone(), r_bin, r_max)
+            .with_scale_to_average_box(scale_to_average_box)
+            .with_remove_pbc_jumps(remove_pbc_jumps);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        if let Some(max_lag) = max_lag {
+            plan = plan.with_max_lag(max_lag);
+        }
+        if let Some(width) = sqrt_time_bin {
+            plan = plan.with_sqrt_time_bin(width);
+        }
+        if let Some(scale) = time_scale {
+            plan = plan.with_time_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None, integral_radius=None, curve_lags=None, curve_step=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+        integral_radius: Option<f64>,
+        curve_lags: Option<Vec<i64>>,
+        curve_step: Option<i64>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::VanHove(output) => {
+                vanhove_to_py(py, output, integral_radius, curve_lags, curve_step)
+            }
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
 struct PyXcorrPlan {
     plan: RefCell<XcorrPlan>,
 }

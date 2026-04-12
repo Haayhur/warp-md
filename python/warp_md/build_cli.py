@@ -29,8 +29,12 @@ def _load_request(path: str) -> Dict[str, Any]:
     return payload
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="warp-build", description="Agent-safe warp-build CLI")
+def build_parser(
+    *,
+    prog: str = "warp-build",
+    description: str = "Agent-safe warp-build CLI",
+) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=prog, description=description)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     schema_cmd = sub.add_parser("schema", help="print request/result/event/source schemas")
@@ -74,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_cmd = sub.add_parser("validate", help="validate high-level build request")
     validate_cmd.add_argument("request", help="path to request.json")
+    validate_cmd.add_argument("--deep", action="store_true", help="run geometry/QC preflight during validation")
     validate_cmd.add_argument("--format", choices=["json", "yaml"], default="json", help="output format")
     validate_cmd.add_argument("--json", action="store_true", help="alias for --format json")
 
@@ -124,7 +129,7 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
 
     if args.cmd == "validate":
         fmt = "json" if args.json else args.format
-        payload = build_contract.validate(_load_request(args.request))
+        payload = build_contract.validate(_load_request(args.request), deep=args.deep)
         print(_dump_payload(payload, fmt))
         return 0 if payload.get("valid") else 2
 

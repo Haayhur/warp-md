@@ -8,59 +8,17 @@ from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from ._chunk_io import read_chunk_fields
+from ._runtime import (
+    load_native_symbol,
+    native_inputs,
+    native_selection,
+    read_all_frames,
+    subset_frames,
+)
+from .trajectory import ArrayTrajectory
 
 
 MaskLike = Union[str, Sequence[int], np.ndarray]
-
-
-def _all_resid_mask(system) -> str:
-    if not hasattr(system, "atom_table"):
-        return "all"
-    atoms = system.atom_table()
-    resids = atoms.get("resid", [])
-    if not resids:
-        return "resid 0:0"
-    return f"resid {min(resids)}:{max(resids)}"
-
-
-def _selection_indices(system, mask: MaskLike) -> np.ndarray:
-    if isinstance(mask, np.ndarray):
-        return np.asarray(mask, dtype=np.int64).reshape(-1)
-    if isinstance(mask, (list, tuple)):
-        return np.asarray([int(x) for x in mask], dtype=np.int64)
-    if mask in ("", "*", "all", None):
-        sel = system.select(_all_resid_mask(system))
-    else:
-        sel = system.select(mask)
-    return np.asarray(list(sel.indices), dtype=np.int64)
-
-
-def _read_all(traj, chunk_frames: Optional[int]):
-    max_chunk = chunk_frames or 128
-    coords_list = []
-    chunk = read_chunk_fields(traj, max_chunk)
-    if chunk is None:
-        return None
-    while chunk is not None:
-        coords_list.append(np.asarray(chunk["coords"], dtype=np.float64))
-        chunk = read_chunk_fields(traj, max_chunk)
-    coords = np.concatenate(coords_list, axis=0) if coords_list else np.empty((0, 0, 3))
-    return coords
-
-
-def _apply_frame_indices(coords, frame_indices: Optional[Sequence[int]]):
-    if frame_indices is None:
-        return coords
-    n_frames = coords.shape[0]
-    select = []
-    for i in frame_indices:
-        j = int(i)
-        if j < 0:
-            j = n_frames + j
-        if 0 <= j < n_frames:
-            select.append(j)
-    return coords[select]
 
 
 def atomiccorr(
@@ -79,76 +37,62 @@ def atomiccorr(
     device: str = "auto",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Atomic displacement autocorrelation."""
-    use_plan = False
-    try:
-        from warp_md import AtomicCorrPlan  # type: ignore
-
-        use_plan = hasattr(system, "select") and getattr(AtomicCorrPlan, "__name__", "") != "_Missing"
-    except Exception:
-        AtomicCorrPlan = None  # type: ignore
-
-    if use_plan and AtomicCorrPlan is not None:
+    plan_cls = load_native_symbol("AtomicCorrPlan")
+    if plan_cls is None:
+        raise RuntimeError("AtomicCorrPlan binding unavailable")
+    source = traj
+    if frame_indices is not None:
+        coords, _box, _time = read_all_frames(traj, chunk_frames)
+        if coords is None:
+            raise ValueError("trajectory has no frames")
+        coords, _box, _time = subset_frames(coords, frame_indices)
+        coords = np.asarray(coords, dtype=np.float32)
+        if coords.size == 0 or coords.shape[0] < 2:
+            return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
+        source = ArrayTrajectory(coords)
+    native_traj, native_system = native_inputs(source, system, chunk_frames)
+    if native_traj is None or native_system is None:
+        raise RuntimeError("failed to prepare native atomiccorr inputs")
+    if max_lag is None and hasattr(native_traj, "count_frames"):
         try:
-            if isinstance(mask, str):
-                sel = system.select(mask if mask not in ("", "*", "all", None) else _all_resid_mask(system))
-            else:
-                indices = np.asarray(mask, dtype=np.int64).reshape(-1).tolist()
-                sel = system.select_indices(indices)
-            plan = AtomicCorrPlan(
-                sel,
-                reference=reference,
-                lag_mode=lag_mode,
-                max_lag=max_lag,
-                memory_budget_bytes=memory_budget_bytes,
-                multi_tau_m=multi_tau_m,
-                multi_tau_levels=multi_tau_levels,
-            )
-            time, data = plan.run(traj, system, chunk_frames=chunk_frames, device=device)
-            time = np.asarray(time, dtype=np.float32)
-            data = np.asarray(data, dtype=np.float32)
-            if normalize and data.size > 0 and data[0] != 0.0:
-                data = data / data[0]
-            return time, data
-        except TypeError:
-            pass
-
-    coords = _read_all(traj, chunk_frames)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
-    if coords.size == 0:
-        return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
-
-    coords = _apply_frame_indices(coords, frame_indices)
-    if coords.size == 0:
-        return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
-
-    idx = _selection_indices(system, mask)
-    if idx.size == 0 or coords.shape[0] < 2:
-        return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
-
-    ref_mode = reference.lower()
+            n_frames = int(native_traj.count_frames(chunk_frames))
+        except Exception:
+            n_frames = 0
+        if n_frames < 2:
+            return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
+        max_lag = n_frames - 1
+    ref_mode = str(reference).strip().lower()
     if ref_mode in ("topology", "top", "topology0", "topology_ref"):
-        ref = system.positions0()
-        if ref is None:
-            raise ValueError("reference=topology requested but system.positions0 is None")
-        ref = np.asarray(ref, dtype=np.float64)
-        ref_sel = ref[idx]
-    else:
-        ref_sel = coords[0, idx, :]
-
-    disp = coords[:, idx, :] - ref_sel[None, :, :]
-    n_frames = disp.shape[0]
-    lag_max = max_lag if max_lag is not None else n_frames - 1
-    lag_max = max(1, min(int(lag_max), n_frames - 1))
-    lags = np.arange(1, lag_max + 1, dtype=np.float32)
-    out = np.zeros(lags.shape[0], dtype=np.float32)
-    n_sel = max(1, idx.size)
-    for i, lag in enumerate(lags.astype(int)):
-        prod = (disp[lag:] * disp[: n_frames - lag]).sum(axis=2)
-        out[i] = prod.mean() / n_sel
-    if normalize and out.size > 0 and out[0] != 0.0:
-        out = out / out[0]
-    return lags, out
+        try:
+            positions0 = native_system.positions0()
+        except Exception:
+            positions0 = None
+        if positions0 is None:
+            reference = "frame0"
+    try:
+        selection = native_selection(system, native_system, mask)
+        plan = plan_cls(
+            selection,
+            reference=reference,
+            lag_mode="ring" if lag_mode is None else lag_mode,
+            max_lag=max_lag,
+            memory_budget_bytes=memory_budget_bytes,
+            multi_tau_m=multi_tau_m,
+            multi_tau_levels=multi_tau_levels,
+        )
+        time, data = plan.run(
+            native_traj,
+            native_system,
+            chunk_frames=chunk_frames,
+            device=device,
+        )
+        time = np.asarray(time, dtype=np.float32).reshape(-1)
+        data = np.asarray(data, dtype=np.float32).reshape(-1)
+    except Exception as exc:
+        raise RuntimeError("native AtomicCorrPlan execution failed") from exc
+    if normalize and data.size > 0 and data[0] != 0.0:
+        data = data / data[0]
+    return time, data
 
 
 __all__ = ["atomiccorr"]

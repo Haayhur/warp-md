@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use warp_pack::io::{write_minimal_prmtop, AmberTopology};
+use warp_structure::io::{write_minimal_prmtop, AmberTopology};
 
 fn temp_path(label: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -292,6 +292,18 @@ fn validate_supports_yaml_and_preserves_invalid_exit_code() {
     let valid_payload: Value =
         serde_yaml::from_slice(&valid_output.stdout).expect("parse yaml validate");
     assert_eq!(valid_payload["schema_version"], "warp-build.agent.v1");
+    assert_eq!(valid_payload["preflight"]["executed"], false);
+
+    let deep_output = warp_build()
+        .args(["validate", "--deep"])
+        .arg(&valid_request)
+        .output()
+        .expect("run warp-build deep validate");
+
+    assert!(deep_output.status.success(), "{deep_output:?}");
+    let deep_payload: Value =
+        serde_json::from_slice(&deep_output.stdout).expect("parse json deep validate");
+    assert_eq!(deep_payload["preflight"]["executed"], true);
 
     let invalid_request = temp_path("request_invalid.json");
     write_json(

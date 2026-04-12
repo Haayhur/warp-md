@@ -2,8 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
 use serde_json::{json, Value};
-use warp_pack::io::{write_minimal_prmtop, AmberTopology};
+use warp_structure::io::{write_minimal_prmtop, AmberTopology};
 
 fn temp_path(label: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -276,6 +277,7 @@ fn schema_and_inspect_source_work() {
         .is_some());
     let build_manifest_schema =
         warp_build::schema_json("build_manifest").expect("build manifest schema");
+    assert!(build_manifest_schema.contains("overlap_status"));
     let build_manifest_schema_value: Value =
         serde_json::from_str(&build_manifest_schema).expect("parse build manifest schema");
     assert!(build_manifest_schema_value["properties"]
@@ -289,6 +291,7 @@ fn schema_and_inspect_source_work() {
         .get("schema_version")
         .is_some());
     let graph_schema = warp_build::schema_json("topology_graph").expect("graph schema");
+    assert!(graph_schema.contains("final_overlap_pairs"));
     let graph_schema_value: Value =
         serde_json::from_str(&graph_schema).expect("parse graph schema");
     assert!(graph_schema_value["properties"].get("build_plan").is_some());
@@ -325,6 +328,15 @@ fn schema_and_inspect_source_work() {
         caps["supported_realization_modes"],
         json!(["extended", "random_walk", "aligned", "ensemble"])
     );
+    assert_eq!(
+        caps["supported_validation_depths"],
+        json!(["shallow", "deep"])
+    );
+    assert_eq!(
+        caps["supports_relax_modes"],
+        json!(["graph_spring", "targeted_steric"])
+    );
+    assert_eq!(caps["default_validation_depth"], "shallow");
     assert_eq!(caps["supports_named_termini_tokens"], json!(true));
     assert_eq!(
         warp_build::example_request("block")["target"]["mode"],
@@ -517,6 +529,23 @@ fn run_build_writes_polymer_artifacts() {
         manifest["summary"]["solver_cleanup"]["mode"],
         "graph_spring"
     );
+    assert_eq!(manifest["summary"]["overlap_status"]["status"], "clear");
+    assert_eq!(
+        manifest["summary"]["overlap_status"]["may_report_no_overlaps"],
+        true
+    );
+    assert_eq!(
+        manifest["summary"]["overlap_status"]["report_source"],
+        "solver_cleanup"
+    );
+    assert_eq!(manifest["summary"]["overlap_status"]["overlap_pairs"], 0);
+    assert_eq!(payload["summary"]["overlap_status"]["status"], "clear");
+    assert!(manifest["summary"]["timings_ms"]["compile_plan"]
+        .as_u64()
+        .is_some());
+    assert!(payload["summary"]["timings_ms"]["build_graph"]
+        .as_u64()
+        .is_some());
     assert_eq!(
         manifest["artifacts"]["topology"],
         topology.to_string_lossy().to_string()
@@ -545,6 +574,18 @@ fn run_build_writes_polymer_artifacts() {
     );
     let topology_text = fs::read_to_string(&topology).expect("read topology");
     assert!(topology_text.contains("%FLAG BONDS_WITHOUT_HYDROGEN"));
+    let topology_graph_path = manifest["artifacts"]["topology_graph"]
+        .as_str()
+        .expect("topology graph path");
+    let topology_graph: Value = serde_json::from_str(
+        &fs::read_to_string(topology_graph_path).expect("read topology graph"),
+    )
+    .expect("parse topology graph");
+    assert_eq!(topology_graph["relax_metadata"]["final_overlap_pairs"], 0);
+    assert_eq!(
+        topology_graph["relax_metadata"]["overlap_metric"],
+        "vdw_overlap_pairs_excluding_1_2_and_1_3"
+    );
 }
 
 #[test]
@@ -603,9 +644,751 @@ fn run_build_with_explicit_relax_records_cleanup_and_user_relax() {
     );
     assert_eq!(manifest["summary"]["relax"]["mode"], "graph_spring");
     assert_eq!(
+        manifest["summary"]["solver_cleanup"]["final_overlap_pairs"],
+        0
+    );
+    assert_eq!(manifest["summary"]["relax"]["final_overlap_pairs"], 0);
+    assert_eq!(manifest["summary"]["overlap_status"]["status"], "clear");
+    assert_eq!(
+        manifest["summary"]["overlap_status"]["may_report_no_overlaps"],
+        true
+    );
+    assert_eq!(
+        manifest["summary"]["overlap_status"]["report_source"],
+        "relax"
+    );
+    assert_eq!(manifest["summary"]["overlap_status"]["overlap_pairs"], 0);
+    assert_eq!(payload["summary"]["overlap_status"]["status"], "clear");
+    assert_eq!(
+        payload["summary"]["overlap_status"]["report_source"],
+        "relax"
+    );
+    assert!(
+        manifest["summary"]["relax"]["fallback_mode"].is_null()
+            || manifest["summary"]["relax"]["fallback_mode"] == "targeted_steric"
+    );
+    assert_eq!(
         manifest["summary"]["relax"]["raw_coordinates"],
         raw_coords.to_string_lossy().to_string()
     );
+}
+
+#[test]
+fn run_build_accepts_targeted_stearic_alias_and_reports_canonical_mode() {
+    let (_dir, bundle) = make_bundle_dir("run_targeted_stearic_alias");
+    let coords = temp_path("coords_targeted_stearic_alias.pdb");
+    let raw_coords = temp_path("coords_targeted_stearic_alias_raw.pdb");
+    let build_manifest = temp_path("build_manifest_targeted_stearic_alias.json");
+    let charge_manifest = temp_path("charge_manifest_targeted_stearic_alias.json");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "build-targeted-stearic-alias-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "syndiotactic"},
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": 12347,
+            "relax": {
+                "mode": "targeted_stearic",
+                "steps": 8,
+                "step_scale": 0.2,
+                "clash_scale": 0.9
+            }
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "raw_coordinates": raw_coords.to_string_lossy(),
+            "build_manifest": build_manifest.to_string_lossy(),
+            "charge_manifest": charge_manifest.to_string_lossy(),
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&build_manifest).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(manifest["summary"]["relax"]["mode"], "targeted_steric");
+    assert_eq!(manifest["summary"]["overlap_status"]["status"], "clear");
+    assert_eq!(
+        manifest["summary"]["overlap_status"]["report_source"],
+        "relax"
+    );
+    assert!(manifest["summary"]["relax"]["initial_overlap_pairs"]
+        .as_u64()
+        .is_some());
+    assert!(manifest["summary"]["relax"]["final_overlap_pairs"]
+        .as_u64()
+        .is_some());
+}
+
+fn overlap_report_snapshot(report: &Value) -> Value {
+    if report.is_null() {
+        return Value::Null;
+    }
+    json!({
+        "mode": report["mode"],
+        "steps_requested": report["steps_requested"],
+        "steps_executed": report["steps_executed"],
+        "initial_max_clash": report["initial_max_clash"],
+        "final_max_clash": report["final_max_clash"],
+        "initial_overlap_pairs": report["initial_overlap_pairs"],
+        "final_overlap_pairs": report["final_overlap_pairs"],
+        "fallback_mode": report["fallback_mode"],
+        "fallback_steps_requested": report["fallback_steps_requested"],
+        "fallback_steps_executed": report["fallback_steps_executed"],
+        "pre_fallback_max_clash": report["pre_fallback_max_clash"],
+        "pre_fallback_overlap_pairs": report["pre_fallback_overlap_pairs"],
+        "movable_atom_count": report["movable_atom_count"],
+        "max_atom_displacement_angstrom": report["max_atom_displacement_angstrom"],
+    })
+}
+
+fn run_overlap_corpus_case(case_name: &str, request: Value) -> Value {
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    let summary = &payload["summary"];
+    json!({
+        "case": case_name,
+        "build_mode": summary["build_mode"],
+        "conformation_mode": summary["conformation_mode"],
+        "atom_count": summary["atom_count"],
+        "solver_cleanup": overlap_report_snapshot(&summary["solver_cleanup"]),
+        "relax": overlap_report_snapshot(&summary["relax"]),
+    })
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct OverlapSweepRecord {
+    case: String,
+    seed: u64,
+    atom_count: u64,
+    fallback_triggered: bool,
+    worst_pre_fallback_overlap_pairs: u64,
+    worst_initial_overlap_pairs: u64,
+    worst_final_overlap_pairs: u64,
+    worst_max_displacement_angstrom: f64,
+    solver_cleanup: Value,
+    relax: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct OverlapSweepCaseSummary {
+    case: String,
+    seeds_scanned: usize,
+    fallback_trigger_count: usize,
+    max_pre_fallback_overlap_pairs: u64,
+    max_initial_overlap_pairs: u64,
+    max_final_overlap_pairs: u64,
+    max_atom_displacement_angstrom: f64,
+    top_offenders: Vec<OverlapSweepRecord>,
+}
+
+fn overlap_report_u64(report: &Value, key: &str) -> u64 {
+    report.get(key).and_then(Value::as_u64).unwrap_or_default()
+}
+
+fn overlap_report_f64(report: &Value, key: &str) -> f64 {
+    report.get(key).and_then(Value::as_f64).unwrap_or_default()
+}
+
+fn overlap_report_has_fallback(report: &Value) -> bool {
+    report
+        .get("fallback_mode")
+        .map(|value| !value.is_null())
+        .unwrap_or(false)
+}
+
+fn graph_spring_relax_request(steps: u64, step_scale: f64) -> Value {
+    json!({
+        "mode": "graph_spring",
+        "steps": steps,
+        "step_scale": step_scale,
+        "clash_scale": 0.9
+    })
+}
+
+fn run_overlap_sweep_case(case_name: &str, seed: u64, request: Value) -> OverlapSweepRecord {
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    let summary = &payload["summary"];
+    let solver_cleanup = overlap_report_snapshot(&summary["solver_cleanup"]);
+    let relax = overlap_report_snapshot(&summary["relax"]);
+    OverlapSweepRecord {
+        case: case_name.into(),
+        seed,
+        atom_count: summary["atom_count"].as_u64().unwrap_or_default(),
+        fallback_triggered: overlap_report_has_fallback(&solver_cleanup)
+            || overlap_report_has_fallback(&relax),
+        worst_pre_fallback_overlap_pairs: overlap_report_u64(
+            &solver_cleanup,
+            "pre_fallback_overlap_pairs",
+        )
+        .max(overlap_report_u64(&relax, "pre_fallback_overlap_pairs")),
+        worst_initial_overlap_pairs: overlap_report_u64(&solver_cleanup, "initial_overlap_pairs")
+            .max(overlap_report_u64(&relax, "initial_overlap_pairs")),
+        worst_final_overlap_pairs: overlap_report_u64(&solver_cleanup, "final_overlap_pairs")
+            .max(overlap_report_u64(&relax, "final_overlap_pairs")),
+        worst_max_displacement_angstrom: overlap_report_f64(
+            &solver_cleanup,
+            "max_atom_displacement_angstrom",
+        )
+        .max(overlap_report_f64(&relax, "max_atom_displacement_angstrom")),
+        solver_cleanup,
+        relax,
+    }
+}
+
+fn overlap_seed_sweep_star_request(bundle: &Path, seed: u64) -> Value {
+    json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": format!("overlap-sweep-star-{seed:04}"),
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "star_polymer",
+            "core_token": "A",
+            "core_junctions": ["head", "tail"],
+            "arm_sequence": ["A", "B", "A", "B"],
+            "arm_repeat_count": 6,
+            "termini": {"head": "H", "tail": "T"},
+            "stereochemistry": {"mode": "syndiotactic"}
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": seed,
+            "relax": graph_spring_relax_request(24, 0.3)
+        },
+        "artifacts": {
+            "coordinates": temp_path(&format!("overlap_sweep_star_coords_{seed}.pdb")).to_string_lossy(),
+            "build_manifest": temp_path(&format!("overlap_sweep_star_manifest_{seed}.json")).to_string_lossy(),
+            "charge_manifest": temp_path(&format!("overlap_sweep_star_charge_{seed}.json")).to_string_lossy(),
+            "topology_graph": temp_path(&format!("overlap_sweep_star_graph_{seed}.json")).to_string_lossy(),
+        }
+    })
+}
+
+fn overlap_seed_sweep_branched_request(bundle: &Path, seed: u64) -> Value {
+    json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": format!("overlap-sweep-branched-{seed:04}"),
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "branched_polymer",
+            "branch_tree": {
+                "token": "A",
+                "children": [
+                    {
+                        "parent_junction": "head",
+                        "child_junction": "head",
+                        "sequence": ["B", "A", "B", "A"],
+                        "repeat_count": 4,
+                        "child": {
+                            "token": "B",
+                            "children": [
+                                {
+                                    "parent_junction": "head",
+                                    "child_junction": "head",
+                                    "sequence": ["A", "B", "A"],
+                                    "repeat_count": 3,
+                                    "child": {
+                                        "token": "A",
+                                        "children": [
+                                            {
+                                                "parent_junction": "head",
+                                                "child_junction": "head",
+                                                "sequence": ["B", "A"],
+                                                "repeat_count": 2
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "termini": {"head": "H", "tail": "T"},
+            "stereochemistry": {"mode": "syndiotactic"}
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": seed,
+            "relax": graph_spring_relax_request(24, 0.3)
+        },
+        "artifacts": {
+            "coordinates": temp_path(&format!("overlap_sweep_branched_coords_{seed}.pdb")).to_string_lossy(),
+            "build_manifest": temp_path(&format!("overlap_sweep_branched_manifest_{seed}.json")).to_string_lossy(),
+            "charge_manifest": temp_path(&format!("overlap_sweep_branched_charge_{seed}.json")).to_string_lossy(),
+            "topology_graph": temp_path(&format!("overlap_sweep_branched_graph_{seed}.json")).to_string_lossy(),
+        }
+    })
+}
+
+fn overlap_seed_sweep_graph_request(bundle: &Path, seed: u64) -> Value {
+    json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": format!("overlap-sweep-graph-{seed:04}"),
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "polymer_graph",
+            "graph_root": "g1",
+            "graph_nodes": [
+                {"id": "g1", "token": "M2"},
+                {"id": "g2", "token": "M2"},
+                {"id": "g3", "token": "M2"},
+                {"id": "g4", "token": "A"},
+                {"id": "g5", "token": "B"},
+                {"id": "g6", "token": "M2"},
+                {"id": "g7", "token": "A"},
+                {"id": "g8", "token": "B"}
+            ],
+            "graph_edges": [
+                {"id": "e1", "from": "g1", "to": "g2", "from_junction": "tail", "to_junction": "head"},
+                {"id": "e2", "from": "g1", "to": "g3", "from_junction": "head", "to_junction": "head"},
+                {"id": "e3", "from": "g2", "to": "g4", "from_junction": "tail", "to_junction": "head"},
+                {"id": "e4", "from": "g3", "to": "g5", "from_junction": "tail", "to_junction": "head"},
+                {"id": "e5", "from": "g4", "to": "g6", "from_junction": "tail", "to_junction": "head"},
+                {"id": "e6", "from": "g5", "to": "g7", "from_junction": "tail", "to_junction": "head"},
+                {"id": "e7", "from": "g6", "to": "g8", "from_junction": "tail", "to_junction": "head"}
+            ],
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": seed,
+            "relax": graph_spring_relax_request(24, 0.3)
+        },
+        "conformer_policy": {
+            "layout_mode": "mixed",
+            "default_torsion": "trans",
+            "branch_spread": "staggered",
+            "ring_mode": "planar"
+        },
+        "artifacts": {
+            "coordinates": temp_path(&format!("overlap_sweep_graph_coords_{seed}.pdb")).to_string_lossy(),
+            "build_manifest": temp_path(&format!("overlap_sweep_graph_manifest_{seed}.json")).to_string_lossy(),
+            "charge_manifest": temp_path(&format!("overlap_sweep_graph_charge_{seed}.json")).to_string_lossy(),
+            "topology_graph": temp_path(&format!("overlap_sweep_graph_topology_{seed}.json")).to_string_lossy()
+        }
+    })
+}
+
+fn sort_overlap_sweep_records(records: &mut [OverlapSweepRecord]) {
+    records.sort_by(|left, right| {
+        right
+            .fallback_triggered
+            .cmp(&left.fallback_triggered)
+            .then_with(|| {
+                right
+                    .worst_pre_fallback_overlap_pairs
+                    .cmp(&left.worst_pre_fallback_overlap_pairs)
+            })
+            .then_with(|| {
+                right
+                    .worst_initial_overlap_pairs
+                    .cmp(&left.worst_initial_overlap_pairs)
+            })
+            .then_with(|| {
+                right
+                    .worst_final_overlap_pairs
+                    .cmp(&left.worst_final_overlap_pairs)
+            })
+            .then_with(|| {
+                right
+                    .worst_max_displacement_angstrom
+                    .partial_cmp(&left.worst_max_displacement_angstrom)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+}
+
+fn overlap_sweep_summary(case: &str, records: &[OverlapSweepRecord]) -> OverlapSweepCaseSummary {
+    let mut offenders = records.to_vec();
+    sort_overlap_sweep_records(&mut offenders);
+    OverlapSweepCaseSummary {
+        case: case.into(),
+        seeds_scanned: records.len(),
+        fallback_trigger_count: records
+            .iter()
+            .filter(|record| record.fallback_triggered)
+            .count(),
+        max_pre_fallback_overlap_pairs: records
+            .iter()
+            .map(|record| record.worst_pre_fallback_overlap_pairs)
+            .max()
+            .unwrap_or_default(),
+        max_initial_overlap_pairs: records
+            .iter()
+            .map(|record| record.worst_initial_overlap_pairs)
+            .max()
+            .unwrap_or_default(),
+        max_final_overlap_pairs: records
+            .iter()
+            .map(|record| record.worst_final_overlap_pairs)
+            .max()
+            .unwrap_or_default(),
+        max_atom_displacement_angstrom: records
+            .iter()
+            .map(|record| record.worst_max_displacement_angstrom)
+            .fold(0.0, f64::max),
+        top_offenders: offenders.into_iter().take(5).collect(),
+    }
+}
+
+fn assert_overlap_sweep_record_is_clear(record: &OverlapSweepRecord) {
+    assert_eq!(
+        record.worst_final_overlap_pairs,
+        0,
+        "{}",
+        serde_json::to_string_pretty(record).unwrap()
+    );
+    assert_eq!(
+        record.solver_cleanup["final_overlap_pairs"].as_u64(),
+        Some(0),
+        "{}",
+        serde_json::to_string_pretty(record).unwrap()
+    );
+    if !record.relax.is_null() {
+        assert_eq!(
+            record.relax["final_overlap_pairs"].as_u64(),
+            Some(0),
+            "{}",
+            serde_json::to_string_pretty(record).unwrap()
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual overlap tuning corpus"]
+fn overlap_regression_corpus_reports_metrics() {
+    let mut results = Vec::new();
+
+    let (_dir, linear_bundle) = make_bundle_dir("overlap_corpus_linear");
+    results.push(run_overlap_corpus_case(
+        "linear_random_walk",
+        json!({
+            "schema_version": "warp-build.agent.v1",
+            "request_id": "overlap-corpus-linear-001",
+            "source_ref": {
+                "bundle_id": "pmma_param_bundle_v1",
+                "bundle_path": linear_bundle.to_string_lossy(),
+            },
+            "target": {
+                "mode": "linear_homopolymer",
+                "repeat_unit": "A",
+                "n_repeat": 6,
+                "termini": {"head": "default", "tail": "default"},
+                "stereochemistry": {"mode": "syndiotactic"},
+            },
+            "realization": {
+                "conformation_mode": "random_walk",
+                "seed": 3101,
+                "relax": {
+                    "mode": "graph_spring",
+                    "steps": 16,
+                    "step_scale": 0.25,
+                    "clash_scale": 0.9
+                }
+            },
+            "artifacts": {
+                "coordinates": temp_path("overlap_corpus_linear_coords.pdb").to_string_lossy(),
+                "build_manifest": temp_path("overlap_corpus_linear_manifest.json").to_string_lossy(),
+                "charge_manifest": temp_path("overlap_corpus_linear_charge.json").to_string_lossy(),
+            }
+        }),
+    ));
+
+    let (_dir, star_bundle) = make_bundle_dir("overlap_corpus_star");
+    results.push(run_overlap_corpus_case(
+        "star_random_walk",
+        json!({
+            "schema_version": "warp-build.agent.v1",
+            "request_id": "overlap-corpus-star-001",
+            "source_ref": {
+                "bundle_id": "pmma_param_bundle_v1",
+                "bundle_path": star_bundle.to_string_lossy(),
+            },
+            "target": {
+                "mode": "star_polymer",
+                "core_token": "A",
+                "core_junctions": ["head", "tail"],
+                "arm_sequence": ["B", "A"],
+                "arm_repeat_count": 3,
+                "termini": {"head": "H", "tail": "T"},
+                "stereochemistry": {"mode": "inherit"}
+            },
+            "realization": {
+                "conformation_mode": "random_walk",
+                "seed": 3102,
+                "relax": {
+                    "mode": "graph_spring",
+                    "steps": 20,
+                    "step_scale": 0.3,
+                    "clash_scale": 0.9
+                }
+            },
+            "artifacts": {
+                "coordinates": temp_path("overlap_corpus_star_coords.pdb").to_string_lossy(),
+                "build_manifest": temp_path("overlap_corpus_star_manifest.json").to_string_lossy(),
+                "charge_manifest": temp_path("overlap_corpus_star_charge.json").to_string_lossy(),
+                "topology_graph": temp_path("overlap_corpus_star_graph.json").to_string_lossy(),
+            }
+        }),
+    ));
+
+    let (_dir, branched_bundle) = copy_fixture_dir("pmma_branched_mix", "overlap_corpus_branched");
+    results.push(run_overlap_corpus_case(
+        "branched_mix_random_walk",
+        json!({
+            "schema_version": "warp-build.agent.v1",
+            "request_id": "overlap-corpus-branched-001",
+            "source_ref": {
+                "bundle_id": "pmma_branched_mix_bundle_v1",
+                "bundle_path": branched_bundle.to_string_lossy(),
+            },
+            "target": {
+                "mode": "branched_polymer",
+                "branch_tree": {
+                    "token": "A",
+                    "children": [
+                        {
+                            "parent_junction": "head",
+                            "child_junction": "head",
+                            "sequence": ["ARM2"],
+                            "repeat_count": 1,
+                            "child": {
+                                "token": "B",
+                                "children": [
+                                    {
+                                        "parent_junction": "head",
+                                        "child_junction": "head",
+                                        "sequence": ["A"],
+                                        "repeat_count": 1
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "termini": {"head": "default", "tail": "default"},
+                "stereochemistry": {"mode": "inherit"}
+            },
+            "realization": {
+                "conformation_mode": "random_walk",
+                "seed": 3103,
+                "relax": {
+                    "mode": "graph_spring",
+                    "steps": 20,
+                    "step_scale": 0.3,
+                    "clash_scale": 0.9
+                }
+            },
+            "artifacts": {
+                "coordinates": temp_path("overlap_corpus_branched_coords.pdb").to_string_lossy(),
+                "build_manifest": temp_path("overlap_corpus_branched_manifest.json").to_string_lossy(),
+                "charge_manifest": temp_path("overlap_corpus_branched_charge.json").to_string_lossy(),
+                "topology_graph": temp_path("overlap_corpus_branched_graph.json").to_string_lossy()
+            }
+        }),
+    ));
+
+    let (_dir, graph_bundle) = copy_fixture_dir("pmma_motif", "overlap_corpus_graph");
+    results.push(run_overlap_corpus_case(
+        "motif_graph_random_walk",
+        json!({
+            "schema_version": "warp-build.agent.v1",
+            "request_id": "overlap-corpus-graph-001",
+            "source_ref": {
+                "bundle_id": "pmma_fixture_bundle_v1",
+                "bundle_path": graph_bundle.to_string_lossy(),
+            },
+            "target": {
+                "mode": "polymer_graph",
+                "graph_root": "g1",
+                "graph_nodes": [
+                    {"id": "g1", "token": "M2"},
+                    {"id": "g2", "token": "A"}
+                ],
+                "graph_edges": [
+                    {"id": "e1", "from": "g1", "to": "g2", "from_junction": "tail", "to_junction": "head"}
+                ],
+                "termini": {"head": "default", "tail": "default"},
+                "stereochemistry": {"mode": "inherit"}
+            },
+            "realization": {
+                "conformation_mode": "random_walk",
+                "seed": 3104,
+                "relax": {
+                    "mode": "graph_spring",
+                    "steps": 16,
+                    "step_scale": 0.25,
+                    "clash_scale": 0.9
+                }
+            },
+            "conformer_policy": {
+                "layout_mode": "mixed",
+                "default_torsion": "trans",
+                "branch_spread": "staggered",
+                "ring_mode": "planar",
+                "edge_overrides": [
+                    {"edge_id": "e1", "torsion_mode": "fixed_deg", "torsion_deg": 60.0}
+                ]
+            },
+            "artifacts": {
+                "coordinates": temp_path("overlap_corpus_graph_coords.pdb").to_string_lossy(),
+                "build_manifest": temp_path("overlap_corpus_graph_manifest.json").to_string_lossy(),
+                "charge_manifest": temp_path("overlap_corpus_graph_charge.json").to_string_lossy(),
+                "topology_graph": temp_path("overlap_corpus_graph_topology.json").to_string_lossy()
+            }
+        }),
+    ));
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&Value::Array(results.clone())).expect("serialize corpus")
+    );
+
+    for result in &results {
+        let solver_cleanup = &result["solver_cleanup"];
+        if !solver_cleanup.is_null() {
+            assert_eq!(
+                solver_cleanup["final_overlap_pairs"].as_u64(),
+                Some(0),
+                "{}",
+                serde_json::to_string_pretty(result).unwrap()
+            );
+        }
+        let relax = &result["relax"];
+        if !relax.is_null() {
+            assert_eq!(
+                relax["final_overlap_pairs"].as_u64(),
+                Some(0),
+                "{}",
+                serde_json::to_string_pretty(result).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual overlap seed sweep"]
+fn overlap_seed_sweep_surfaces_worst_random_walk_offenders() {
+    let seed_range = 3000u64..3064u64;
+
+    let (_dir, star_bundle) = make_bundle_dir("overlap_seed_sweep_star");
+    let mut star_records = Vec::new();
+    for seed in seed_range.clone() {
+        star_records.push(run_overlap_sweep_case(
+            "star_random_walk_dense",
+            seed,
+            overlap_seed_sweep_star_request(&star_bundle, seed),
+        ));
+    }
+
+    let (_dir, branched_bundle) = make_bundle_dir("overlap_seed_sweep_branched");
+    let mut branched_records = Vec::new();
+    for seed in seed_range.clone() {
+        branched_records.push(run_overlap_sweep_case(
+            "branched_random_walk_dense",
+            seed,
+            overlap_seed_sweep_branched_request(&branched_bundle, seed),
+        ));
+    }
+
+    let (_dir, graph_bundle) = make_bundle_dir("overlap_seed_sweep_graph");
+    let mut graph_records = Vec::new();
+    for seed in seed_range {
+        graph_records.push(run_overlap_sweep_case(
+            "graph_random_walk_dense",
+            seed,
+            overlap_seed_sweep_graph_request(&graph_bundle, seed),
+        ));
+    }
+
+    let summaries = vec![
+        overlap_sweep_summary("star_random_walk_dense", &star_records),
+        overlap_sweep_summary("branched_random_walk_dense", &branched_records),
+        overlap_sweep_summary("graph_random_walk_dense", &graph_records),
+    ];
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&summaries).expect("serialize sweep")
+    );
+
+    for records in [&star_records, &branched_records, &graph_records] {
+        for record in records {
+            assert_overlap_sweep_record_is_clear(record);
+        }
+    }
+}
+
+#[test]
+fn overlap_dense_star_seed_3012_clears_after_solver_cleanup_and_relax() {
+    let (_dir, bundle) = make_bundle_dir("overlap_regression_star_3012");
+    let record = run_overlap_sweep_case(
+        "star_random_walk_dense",
+        3012,
+        overlap_seed_sweep_star_request(&bundle, 3012),
+    );
+    assert_overlap_sweep_record_is_clear(&record);
+}
+
+#[test]
+fn overlap_dense_branched_seed_3001_clears_after_solver_cleanup_and_relax() {
+    let (_dir, bundle) = make_bundle_dir("overlap_regression_branched_3001");
+    let record = run_overlap_sweep_case(
+        "branched_random_walk_dense",
+        3001,
+        overlap_seed_sweep_branched_request(&bundle, 3001),
+    );
+    assert_overlap_sweep_record_is_clear(&record);
+}
+
+#[test]
+fn overlap_dense_graph_seed_3018_clears_after_solver_cleanup_and_relax() {
+    let (_dir, bundle) = make_bundle_dir("overlap_regression_graph_3018");
+    let record = run_overlap_sweep_case(
+        "graph_random_walk_dense",
+        3018,
+        overlap_seed_sweep_graph_request(&bundle, 3018),
+    );
+    assert_overlap_sweep_record_is_clear(&record);
 }
 
 #[test]
@@ -942,6 +1725,28 @@ fn validate_accepts_branched_aligned_realization() {
         json!({"head": "source_default", "tail": "source_default"})
     );
     assert_eq!(
+        payload["resolved_inputs"]["validation"]["requested_depth"],
+        "shallow"
+    );
+    assert_eq!(payload["preflight"]["executed"], false);
+    assert_eq!(payload["preflight"]["mode"], "shallow");
+    assert!(payload["preflight"]["reason"]
+        .as_str()
+        .unwrap_or("")
+        .contains("validation.depth=deep"));
+    assert!(payload["preflight"]["timings_ms"]["compile_plan"]
+        .as_u64()
+        .is_some());
+    assert_eq!(payload["preflight"]["timings_ms"]["build_graph"], 0);
+    assert_eq!(
+        payload["preflight"]["overlap_status"]["status"],
+        "not_evaluated"
+    );
+    assert_eq!(
+        payload["preflight"]["overlap_status"]["may_report_no_overlaps"],
+        false
+    );
+    assert_eq!(
         payload["normalized_request"]["artifacts"]["inpcrd"],
         coords
             .parent()
@@ -960,6 +1765,69 @@ fn validate_accepts_branched_aligned_realization() {
     assert!(!warnings.is_empty());
     assert_eq!(warnings[0]["severity"], "warning");
     assert_eq!(warnings[0]["path"], "/target/termini/head");
+}
+
+#[test]
+fn validate_deep_runs_geometry_preflight() {
+    let (_dir, bundle) = make_bundle_dir("branched_validate_deep");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "branched-validate-deep-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "branched_polymer",
+            "branch_tree": {
+                "token": "A",
+                "children": [
+                    {
+                        "parent_junction": "head",
+                        "child_junction": "head",
+                        "sequence": ["B"],
+                        "repeat_count": 1
+                    }
+                ]
+            },
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "aligned",
+            "alignment_axis": "z"
+        },
+        "validation": {
+            "depth": "deep"
+        },
+        "artifacts": {
+            "coordinates": temp_path("branched_validate_deep_coords.pdb").to_string_lossy(),
+            "build_manifest": temp_path("branched_validate_deep_manifest.json").to_string_lossy(),
+            "charge_manifest": temp_path("branched_validate_deep_charge.json").to_string_lossy(),
+        }
+    });
+    let (code, payload) =
+        warp_build::validate_request_json(&serde_json::to_string(&request).expect("serialize"));
+    assert_eq!(code, 0);
+    assert_eq!(
+        payload["resolved_inputs"]["validation"]["requested_depth"],
+        "deep"
+    );
+    assert_eq!(payload["preflight"]["executed"], true);
+    assert_eq!(
+        payload["preflight"]["qc"]["sequence_token_template_consistent"],
+        true
+    );
+    assert_eq!(
+        payload["preflight"]["overlap_status"]["report_source"],
+        "final_structure"
+    );
+    assert!(payload["preflight"]["overlap_status"]["overlap_pairs"]
+        .as_u64()
+        .is_some());
+    assert!(payload["preflight"]["timings_ms"]["build_graph"]
+        .as_u64()
+        .is_some());
 }
 
 #[test]
@@ -1170,11 +2038,76 @@ fn run_polymer_graph_build_rejects_unresolved_cycle_geometry() {
         .as_str()
         .expect("error message")
         .contains("build QC failed"));
+    assert!(payload["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("_built_solute.pdb")));
     assert!(!coords.exists());
     assert!(!manifest.exists());
     assert!(!charge.exists());
     assert!(!topology.exists());
     assert!(!graph.exists());
+}
+
+#[test]
+fn validate_preflight_rejects_qc_failing_graph_build() {
+    let (_dir, bundle) = make_bundle_dir("validate_qc_fail");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "graph-qc-preflight-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "polymer_graph",
+            "graph_root": "n1",
+            "graph_nodes": [
+                {"id": "n1", "token": "A"},
+                {"id": "n2", "token": "B"},
+                {"id": "n3", "token": "A"}
+            ],
+            "graph_edges": [
+                {"from": "n1", "to": "n2", "from_junction": "head", "to_junction": "head"},
+                {"from": "n2", "to": "n3", "from_junction": "tail", "to_junction": "head"},
+                {"from": "n3", "to": "n1", "from_junction": "tail", "to_junction": "tail"}
+            ],
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": 91
+        },
+        "validation": {
+            "depth": "deep"
+        },
+        "artifacts": {
+            "coordinates": temp_path("preflight_qc_fail_coords.pdb").to_string_lossy(),
+            "build_manifest": temp_path("preflight_qc_fail_manifest.json").to_string_lossy(),
+            "charge_manifest": temp_path("preflight_qc_fail_charge.json").to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::validate_request_json(&serde_json::to_string(&request).expect("serialize"));
+    assert_eq!(code, 2);
+    assert!(payload["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["code"] == "E_SOURCE_GEOMETRY"));
+    assert!(payload["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("preflight QC failed")));
 }
 
 #[test]

@@ -7,6 +7,7 @@ members = [
   "crates/traj-gpu",
   "crates/traj-kernels",
   "crates/traj-py",
+  "crates/warp-structure",
   "crates/warp-build",
   "crates/warp-pack",
   "crates/warp-pep",

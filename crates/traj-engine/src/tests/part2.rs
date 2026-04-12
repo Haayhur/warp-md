@@ -543,6 +543,127 @@ fn dssp_plan_basic_shape_and_labels() {
 }
 
 #[test]
+fn rama_plan_basic_shape_labels_and_termini() {
+    let mut interner = StringInterner::new();
+    let n = interner.intern_upper("N");
+    let ca = interner.intern_upper("CA");
+    let c = interner.intern_upper("C");
+    let ala = interner.intern_upper("ALA");
+    let gly = interner.intern_upper("GLY");
+    let ser = interner.intern_upper("SER");
+    let atoms = AtomTable {
+        name_id: vec![n, ca, c, n, ca, c, n, ca, c],
+        resname_id: vec![ala, ala, ala, gly, gly, gly, ser, ser, ser],
+        resid: vec![1, 1, 1, 2, 2, 2, 3, 3, 3],
+        chain_id: vec![0; 9],
+        element_id: vec![0; 9],
+        mass: vec![1.0; 9],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [1.5, 1.0, 0.0, 1.0],
+        [2.5, 1.2, 0.2, 1.0],
+        [3.2, 2.0, 0.5, 1.0],
+        [4.1, 1.5, 1.1, 1.0],
+        [5.0, 1.8, 1.6, 1.0],
+        [5.8, 2.5, 2.0, 1.0],
+        [6.7, 1.9, 2.5, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("resid 1:3").unwrap();
+    let mut plan = RamaPlan::new(sel);
+    let frame = vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [1.5, 1.0, 0.0, 1.0],
+        [2.5, 1.2, 0.2, 1.0],
+        [3.2, 2.0, 0.5, 1.0],
+        [4.1, 1.5, 1.1, 1.0],
+        [5.0, 1.8, 1.6, 1.0],
+        [5.8, 2.5, 2.0, 1.0],
+        [6.7, 1.9, 2.5, 1.0],
+    ];
+    let mut traj = InMemoryTraj::new(vec![frame]);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 6);
+            assert!(data[0].is_nan());
+            assert!((data[2] + 29.77515).abs() < 1e-3);
+            assert!((data[3] - 0.8414122).abs() < 1e-3);
+            assert!(data[5].is_nan());
+        }
+        _ => panic!("unexpected output"),
+    }
+    assert_eq!(
+        plan.labels(),
+        &[
+            "ALA:1".to_string(),
+            "GLY:2".to_string(),
+            "SER:3".to_string()
+        ]
+    );
+}
+
+#[test]
+fn rama_plan_range360_wraps_negative_angles() {
+    let mut interner = StringInterner::new();
+    let n = interner.intern_upper("N");
+    let ca = interner.intern_upper("CA");
+    let c = interner.intern_upper("C");
+    let ala = interner.intern_upper("ALA");
+    let gly = interner.intern_upper("GLY");
+    let ser = interner.intern_upper("SER");
+    let atoms = AtomTable {
+        name_id: vec![n, ca, c, n, ca, c, n, ca, c],
+        resname_id: vec![ala, ala, ala, gly, gly, gly, ser, ser, ser],
+        resid: vec![1, 1, 1, 2, 2, 2, 3, 3, 3],
+        chain_id: vec![0; 9],
+        element_id: vec![0; 9],
+        mass: vec![1.0; 9],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [1.5, 1.0, 0.0, 1.0],
+        [2.5, 1.2, 0.2, 1.0],
+        [3.2, 2.0, 0.5, 1.0],
+        [4.1, 1.5, 1.1, 1.0],
+        [5.0, 1.8, 1.6, 1.0],
+        [5.8, 2.5, 2.0, 1.0],
+        [6.7, 1.9, 2.5, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("resid 1:3").unwrap();
+    let mut plan = RamaPlan::new(sel).with_range360(true);
+    let frame = vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [1.5, 1.0, 0.0, 1.0],
+        [2.5, 1.2, 0.2, 1.0],
+        [3.2, 2.0, 0.5, 1.0],
+        [4.1, 1.5, 1.1, 1.0],
+        [5.0, 1.8, 1.6, 1.0],
+        [5.8, 2.5, 2.0, 1.0],
+        [6.7, 1.9, 2.5, 1.0],
+    ];
+    let mut traj = InMemoryTraj::new(vec![frame]);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 6);
+            assert!((data[2] - 330.22485).abs() < 1e-3);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn multipucker_plan_basic() {
     let mut system = build_plane_system();
     let sel = system.select("name CA").unwrap();

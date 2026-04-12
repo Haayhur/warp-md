@@ -596,8 +596,134 @@ impl PyConductivityPlan {
 }
 
 #[pyclass]
+struct PyCurrentPlan {
+    plan: RefCell<CurrentPlan>,
+}
+
+#[pymethods]
+impl PyCurrentPlan {
+    #[new]
+    #[pyo3(signature = (selection, charges, temperature=300.0, group_by="resid", length_scale=None, group_types=None, make_whole=true, frame_decimation=None, dt_decimation=None, time_binning=None, lag_mode=None, max_lag=None, memory_budget_bytes=None, multi_tau_m=None, multi_tau_levels=None))]
+    fn new(
+        selection: &PySelection,
+        charges: Vec<f64>,
+        temperature: f64,
+        group_by: &str,
+        length_scale: Option<f64>,
+        group_types: Option<Vec<usize>>,
+        make_whole: bool,
+        frame_decimation: Option<(usize, usize)>,
+        dt_decimation: Option<(usize, usize, usize, usize)>,
+        time_binning: Option<(f64, f64)>,
+        lag_mode: Option<&str>,
+        max_lag: Option<usize>,
+        memory_budget_bytes: Option<usize>,
+        multi_tau_m: Option<usize>,
+        multi_tau_levels: Option<usize>,
+    ) -> PyResult<Self> {
+        let group_by = parse_group_by(group_by)?;
+        let mut plan = CurrentPlan::new(selection.selection.clone(), group_by, charges, temperature)
+            .with_make_whole(make_whole);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        if let Some(types) = group_types {
+            plan = plan.with_group_types(types);
+        }
+        if let Some((start, stride)) = frame_decimation {
+            plan = plan.with_frame_decimation(FrameDecimation { start, stride });
+        }
+        if let Some((cut1, stride1, cut2, stride2)) = dt_decimation {
+            plan = plan.with_dt_decimation(DtDecimation {
+                cut1,
+                stride1,
+                cut2,
+                stride2,
+            });
+        }
+        if let Some((eps_num, eps_add)) = time_binning {
+            plan = plan.with_time_binning(TimeBinning { eps_num, eps_add });
+        }
+        if let Some(mode) = lag_mode {
+            plan = plan.with_lag_mode(parse_lag_mode(mode)?);
+        }
+        if let Some(max_lag) = max_lag {
+            plan = plan.with_max_lag(max_lag);
+        }
+        if let Some(budget) = memory_budget_bytes {
+            plan = plan.with_memory_budget_bytes(budget);
+        }
+        if let Some(m) = multi_tau_m {
+            plan = plan.with_multi_tau_m(m);
+        }
+        if let Some(levels) = multi_tau_levels {
+            plan = plan.with_multi_tau_levels(levels);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Current(output) => current_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
 struct PyDielectricPlan {
     plan: RefCell<DielectricPlan>,
+}
+
+#[pyclass]
+struct PyBundlePlan {
+    plan: RefCell<BundlePlan>,
+}
+
+#[pyclass]
+struct PyH2OrderPlan {
+    plan: RefCell<H2OrderPlan>,
+}
+
+#[pyclass]
+struct PyHydOrderPlan {
+    plan: RefCell<HydOrderPlan>,
+}
+
+#[pyclass]
+struct PyHelixOrientPlan {
+    plan: RefCell<HelixOrientPlan>,
+}
+
+#[pyclass]
+struct PySOrientPlan {
+    plan: RefCell<SOrientPlan>,
+}
+
+#[pyclass]
+struct PySpolPlan {
+    plan: RefCell<SpolPlan>,
 }
 
 #[pymethods]
@@ -717,6 +843,11 @@ struct PyIonPairCorrelationPlan {
     plan: RefCell<IonPairCorrelationPlan>,
 }
 
+#[pyclass]
+struct PySaltBridgePlan {
+    plan: RefCell<SaltBridgePlan>,
+}
+
 #[pymethods]
 impl PyIonPairCorrelationPlan {
     #[new]
@@ -799,6 +930,502 @@ impl PyIonPairCorrelationPlan {
             } => timeseries_to_py(py, time, data, rows, cols),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
+    }
+}
+
+#[pymethods]
+impl PyBundlePlan {
+    #[new]
+    #[pyo3(signature = (top_selection, bottom_selection, n_axes, kink_selection=None, use_z_reference=false, mass_weighted=true, length_scale=None))]
+    fn new(
+        top_selection: &PySelection,
+        bottom_selection: &PySelection,
+        n_axes: usize,
+        kink_selection: Option<&PySelection>,
+        use_z_reference: bool,
+        mass_weighted: bool,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let mut plan = BundlePlan::new(
+            top_selection.selection.clone(),
+            bottom_selection.selection.clone(),
+            n_axes,
+        )
+        .with_use_z_reference(use_z_reference)
+        .with_mass_weighted(mass_weighted);
+        if let Some(kink_selection) = kink_selection {
+            plan = plan.with_kink_selection(kink_selection.selection.clone());
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Bundle(output) => bundle_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyH2OrderPlan {
+    #[new]
+    #[pyo3(signature = (oxygen_indices, hydrogen1_indices, hydrogen2_indices, charges, axis="z", bin=0.25, n_slices=None, length_scale=None))]
+    fn new(
+        oxygen_indices: Vec<usize>,
+        hydrogen1_indices: Vec<usize>,
+        hydrogen2_indices: Vec<usize>,
+        charges: Vec<f64>,
+        axis: &str,
+        bin: f64,
+        n_slices: Option<usize>,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let axis = parse_axis(axis)?;
+        let oxygen_indices_u32: Vec<u32> = oxygen_indices.into_iter().map(|v| v as u32).collect();
+        let hydrogen1_indices_u32: Vec<u32> =
+            hydrogen1_indices.into_iter().map(|v| v as u32).collect();
+        let hydrogen2_indices_u32: Vec<u32> =
+            hydrogen2_indices.into_iter().map(|v| v as u32).collect();
+        let mut plan = H2OrderPlan::new(
+            oxygen_indices_u32,
+            hydrogen1_indices_u32,
+            hydrogen2_indices_u32,
+            charges,
+            axis,
+            bin,
+        )
+        .with_n_slices(n_slices);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::H2Order(output) => h2order_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyHydOrderPlan {
+    #[new]
+    #[pyo3(signature = (selection, axis="z", bin=1.0, tblock=1, sgang1=None, sgang2=None, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        axis: &str,
+        bin: f64,
+        tblock: usize,
+        sgang1: Option<f64>,
+        sgang2: Option<f64>,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let axis = parse_axis(axis)?;
+        let mut plan = HydOrderPlan::new(selection.selection.clone(), axis, bin)
+            .with_tblock(tblock)
+            .with_interface_thresholds(sgang1, sgang2);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::HydOrder(output) => hydorder_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyHelixOrientPlan {
+    #[new]
+    #[pyo3(signature = (ca_selection, sidechain_selection=None, incremental=false, length_scale=None))]
+    fn new(
+        ca_selection: &PySelection,
+        sidechain_selection: Option<&PySelection>,
+        incremental: bool,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let mut plan = HelixOrientPlan::new(ca_selection.selection.clone())
+            .with_incremental(incremental);
+        if let Some(sidechain_selection) = sidechain_selection {
+            plan = plan.with_sidechain_selection(sidechain_selection.selection.clone());
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::HelixOrient(output) => helixorient_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PySOrientPlan {
+    #[new]
+    #[pyo3(signature = (solute_selection, atom1_indices, atom2_indices, atom3_indices, r_min=0.0, r_max=0.5, cbin=0.02, rbin=0.02, use_com=false, use_vector23=false, r_profile_max=None, length_scale=None))]
+    fn new(
+        solute_selection: &PySelection,
+        atom1_indices: Vec<usize>,
+        atom2_indices: Vec<usize>,
+        atom3_indices: Vec<usize>,
+        r_min: f64,
+        r_max: f64,
+        cbin: f64,
+        rbin: f64,
+        use_com: bool,
+        use_vector23: bool,
+        r_profile_max: Option<f64>,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let atom1_indices_u32: Vec<u32> = atom1_indices.into_iter().map(|v| v as u32).collect();
+        let atom2_indices_u32: Vec<u32> = atom2_indices.into_iter().map(|v| v as u32).collect();
+        let atom3_indices_u32: Vec<u32> = atom3_indices.into_iter().map(|v| v as u32).collect();
+        let mut plan = SOrientPlan::new(
+            solute_selection.selection.clone(),
+            atom1_indices_u32,
+            atom2_indices_u32,
+            atom3_indices_u32,
+            r_min,
+            r_max,
+            cbin,
+            rbin,
+        )
+        .with_use_com(use_com)
+        .with_use_vector23(use_vector23)
+        .with_r_profile_max(r_profile_max);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::SOrient(output) => sorient_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PySpolPlan {
+    #[new]
+    #[pyo3(signature = (solute_selection, atom1_indices, atom2_indices, atom3_indices, charges, r_min=0.0, r_max=0.32, bin=0.01, use_com=false, reference_atom=0, direction_atoms=None, refdip=0.0, r_hist_max=None, length_scale=None, molecule_atoms=None, molecule_offsets=None))]
+    fn new(
+        solute_selection: &PySelection,
+        atom1_indices: Vec<usize>,
+        atom2_indices: Vec<usize>,
+        atom3_indices: Vec<usize>,
+        charges: Vec<f64>,
+        r_min: f64,
+        r_max: f64,
+        bin: f64,
+        use_com: bool,
+        reference_atom: usize,
+        direction_atoms: Option<Vec<usize>>,
+        refdip: f64,
+        r_hist_max: Option<f64>,
+        length_scale: Option<f64>,
+        molecule_atoms: Option<Vec<usize>>,
+        molecule_offsets: Option<Vec<usize>>,
+    ) -> PyResult<Self> {
+        let atom1_indices_u32: Vec<u32> = atom1_indices.into_iter().map(|v| v as u32).collect();
+        let atom2_indices_u32: Vec<u32> = atom2_indices.into_iter().map(|v| v as u32).collect();
+        let atom3_indices_u32: Vec<u32> = atom3_indices.into_iter().map(|v| v as u32).collect();
+        let direction_local_atoms = match direction_atoms {
+            Some(values) => {
+                if values.len() != 3 {
+                    return Err(PyValueError::new_err(
+                        "direction_atoms must contain exactly 3 local offsets",
+                    ));
+                }
+                [values[0], values[1], values[2]]
+            }
+            None => [0, 1, 2],
+        };
+        let mut plan = SpolPlan::new(
+            solute_selection.selection.clone(),
+            atom1_indices_u32,
+            atom2_indices_u32,
+            atom3_indices_u32,
+            charges,
+            r_min,
+            r_max,
+            bin,
+        )
+        .with_use_com(use_com)
+        .with_reference_atom(reference_atom)
+        .with_refdip(refdip)
+        .with_r_hist_max(r_hist_max);
+        match (molecule_atoms, molecule_offsets) {
+            (Some(atoms), Some(offsets)) => {
+                let atoms_u32: Vec<u32> = atoms.into_iter().map(|v| v as u32).collect();
+                plan = plan.with_molecules(atoms_u32, offsets, direction_local_atoms);
+            }
+            (None, None) => {}
+            _ => {
+                return Err(PyValueError::new_err(
+                    "molecule_atoms and molecule_offsets must be provided together",
+                ));
+            }
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Spol(output) => spol_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PySaltBridgePlan {
+    #[new]
+    #[pyo3(signature = (selection, charges, group_by="atom", truncate=None, contact_cutoff=None, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        charges: Vec<f64>,
+        group_by: &str,
+        truncate: Option<f64>,
+        contact_cutoff: Option<f64>,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let group_by = parse_group_by(group_by)?;
+        let mut plan = SaltBridgePlan::new(selection.selection.clone(), group_by, charges)
+            .with_truncate(truncate)
+            .with_contact_cutoff(contact_cutoff);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        let (time, data, rows, cols) = match output {
+            PlanOutput::TimeSeries {
+                time,
+                data,
+                rows,
+                cols,
+            } => (time, data, rows, cols),
+            _ => return Err(PyRuntimeError::new_err("unexpected output")),
+        };
+        let group_labels = plan.group_labels().to_vec();
+        let group_charges = plan.group_charges().to_vec();
+        let pair_indices = plan.pair_indices().to_vec();
+        let pair_labels = plan.pair_labels().to_vec();
+        let pair_classes: Vec<String> = plan
+            .pair_classes()
+            .iter()
+            .map(|&code| saltbr_class_name(code).to_string())
+            .collect();
+        let min_distance = plan.min_distance().to_vec();
+        let contact_count = plan.contact_count().to_vec();
+        let truncate = plan.truncate();
+        let contact_cutoff = plan.contact_cutoff();
+        drop(plan);
+
+        let distance = Array2::from_shape_vec((rows, cols), data)
+            .map_err(|_| PyRuntimeError::new_err("invalid saltbr distance shape"))?;
+        let mut pair_index_data = Vec::with_capacity(pair_indices.len() * 2);
+        for [left, right] in pair_indices.iter().copied() {
+            pair_index_data.push(left);
+            pair_index_data.push(right);
+        }
+        let pair_group_index = Array2::from_shape_vec((pair_indices.len(), 2), pair_index_data)
+            .map_err(|_| PyRuntimeError::new_err("invalid saltbr pair index shape"))?;
+        let dict = PyDict::new_bound(py);
+        dict.set_item("time", PyArray1::from_vec_bound(py, time))?;
+        dict.set_item("distance", distance.into_pyarray_bound(py))?;
+        dict.set_item("group_labels", group_labels)?;
+        dict.set_item("group_charge", PyArray1::from_vec_bound(py, group_charges))?;
+        dict.set_item("pair_group_index", pair_group_index.into_pyarray_bound(py))?;
+        dict.set_item("pair_labels", pair_labels)?;
+        dict.set_item("pair_class", pair_classes)?;
+        dict.set_item("min_distance", PyArray1::from_vec_bound(py, min_distance))?;
+        if let Some(value) = truncate {
+            dict.set_item("truncate", value)?;
+        }
+        if let Some(value) = contact_cutoff {
+            let fraction: Vec<f32> = if rows == 0 {
+                vec![0.0; contact_count.len()]
+            } else {
+                contact_count
+                    .iter()
+                    .map(|&count| count as f32 / rows as f32)
+                    .collect()
+            };
+            dict.set_item("contact_cutoff", value)?;
+            dict.set_item("contact_count", PyArray1::from_vec_bound(py, contact_count))?;
+            dict.set_item("contact_fraction", PyArray1::from_vec_bound(py, fraction))?;
+        }
+        Ok(dict.into_py(py))
     }
 }
 
@@ -941,8 +1568,23 @@ struct PyWaterCountPlan {
 }
 
 #[pyclass]
+struct PyRamaPlan {
+    plan: RefCell<RamaPlan>,
+}
+
+#[pyclass]
 struct PyDsspPlan {
     plan: RefCell<DsspPlan>,
+}
+
+#[pyclass]
+struct PyHelixPlan {
+    plan: RefCell<HelixPlan>,
+}
+
+#[pyclass]
+struct PyMdmatPlan {
+    plan: RefCell<MdmatPlan>,
 }
 
 #[pyclass]
@@ -1299,6 +1941,56 @@ impl PyGistDirectPlan {
 }
 
 #[pymethods]
+impl PyRamaPlan {
+    #[new]
+    #[pyo3(signature = (selection, range360=false))]
+    fn new(selection: &PySelection, range360: bool) -> Self {
+        let plan = RamaPlan::new(selection.selection.clone()).with_range360(range360);
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        let (data, rows, cols) = match output {
+            PlanOutput::Matrix { data, rows, cols } => (data, rows, cols),
+            _ => return Err(PyRuntimeError::new_err("unexpected output")),
+        };
+        let labels = plan.labels().to_vec();
+        drop(plan);
+        let (phi, psi, n_res) = split_rama_phi_psi(&data, rows, cols)?;
+        let phi = Array2::from_shape_vec((rows, n_res), phi)
+            .map_err(|_| PyRuntimeError::new_err("invalid rama phi shape"))?;
+        let psi = Array2::from_shape_vec((rows, n_res), psi)
+            .map_err(|_| PyRuntimeError::new_err("invalid rama psi shape"))?;
+        let dict = PyDict::new_bound(py);
+        dict.set_item("labels", labels)?;
+        dict.set_item("phi", phi.into_pyarray_bound(py))?;
+        dict.set_item("psi", psi.into_pyarray_bound(py))?;
+        Ok(dict.into_py(py))
+    }
+}
+
+#[pymethods]
 impl PyDsspPlan {
     #[new]
     fn new(selection: &PySelection) -> Self {
@@ -1337,12 +2029,113 @@ impl PyDsspPlan {
         drop(plan);
         let mut codes = Vec::with_capacity(data.len());
         for value in data.into_iter() {
-            let code = (value.round() as i32).clamp(0, 2) as u8;
+            let code = (value.round() as i32).clamp(0, 7) as u8;
             codes.push(code);
         }
         let arr = Array2::from_shape_vec((rows, cols), codes)
             .map_err(|_| PyRuntimeError::new_err("invalid dssp matrix shape"))?;
         Ok((labels, arr.into_pyarray_bound(py).into_py(py)).into_py(py))
+    }
+}
+
+#[pymethods]
+impl PyHelixPlan {
+    #[new]
+    #[pyo3(signature = (selection, fit=true, check_each_frame=false, residue_start=None, residue_end=None, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        fit: bool,
+        check_each_frame: bool,
+        residue_start: Option<i32>,
+        residue_end: Option<i32>,
+        length_scale: Option<f64>,
+    ) -> Self {
+        let mut plan = HelixPlan::new(selection.selection.clone())
+            .with_fit(fit)
+            .with_check_each_frame(check_each_frame)
+            .with_residue_range(residue_start, residue_end);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Helix(output) => helix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyMdmatPlan {
+    #[new]
+    #[pyo3(signature = (selection, truncate=1.5, include_contacts=false, include_frames=false, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        truncate: f64,
+        include_contacts: bool,
+        include_frames: bool,
+        length_scale: Option<f64>,
+    ) -> Self {
+        let mut plan = MdmatPlan::new(selection.selection.clone())
+            .with_truncate(truncate)
+            .with_include_contacts(include_contacts)
+            .with_include_frames(include_frames);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Mdmat(output) => mdmat_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
     }
 }
 

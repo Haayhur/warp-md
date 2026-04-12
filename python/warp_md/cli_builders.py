@@ -399,7 +399,26 @@ def _build_rmsf(system: System, spec: Dict[str, Any]):
 
 def _build_density(system: System, spec: Dict[str, Any]):
     from .analysis.density import density as density_analysis
-    kwargs = _pick(spec, ["mask", "density_type", "delta", "direction", "cutoff", "center", "mass", "restrict", "frame_indices", "chunk_frames"])
+    selection = spec.get("selection", spec.get("mask", ""))
+    center_selection = spec.get("center_selection", "")
+    if not selection:
+        raise ValueError("density.selection is required")
+    if not center_selection:
+        raise ValueError("density.center_selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "box_unit",
+            "region_size",
+            "shift",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+            "device",
+        ],
+    )
+    kwargs["selection"] = selection
+    kwargs["center_selection"] = center_selection
     return _CallablePlan(density_analysis, kwargs)
 
 
@@ -411,7 +430,26 @@ def _build_native_contacts(system: System, spec: Dict[str, Any]):
 
 def _build_volmap(system: System, spec: Dict[str, Any]):
     from .analysis.volmap import volmap as volmap_analysis
-    kwargs = _pick(spec, ["mask", "grid_spacing", "size", "center", "buffer", "centermask", "radscale", "peakcut", "dtype", "frame_indices", "chunk_frames"])
+    selection = spec.get("selection", spec.get("mask", ""))
+    center_selection = spec.get("center_selection", "")
+    if not selection:
+        raise ValueError("volmap.selection is required")
+    if not center_selection:
+        raise ValueError("volmap.center_selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "box_unit",
+            "region_size",
+            "shift",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+            "device",
+        ],
+    )
+    kwargs["selection"] = selection
+    kwargs["center_selection"] = center_selection
     return _CallablePlan(volmap_analysis, kwargs)
 
 
@@ -450,7 +488,19 @@ def _build_projection(system: System, spec: Dict[str, Any]):
     mask = spec.get("mask", "")
     if not mask:
         raise ValueError("projection.mask is required")
-    kwargs = _pick(spec, ["mask", "eigenvec", "n_vecs", "fit", "ref", "ref_mask", "chunk_frames"])
+    kwargs = _pick(
+        spec,
+        [
+            "mask",
+            "eigenvectors",
+            "eigenvalues",
+            "scalar_type",
+            "average_coords",
+            "frame_indices",
+            "dtype",
+            "chunk_frames",
+        ],
+    )
     return _CallablePlan(projection_analysis, kwargs)
 
 

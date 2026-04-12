@@ -4,62 +4,22 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Sequence, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from ._chunk_io import read_chunk_fields
-from .trajectory import ArrayTrajectory
+from ._runtime import (
+    load_native_symbol,
+    native_inputs,
+    native_selection,
+    normalize_frame_indices,
+    read_all_frames,
+    reset_traj,
+    selection_indices,
+    subset_frames,
+)
 
 CommandLike = Union[str, Sequence[str]]
-
-
-class _DummySelection:
-    def __init__(self, indices: Sequence[int]):
-        self.indices = indices
-
-
-def _all_resid_mask(system) -> str:
-    atoms = system.atom_table()
-    resids = atoms.get("resid", [])
-    if not resids:
-        return "resid 0:0"
-    return f"resid {min(resids)}:{max(resids)}"
-
-
-def _selection_indices(system, mask: str) -> np.ndarray:
-    if mask in ("", "*", "all", None):
-        sel = system.select(_all_resid_mask(system))
-        return np.asarray(list(sel.indices), dtype=np.int64)
-    if isinstance(mask, str) and mask.strip().startswith("@"):
-        tokens = mask.replace(",", " ").split()
-        idx = []
-        for tok in tokens:
-            if tok.startswith("@") and tok[1:].lstrip("-").isdigit():
-                val = int(tok[1:]) - 1
-                idx.append(val)
-        if idx:
-            return np.asarray(idx, dtype=np.int64)
-    sel = system.select(mask)
-    return np.asarray(list(sel.indices), dtype=np.int64)
-
-
-def _read_all(traj, chunk_frames: Optional[int]):
-    max_chunk = chunk_frames or 128
-    coords_list = []
-    box_list = []
-    chunk = read_chunk_fields(traj, max_chunk, include_box=True)
-    if chunk is None:
-        return None, None
-    while chunk is not None:
-        coords_list.append(np.asarray(chunk["coords"], dtype=np.float64))
-        box = chunk.get("box")
-        if box is not None:
-            box_list.append(np.asarray(box, dtype=np.float64))
-        chunk = read_chunk_fields(traj, max_chunk, include_box=True)
-    coords = np.concatenate(coords_list, axis=0) if coords_list else np.empty((0, 0, 3))
-    box = np.concatenate(box_list, axis=0) if box_list else None
-    return coords, box
 
 
 def _center(coords: np.ndarray, idx: np.ndarray, masses: Optional[np.ndarray], mass: bool) -> np.ndarray:
@@ -80,14 +40,14 @@ def _apply_pbc(vec: np.ndarray, box: Optional[np.ndarray]) -> np.ndarray:
     if box is None:
         return vec
     out = vec.copy()
-    for f in range(out.shape[0]):
-        lx, ly, lz = box[f]
+    for frame in range(out.shape[0]):
+        lx, ly, lz = box[frame]
         if lx > 0:
-            out[f, 0] -= np.round(out[f, 0] / lx) * lx
+            out[frame, 0] -= np.round(out[frame, 0] / lx) * lx
         if ly > 0:
-            out[f, 1] -= np.round(out[f, 1] / ly) * ly
+            out[frame, 1] -= np.round(out[frame, 1] / ly) * ly
         if lz > 0:
-            out[f, 2] -= np.round(out[f, 2] / lz) * lz
+            out[frame, 2] -= np.round(out[frame, 2] / lz) * lz
     return out
 
 
@@ -106,7 +66,6 @@ def _parse_vector_command(cmd: str) -> Tuple[str, dict]:
     if head in ("box", "boxcenter", "ucellx", "ucelly", "ucellz"):
         opts["mode"] = head
         return head, opts
-    # default: assume two masks
     opts["mode"] = "mask"
     if len(tokens) < 2:
         raise ValueError("vector command requires two masks")
@@ -119,6 +78,45 @@ def _parse_vector_command(cmd: str) -> Tuple[str, dict]:
     return head, opts
 
 
+def _native_mask_vector(
+    traj,
+    system,
+    opts: dict,
+    frame_indices: Optional[Sequence[int]],
+    chunk_frames: Optional[int],
+):
+    plan_cls = load_native_symbol("VectorPlan")
+    if plan_cls is None:
+        return None
+    native_traj, native_system = native_inputs(
+        traj,
+        system,
+        chunk_frames,
+        include_box=opts.get("pbc", "none") == "orthorhombic",
+    )
+    if native_traj is None or native_system is None or not reset_traj(native_traj):
+        return None
+    try:
+        sel_a = native_selection(system, native_system, opts["mask_a"], allow_at_indices=True)
+        sel_b = native_selection(system, native_system, opts["mask_b"], allow_at_indices=True)
+        plan = plan_cls(
+            sel_a,
+            sel_b,
+            mass_weighted=opts.get("mass", False),
+            pbc=opts.get("pbc", "none"),
+        )
+        vec = np.asarray(
+            plan.run(native_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            dtype=np.float32,
+        )
+        if frame_indices is not None:
+            selected = normalize_frame_indices(frame_indices, vec.shape[0]) or []
+            vec = vec[selected]
+        return vec
+    except Exception:
+        return None
+
+
 def vector(
     traj,
     system,
@@ -127,43 +125,37 @@ def vector(
     dtype: str = "ndarray",
     chunk_frames: Optional[int] = None,
 ):
-    """Compute vectors for cpptraj-like commands.
-
-    Supports:
-    - "@maskA @maskB" (vector from A to B)
-    - "center <mask> [mass]"
-    - "box", "boxcenter", "ucellx", "ucelly", "ucellz"
-    """
-    coords, box = _read_all(traj, chunk_frames)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
-    if coords.size == 0:
-        return np.empty((0, 3), dtype=np.float32)
-
-    n_frames = coords.shape[0]
-    if frame_indices is not None:
-        select = []
-        for i in frame_indices:
-            j = int(i)
-            if j < 0:
-                j = n_frames + j
-            if 0 <= j < n_frames:
-                select.append(j)
-        coords = coords[select]
-        if box is not None:
-            box = box[select]
-        n_frames = coords.shape[0]
-
+    """Compute vectors for cpptraj-like commands."""
     commands = [command] if isinstance(command, str) else list(command)
+    coords = None
+    box = None
+    masses = None
     results: List[np.ndarray] = []
-    atoms = system.atom_table()
-    masses = np.asarray(atoms.get("mass", []), dtype=np.float64) if atoms else None
 
     for cmd in commands:
         _head, opts = _parse_vector_command(cmd)
         mode = opts["mode"]
+
+        if mode == "mask":
+            native_vec = _native_mask_vector(traj, system, opts, frame_indices, chunk_frames)
+            if native_vec is not None:
+                results.append(native_vec.astype(np.float32, copy=False))
+                continue
+
+        if coords is None:
+            reset_traj(traj)
+            coords, box, _time = read_all_frames(traj, chunk_frames, include_box=True)
+            if coords is None:
+                raise ValueError("trajectory has no frames")
+            if coords.size == 0:
+                return np.empty((0, 3), dtype=np.float32)
+            coords, box, _time = subset_frames(coords, frame_indices, box=box)
+            atoms = system.atom_table()
+            masses = np.asarray(atoms.get("mass", []), dtype=np.float64) if atoms else None
+
+        n_frames = coords.shape[0]
         if mode == "center":
-            idx = _selection_indices(system, opts.get("mask", ""))
+            idx = selection_indices(system, opts.get("mask", ""), allow_at_indices=True)
             vec = _center(coords, idx, masses, opts.get("mass", False))
         elif mode == "box":
             if box is None:
@@ -180,8 +172,8 @@ def vector(
             vec = np.zeros((n_frames, 3), dtype=np.float64)
             vec[:, axis] = box[:, axis]
         else:
-            idx_a = _selection_indices(system, opts["mask_a"])
-            idx_b = _selection_indices(system, opts["mask_b"])
+            idx_a = selection_indices(system, opts["mask_a"], allow_at_indices=True)
+            idx_b = selection_indices(system, opts["mask_b"], allow_at_indices=True)
             com_a = _center(coords, idx_a, masses, opts.get("mass", False))
             com_b = _center(coords, idx_b, masses, opts.get("mass", False))
             vec = com_b - com_a
@@ -218,7 +210,14 @@ def vector_mask(
             commands = [f"@{a+1} @{b+1}" for a, b in arr]
         else:
             commands = list(mask)
-    return vector(traj, system, commands, frame_indices=frame_indices, dtype=dtype, chunk_frames=chunk_frames)
+    return vector(
+        traj,
+        system,
+        commands,
+        frame_indices=frame_indices,
+        dtype=dtype,
+        chunk_frames=chunk_frames,
+    )
 
 
 __all__ = ["vector", "vector_mask"]

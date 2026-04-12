@@ -4,66 +4,27 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Sequence
 
 import numpy as np
 
-from ._chunk_io import read_chunk_fields
+from ._runtime import (
+    load_native_symbol,
+    native_inputs,
+    native_selection,
+    read_all_frames,
+    selection_indices,
+    subset_frames,
+)
+from .trajectory import ArrayTrajectory
 
 
-def _all_resid_mask(system) -> str:
-    atoms = system.atom_table()
-    resids = atoms.get("resid", [])
-    if not resids:
-        return "resid 0:0"
-    return f"resid {min(resids)}:{max(resids)}"
-
-
-def _selection_indices(system, mask: str) -> np.ndarray:
-    if mask in ("", "*", "all", None):
-        sel = system.select(_all_resid_mask(system))
-    else:
-        sel = system.select(mask)
-    return np.asarray(list(sel.indices), dtype=np.int64)
-
-
-def _read_all(traj, chunk_frames: Optional[int]):
-    max_chunk = chunk_frames or 128
-    coords_list = []
-    chunk = read_chunk_fields(traj, max_chunk)
-    if chunk is None:
-        return None
-    while chunk is not None:
-        coords_list.append(np.asarray(chunk["coords"], dtype=np.float64))
-        chunk = read_chunk_fields(traj, max_chunk)
-    return np.concatenate(coords_list, axis=0) if coords_list else np.empty((0, 0, 3))
-
-
-def _apply_frame_indices(coords: np.ndarray, frame_indices: Optional[Sequence[int]]) -> np.ndarray:
-    if frame_indices is None:
-        return coords
-    n_frames = coords.shape[0]
-    select = []
-    for i in frame_indices:
-        j = int(i)
-        if j < 0:
-            j = n_frames + j
-        if 0 <= j < n_frames:
-            select.append(j)
-    return coords[select]
-
-
-def _pairwise_distances(sel_a: np.ndarray, sel_b: np.ndarray, same: bool) -> np.ndarray:
-    if same:
-        n = sel_a.shape[0]
-        if n < 2:
-            return np.empty((0,), dtype=np.float64)
-        i_idx, j_idx = np.triu_indices(n, k=1)
-        diffs = sel_a[i_idx] - sel_a[j_idx]
-    else:
-        diffs = sel_a[:, None, :] - sel_b[None, :, :]
-        diffs = diffs.reshape(-1, 3)
-    return np.linalg.norm(diffs, axis=1)
+def _rmax_upper_bound(coords: np.ndarray, idx_a: np.ndarray, idx_b: np.ndarray) -> float:
+    sel_a = coords[:, idx_a, :]
+    sel_b = coords[:, idx_b, :]
+    lo = np.minimum(sel_a.min(axis=(0, 1)), sel_b.min(axis=(0, 1)))
+    hi = np.maximum(sel_a.max(axis=(0, 1)), sel_b.max(axis=(0, 1)))
+    return float(np.linalg.norm(hi - lo))
 
 
 def pairdist(
@@ -80,48 +41,64 @@ def pairdist(
     if delta <= 0.0:
         raise ValueError("delta must be positive")
 
-    coords = _read_all(traj, chunk_frames)
+    coords, _box, _time = read_all_frames(traj, chunk_frames)
     if coords is None:
         raise ValueError("trajectory has no frames")
+    coords, _box, _time = subset_frames(coords, frame_indices)
+    coords = np.asarray(coords, dtype=np.float32)
     if coords.size == 0:
         empty = np.empty((0,), dtype=np.float32)
         return {"bin_centers": empty, "hist": empty, "n_frames": 0}
 
-    coords = _apply_frame_indices(coords, frame_indices)
-    if coords.size == 0:
-        empty = np.empty((0,), dtype=np.float32)
-        return {"bin_centers": empty, "hist": empty, "n_frames": 0}
-
-    idx_a = _selection_indices(system, mask)
-    idx_b = _selection_indices(system, mask2) if mask2 else idx_a
+    idx_a = selection_indices(system, mask)
+    idx_b = selection_indices(system, mask2) if mask2 else idx_a
     same = not mask2 or np.array_equal(idx_a, idx_b)
-
-    if idx_a.size == 0 or idx_b.size == 0:
+    if idx_a.size == 0 or idx_b.size == 0 or (same and idx_a.size < 2):
         empty = np.empty((0,), dtype=np.float32)
         return {"bin_centers": empty, "hist": empty, "n_frames": int(coords.shape[0])}
 
-    all_dists = []
-    for frame in coords:
-        sel_a = frame[idx_a]
-        sel_b = frame[idx_b]
-        dists = _pairwise_distances(sel_a, sel_b, same)
-        if dists.size:
-            all_dists.append(dists)
-    if not all_dists:
-        empty = np.empty((0,), dtype=np.float32)
-        return {"bin_centers": empty, "hist": empty, "n_frames": int(coords.shape[0])}
+    plan_cls = load_native_symbol("PairDistPlan")
+    if plan_cls is None:
+        raise RuntimeError("PairDistPlan binding unavailable")
 
-    dists = np.concatenate(all_dists, axis=0)
-    max_dist = float(np.max(dists))
-    edges = np.arange(0.0, max_dist + delta, delta, dtype=np.float64)
-    if edges.size < 2:
-        edges = np.array([0.0, delta], dtype=np.float64)
-    hist, _ = np.histogram(dists, bins=edges)
-    centers = (edges[:-1] + edges[1:]) * 0.5
+    upper = _rmax_upper_bound(coords, idx_a, idx_b)
+    n_bins = max(1, int(np.ceil(max(upper, float(delta)) / float(delta))))
+    r_max = np.float32(n_bins * float(delta))
+
+    source = ArrayTrajectory(coords)
+    native_traj, native_system = native_inputs(source, system, chunk_frames)
+    if native_traj is None or native_system is None:
+        raise RuntimeError("failed to prepare native pairdist inputs")
+    try:
+        sel_a = native_selection(system, native_system, mask)
+        sel_b = sel_a if same else native_selection(system, native_system, mask2)
+        out = plan_cls(
+            sel_a,
+            sel_b,
+            n_bins,
+            r_max,
+            "none",
+        ).run(native_traj, native_system, chunk_frames=chunk_frames, device="auto")
+        centers, counts = out
+        centers = np.asarray(centers, dtype=np.float32)
+        counts = np.asarray(counts, dtype=np.float64)
+    except Exception as exc:
+        raise RuntimeError("native PairDistPlan execution failed") from exc
+
+    if same:
+        counts *= 0.5
+    nonzero = np.nonzero(counts > 0)[0]
+    if nonzero.size == 0:
+        centers = centers[:0]
+        counts = counts[:0]
+    else:
+        stop = int(nonzero[-1]) + 1
+        centers = centers[:stop]
+        counts = counts[:stop]
 
     out = {
         "bin_centers": centers.astype(np.float32),
-        "hist": hist.astype(np.float32),
+        "hist": counts.astype(np.float32),
         "n_frames": int(coords.shape[0]),
     }
     if dtype == "dict":

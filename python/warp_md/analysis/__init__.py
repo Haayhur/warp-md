@@ -1,7 +1,19 @@
 from .align import align, align_principal_axis, superpose
 from .correlation import acorr, timecorr, velocity_autocorrelation, xcorr
+from .current import current
+from .bundle import bundle
 from .crank import crank
 from .dssp import dssp, dssp_allatoms, dssp_allresidues
+from .h2order import h2order
+from .helix import helix
+from .helixorient import helixorient
+from .hydorder import hydorder
+from .mdmat import mdmat
+from .potential import potential
+from .rama import rama
+from .saltbr import saltbr
+from .sorient import sorient
+from .spol import spol
 from .energy_analysis import energy_analysis, ene_decomp, esander, lie
 from .gist import gist, GistConfig, GistResult
 from .infraredspec import infraredspec
@@ -38,6 +50,7 @@ from .check_chirality import check_chirality
 from .closest import closest, closest_atom
 from .voxel import count_in_voxel
 from .density import density
+from .densmap import densmap
 from .volmap import volmap
 from .dihedral_rms import dihedral_rms
 from .watershell import watershell
@@ -58,6 +71,7 @@ from .rotdif import rotdif
 from .multipucker import multipucker
 from .xtalsymm import xtalsymm
 from .trajectory import ArrayTrajectory
+from .vanhove import vanhove
 
 __all__ = [
     "align",
@@ -66,12 +80,25 @@ __all__ = [
     "ArrayTrajectory",
     "crank",
     "acorr",
+    "current",
+    "bundle",
+    "h2order",
+    "helix",
+    "helixorient",
+    "hydorder",
+    "mdmat",
+    "sorient",
+    "spol",
+    "potential",
     "xcorr",
     "timecorr",
     "velocity_autocorrelation",
+    "vanhove",
     "dssp",
     "dssp_allatoms",
     "dssp_allresidues",
+    "rama",
+    "saltbr",
     "energy_analysis",
     "esander",
     "lie",
@@ -128,6 +155,7 @@ __all__ = [
     "closest_atom",
     "count_in_voxel",
     "density",
+    "densmap",
     "volmap",
     "dihedral_rms",
     "watershell",

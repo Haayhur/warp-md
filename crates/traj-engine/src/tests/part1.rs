@@ -204,6 +204,81 @@ fn velocity_autocorr_plan_basic() {
 }
 
 #[test]
+fn vanhove_plan_basic() {
+    let mut system = build_single_atom_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = VanHovePlan::new(sel, 1.0, 3.0);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0]],
+        vec![[1.0, 0.0, 0.0, 1.0]],
+        vec![[2.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::VanHove(output) => {
+            assert_eq!(output.rows, 3);
+            assert_eq!(output.cols, 3);
+            assert_eq!(output.time, vec![0.0, 1.0, 2.0]);
+            assert_eq!(output.r, vec![0.0, 1.0, 2.0]);
+            assert!((output.matrix[0] - 1.0).abs() < 1e-6);
+            assert!((output.matrix[1 * output.cols + 1] - 1.0).abs() < 1e-6);
+            assert!((output.matrix[2 * output.cols + 2] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn vanhove_plan_unwraps_pbc_jumps() {
+    let mut system = build_single_atom_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = VanHovePlan::new(sel, 1.0, 4.0);
+    let frames = vec![
+        vec![[9.5, 0.0, 0.0, 1.0]],
+        vec![[0.5, 0.0, 0.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 10.0,
+        lz: 10.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::VanHove(output) => {
+            assert_eq!(output.rows, 2);
+            assert_eq!(output.cols, 4);
+            assert!((output.matrix[1 * output.cols + 1] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn vanhove_plan_keeps_upper_shell_counts() {
+    let mut system = build_single_atom_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = VanHovePlan::new(sel, 1.0, 3.0);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0]],
+        vec![[2.6, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::VanHove(output) => {
+            assert_eq!(output.cols, 3);
+            assert!((output.matrix[1 * output.cols + 2] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn hausdorff_plan_basic() {
     let mut system = build_two_resid_system();
     let sel_a = system.select("name DA or name AC").unwrap();

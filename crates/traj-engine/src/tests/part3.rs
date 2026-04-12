@@ -268,6 +268,31 @@ fn matrix_plan_distance_basic() {
 }
 
 #[test]
+fn matrix_plan_correlation_basic() {
+    let mut system = build_two_resid_system();
+    let sel = system.select("resid 1:2").unwrap();
+    let mut plan = MatrixPlan::new(sel, MatrixMode::Correlation, PbcMode::None);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 2);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!((data[3] - 1.0).abs() < 1e-6);
+            assert!(data[1].abs() < 1e-6);
+            assert!(data[2].abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn pca_plan_basic() {
     let mut system = build_system();
     let sel = system.select("resid 1").unwrap();
@@ -285,6 +310,66 @@ fn pca_plan_basic() {
             assert_eq!(pca.n_features, 6);
             assert_eq!(pca.eigenvalues.len(), 2);
             assert_eq!(pca.eigenvectors.len(), 12);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn projection_plan_internal_mean_and_mass_weighting() {
+    let mut system = build_system();
+    system.atoms.mass = vec![1.0, 4.0];
+    let sel = system.select("resid 1").unwrap();
+    let mut plan = ProjectionPlan::new(
+        sel,
+        vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        1,
+        6,
+        None,
+        true,
+    )
+    .unwrap();
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[1.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 1);
+            assert!((data[0] + 2.0).abs() < 1e-6);
+            assert!((data[1] - 2.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn atomic_adp_plan_basic() {
+    let mut system = build_system();
+    let sel = system.select("resid 1").unwrap();
+    let mut plan = AtomicAdpPlan::new(sel);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[2.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 6);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!(data[1].abs() < 1e-6);
+            assert!(data[2].abs() < 1e-6);
+            assert!(data[3].abs() < 1e-6);
+            assert!(data[4].abs() < 1e-6);
+            assert!(data[5].abs() < 1e-6);
+            assert!(data[6].abs() < 1e-6);
         }
         _ => panic!("unexpected output"),
     }

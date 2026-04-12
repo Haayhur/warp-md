@@ -29,7 +29,9 @@ def _native() -> Any:
 
 
 def _binary() -> str:
-    command = os.environ.get("WARP_BUILD_BINARY", "warp-build")
+    command = os.environ.get("WARP_BUILD_BINARY") or os.environ.get(
+        "POLYMER_BUILD_BINARY", "warp-build"
+    )
     if os.path.isabs(command) or os.path.dirname(command):
         return command
     return shutil.which(command) or command
@@ -46,6 +48,16 @@ def _loads_json(raw: str, *, context: str) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{context}: expected JSON object")
     return value
+
+
+def _with_validation_depth(payload: Dict[str, Any], *, deep: bool) -> Dict[str, Any]:
+    if not deep:
+        return payload
+    patched = dict(payload)
+    validation = dict(patched.get("validation") or {})
+    validation["depth"] = "deep"
+    patched["validation"] = validation
+    return patched
 
 
 def _run_cli(
@@ -176,7 +188,8 @@ def inspect_source(source: str | Path) -> Dict[str, Any]:
     return payload
 
 
-def validate_request_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+def validate_request_payload(payload: Dict[str, Any], *, deep: bool = False) -> Dict[str, Any]:
+    payload = _with_validation_depth(payload, deep=deep)
     native = _native()
     if native is not None:
         _, response = native.build_agent_validate(json.dumps(payload))
@@ -187,8 +200,8 @@ def validate_request_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return response
 
 
-def validate(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return validate_request_payload(payload)
+def validate(payload: Dict[str, Any], *, deep: bool = False) -> Dict[str, Any]:
+    return validate_request_payload(payload, deep=deep)
 
 
 def run_build_request(

@@ -4,82 +4,97 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple, Union
+from typing import Optional, Sequence, Union
 
 import numpy as np
 
-from ._chunk_io import read_chunk_fields
-
+from ._runtime import (
+    load_native_symbol,
+    native_selection,
+    native_reference_inputs,
+    normalize_frame_indices,
+    read_all_frames,
+)
+from .trajectory import ArrayTrajectory
 
 RefLike = Union[int, str]
 
 
-def _all_resid_mask(system) -> str:
-    atoms = system.atom_table()
-    resids = atoms.get("resid", [])
-    if not resids:
-        return "resid 0:0"
-    return f"resid {min(resids)}:{max(resids)}"
+def _run_native_rotation_matrix(
+    traj,
+    system,
+    mask: str,
+    ref: RefLike,
+    mass: bool,
+    chunk_frames: Optional[int],
+    frame_indices: Optional[Sequence[int]] = None,
+) -> np.ndarray:
+    plan_cls = load_native_symbol("RotationMatrixPlan")
+    if plan_cls is None:
+        raise RuntimeError("RotationMatrixPlan binding unavailable")
+    native_traj, reference_system = native_reference_inputs(
+        traj,
+        system,
+        mask,
+        ref,
+        mask,
+        chunk_frames,
+    )
+    if native_traj is None or reference_system is None:
+        raise RuntimeError("failed to prepare native rotation inputs")
+    try:
+        selection = native_selection(system, reference_system, mask)
+        plan = plan_cls(selection, reference="topology", mass=mass)
+        return np.asarray(
+            plan.run(
+                native_traj,
+                reference_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=None if frame_indices is None else list(frame_indices),
+            ),
+            dtype=np.float32,
+        ).reshape(-1, 3, 3)
+    except Exception as exc:
+        raise RuntimeError("native RotationMatrixPlan execution failed") from exc
 
 
-def _selection_indices(system, mask: Optional[str]) -> np.ndarray:
-    if mask in ("", "*", "all", None):
-        mask = None
-    if mask:
-        sel = system.select(mask)
-    else:
-        sel = system.select(_all_resid_mask(system))
-    return np.asarray(list(sel.indices), dtype=np.int64)
-
-
-def _mass_weights(system, indices: np.ndarray, mass: bool) -> np.ndarray:
-    if not mass:
-        return np.ones(indices.size, dtype=np.float64)
-    atoms = system.atom_table()
-    masses = atoms.get("mass", [])
-    if not masses:
-        return np.ones(indices.size, dtype=np.float64)
-    w = np.asarray(masses, dtype=np.float64)
-    return w[indices]
-
-
-def _read_all(traj, chunk_frames: Optional[int]):
-    max_chunk = chunk_frames or 128
-    coords_list = []
-    chunk = read_chunk_fields(traj, max_chunk)
-    if chunk is None:
-        return None
-    while chunk is not None:
-        coords_list.append(np.asarray(chunk["coords"], dtype=np.float64))
-        chunk = read_chunk_fields(traj, max_chunk)
-    return np.concatenate(coords_list, axis=0) if coords_list else np.empty((0, 0, 3))
-
-
-def _kabsch(x: np.ndarray, y: np.ndarray, weights: np.ndarray) -> Tuple[np.ndarray, float]:
-    if x.shape != y.shape:
-        raise ValueError("selection and reference selection must have same size")
-    if x.size == 0:
-        return np.eye(3, dtype=np.float64), 0.0
-    w = weights.astype(np.float64)
-    wsum = float(np.sum(w))
-    if wsum <= 0.0:
-        w = np.ones_like(w)
-        wsum = float(np.sum(w))
-    w = w / wsum
-    cx = np.sum(x * w[:, None], axis=0)
-    cy = np.sum(y * w[:, None], axis=0)
-    x0 = x - cx
-    y0 = y - cy
-    h = (x0 * w[:, None]).T @ y0
-    u, _s, vt = np.linalg.svd(h, full_matrices=False)
-    r = vt.T @ u.T
-    if np.linalg.det(r) < 0.0:
-        vt[-1, :] *= -1.0
-        r = vt.T @ u.T
-    x_rot = x0 @ r.T
-    diff = x_rot - y0
-    rmsd = float(np.sqrt((diff * diff).sum() / x.shape[0])) if x.shape[0] > 0 else 0.0
-    return r, rmsd
+def _run_native_rmsd(
+    traj,
+    system,
+    mask: str,
+    ref: RefLike,
+    chunk_frames: Optional[int],
+    frame_indices: Optional[Sequence[int]] = None,
+) -> np.ndarray:
+    plan_cls = load_native_symbol("RmsdPlan")
+    if plan_cls is None:
+        raise RuntimeError("RmsdPlan binding unavailable")
+    native_traj, reference_system = native_reference_inputs(
+        traj,
+        system,
+        mask,
+        ref,
+        mask,
+        chunk_frames,
+    )
+    if native_traj is None or reference_system is None:
+        raise RuntimeError("failed to prepare native rmsd inputs")
+    try:
+        selection = native_selection(system, reference_system, mask)
+        plan = plan_cls(selection, reference="topology", align=True)
+        return np.asarray(
+            plan.run(
+                native_traj,
+                reference_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=None if frame_indices is None else list(frame_indices),
+            ),
+            dtype=np.float32,
+        ).reshape(-1)
+    except Exception as exc:
+        raise RuntimeError("native RmsdPlan execution failed") from exc
 
 
 def rotation_matrix(
@@ -92,11 +107,8 @@ def rotation_matrix(
     chunk_frames: Optional[int] = None,
     with_rmsd: bool = False,
 ):
-    """Compute rotation matrices to align frames to reference.
-
-    Returns (n_frames, 3, 3) or (matrices, rmsd) when with_rmsd=True.
-    """
-    coords = _read_all(traj, chunk_frames)
+    """Compute rotation matrices to align frames to reference."""
+    coords, _box, _time = read_all_frames(traj, chunk_frames)
     if coords is None:
         raise ValueError("trajectory has no frames")
     n_frames = coords.shape[0]
@@ -106,58 +118,60 @@ def rotation_matrix(
             return mats, np.empty((0,), dtype=np.float32)
         return mats
 
-    sel_idx = _selection_indices(system, mask)
-    if sel_idx.size == 0:
-        raise ValueError("selection resolved to empty set")
-    weights = _mass_weights(system, sel_idx, mass)
+    selected = normalize_frame_indices(frame_indices, n_frames)
+    source_coords = np.asarray(coords, dtype=np.float32)
 
-    ref_coords = None
-    ref_kind = ref
-    if isinstance(ref, str):
-        key = ref.strip().lower()
-        if key in ("topology", "top", "topo"):
-            if hasattr(system, "positions0"):
-                ref_coords = system.positions0()
-        if ref_coords is None and key in ("frame0", "first", "0", "topology", "top", "topo"):
-            ref_kind = 0
+    def make_source():
+        return ArrayTrajectory(source_coords)
 
-    if ref_coords is None:
-        if isinstance(ref_kind, int):
-            ref_index = ref_kind
-            if ref_index < 0:
-                ref_index = n_frames + ref_index
-            if ref_index < 0 or ref_index >= n_frames:
-                raise ValueError("ref index out of range")
-            ref_coords = coords[ref_index]
-        else:
-            ref_coords = coords[0]
-    else:
-        ref_coords = np.asarray(ref_coords, dtype=np.float64)
+    mats = np.broadcast_to(np.eye(3, dtype=np.float32), (n_frames, 3, 3)).copy()
+    rmsd_vals = np.zeros(n_frames, dtype=np.float32) if with_rmsd else None
 
-    frame_set = None
-    if frame_indices is not None:
-        frame_set = set()
-        for idx in frame_indices:
-            i = int(idx)
-            if i < 0:
-                i = n_frames + i
-            if 0 <= i < n_frames:
-                frame_set.add(i)
+    if selected is None:
+        native_mats = _run_native_rotation_matrix(
+            make_source(),
+            system,
+            mask,
+            ref,
+            mass,
+            chunk_frames,
+        )
+        if native_mats.shape[0] != n_frames:
+            raise RuntimeError("native RotationMatrixPlan returned unexpected frame count")
+        mats[:] = native_mats
+        if with_rmsd:
+            native_rmsd = _run_native_rmsd(make_source(), system, mask, ref, chunk_frames)
+            if native_rmsd.shape[0] != n_frames:
+                raise RuntimeError("native RmsdPlan returned unexpected frame count")
+            rmsd_vals[:] = native_rmsd
+    elif selected:
+        native_mats = _run_native_rotation_matrix(
+            make_source(),
+            system,
+            mask,
+            ref,
+            mass,
+            chunk_frames,
+            frame_indices=selected,
+        )
+        if native_mats.shape[0] != len(selected):
+            raise RuntimeError("native RotationMatrixPlan returned unexpected frame subset")
+        mats[np.asarray(selected, dtype=np.int64)] = native_mats
+        if with_rmsd:
+            native_rmsd = _run_native_rmsd(
+                make_source(),
+                system,
+                mask,
+                ref,
+                chunk_frames,
+                frame_indices=selected,
+            )
+            if native_rmsd.shape[0] != len(selected):
+                raise RuntimeError("native RmsdPlan returned unexpected frame subset")
+            rmsd_vals[np.asarray(selected, dtype=np.int64)] = native_rmsd
 
-    mats = np.zeros((n_frames, 3, 3), dtype=np.float64)
-    rmsd_vals = np.zeros(n_frames, dtype=np.float64)
-    for i in range(n_frames):
-        if frame_set is not None and i not in frame_set:
-            mats[i] = np.eye(3, dtype=np.float64)
-            rmsd_vals[i] = 0.0
-            continue
-        r, rmsd = _kabsch(coords[i][sel_idx], ref_coords[sel_idx], weights)
-        mats[i] = r
-        rmsd_vals[i] = rmsd
-
-    mats = mats.astype(np.float32)
     if with_rmsd:
-        return mats, rmsd_vals.astype(np.float32)
+        return mats, rmsd_vals
     return mats
 
 

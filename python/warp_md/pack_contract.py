@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 from . import traj_py
+from .pack import data as pack_data
 
 
 PACK_AGENT_SCHEMA_VERSION = "warp-pack.agent.v1"
 PACK_AGENT_RESULT_VERSION = PACK_AGENT_SCHEMA_VERSION
 
 
+def _configure_native_pack_data_env() -> None:
+    data_dir = Path(pack_data.__file__).resolve().parent
+    os.environ.setdefault("WARP_MD_PACK_DATA_DIR", str(data_dir))
+    os.environ.setdefault("WARP_MD_ION_REGISTRY", str(data_dir / "ions.json"))
+    os.environ.setdefault("WARP_MD_SALT_REGISTRY", str(data_dir / "salts.json"))
+
+
 def _native() -> Any:
+    _configure_native_pack_data_env()
     if traj_py is None:
         raise RuntimeError(
             "warp-md Python bindings are unavailable. Run `maturin develop` or install warp-md."

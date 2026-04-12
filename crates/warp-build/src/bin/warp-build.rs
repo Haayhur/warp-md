@@ -88,6 +88,8 @@ enum Command {
     },
     Validate {
         request: PathBuf,
+        #[arg(long)]
+        deep: bool,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
         #[arg(long)]
@@ -118,6 +120,24 @@ fn render_value<T: Serialize>(value: &T, format: OutputFormat) -> Result<String,
 fn print_value<T: Serialize>(value: &T, format: OutputFormat) -> Result<(), String> {
     println!("{}", render_value(value, format)?);
     Ok(())
+}
+
+fn with_validation_depth(text: &str, depth: &str) -> Result<String, String> {
+    let mut value: serde_json::Value = serde_json::from_str(text).map_err(|err| err.to_string())?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "request must decode to a JSON object".to_string())?;
+    let validation = object
+        .entry("validation".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let validation_obj = validation
+        .as_object_mut()
+        .ok_or_else(|| "request.validation must decode to a JSON object".to_string())?;
+    validation_obj.insert(
+        "depth".to_string(),
+        serde_json::Value::String(depth.to_string()),
+    );
+    serde_json::to_string(&value).map_err(|err| err.to_string())
 }
 
 fn main() -> ExitCode {
@@ -188,10 +208,14 @@ fn run() -> Result<u8, String> {
         }
         Command::Validate {
             request,
+            deep,
             format,
             json,
         } => {
-            let text = fs::read_to_string(request).map_err(|err| err.to_string())?;
+            let mut text = fs::read_to_string(request).map_err(|err| err.to_string())?;
+            if deep {
+                text = with_validation_depth(&text, "deep")?;
+            }
             let (code, value) = warp_build::validate_request_json(&text);
             print_value(&value, selected_format(format, json))?;
             Ok(code as u8)

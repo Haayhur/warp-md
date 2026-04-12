@@ -118,17 +118,23 @@ Common realization modes:
 
 ```json
 {
-  "version": "warp-build.agent.v1",
-  "source_ref": "pmma.bundle.json",
+  "schema_version": "warp-build.agent.v1",
+  "request_id": "pmma-build-50mer-001",
+  "source_ref": {
+    "bundle_id": "pmma_param_bundle_v1",
+    "bundle_path": "pmma.bundle.json"
+  },
   "target": {
     "mode": "linear_homopolymer",
-    "repeat_token": "A",
+    "repeat_unit": "A",
     "n_repeat": 50,
     "termini": {
       "head": "default",
       "tail": "default"
     },
-    "tacticity": "inherit"
+    "stereochemistry": {
+      "mode": "inherit"
+    }
   },
   "realization": {
     "conformation_mode": "random_walk",
@@ -136,7 +142,8 @@ Common realization modes:
   },
   "artifacts": {
     "coordinates": "outputs/pmma_50mer.pdb",
-    "manifest": "outputs/pmma_50mer.build.json"
+    "build_manifest": "outputs/pmma_50mer.build.json",
+    "charge_manifest": "outputs/pmma_50mer.charge.json"
   }
 }
 ```
@@ -168,7 +175,7 @@ Once the chain is built, hand the manifest into `warp-pack`:
 
 ```json
 {
-  "version": "warp-pack.agent.v1",
+  "schema_version": "warp-pack.agent.v1",
   "polymer_build": {
     "build_manifest": "outputs/pmma_50mer.build.json"
   },

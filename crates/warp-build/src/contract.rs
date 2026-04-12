@@ -1,14 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
-use std::path::Path;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use warp_pack::io::{write_amber_inpcrd, write_minimal_prmtop, write_output, AmberTopology};
-use warp_pack::{geom::center_of_geometry, OutputSpec, PackError, PackResult};
+use warp_pack::{PackError, PackResult};
+use warp_structure::io::{write_amber_inpcrd, write_minimal_prmtop, write_output, AmberTopology};
+use warp_structure::{center_of_geometry, AtomRecord, OutputSpec, PackOutput, Vec3};
 
 use crate::polymer::{
     build_polymer_graph, compute_sequence_polymer_net_charge_from_prmtop,
@@ -46,6 +47,7 @@ const SUPPORTED_TARGET_MODES: &[&str] = &[
     "branched_polymer",
     "polymer_graph",
 ];
+const OVERLAP_REPORT_METRIC: &str = "vdw_overlap_pairs_excluding_1_2_and_1_3";
 const DECLARED_PLAN_MODES: &[&str] = &[
     "linear_homopolymer",
     "linear_sequence_polymer",
@@ -399,6 +401,21 @@ pub struct RelaxSpec {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ValidationSpec {
+    #[serde(default = "default_validation_depth")]
+    #[schemars(default = "default_validation_depth")]
+    pub depth: String,
+}
+
+impl Default for ValidationSpec {
+    fn default() -> Self {
+        Self {
+            depth: default_validation_depth(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactRequest {
     pub coordinates: String,
     #[serde(default)]
@@ -428,6 +445,8 @@ pub struct BuildRequest {
     pub conformer_policy: Option<ConformerPolicy>,
     #[serde(default)]
     pub port_cap_overrides: Vec<PortCapOverride>,
+    #[serde(default)]
+    pub validation: ValidationSpec,
     pub artifacts: ArtifactRequest,
 }
 
@@ -446,7 +465,7 @@ pub struct SuccessEnvelope {
     pub status: String,
     pub request_id: String,
     pub artifacts: ArtifactRequest,
-    pub summary: Value,
+    pub summary: RunSummary,
     pub warnings: Vec<ErrorDetail>,
 }
 
@@ -465,14 +484,16 @@ pub struct BuildManifestSchema {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     pub request_id: String,
-    pub normalized_request: Value,
-    pub source_bundle: Value,
-    pub target: Value,
-    pub realization: Value,
-    pub artifacts: Value,
-    pub artifact_digests: Value,
-    pub summary: Value,
-    pub provenance: Value,
+    pub normalized_request: NormalizedBuildRequest,
+    pub resolved_inputs: ResolvedInputsSummary,
+    pub source_bundle: BuildManifestSourceBundle,
+    pub target: BuildTarget,
+    pub realization: BuildManifestRealization,
+    pub artifacts: BuildManifestArtifacts,
+    pub artifact_digests: BuildArtifactDigests,
+    pub md_ready_handoff: MdReadyHandoff,
+    pub summary: BuildManifestSummary,
+    pub provenance: BuildManifestProvenance,
     pub warnings: Vec<ErrorDetail>,
 }
 
@@ -481,9 +502,349 @@ pub struct ValidateEnvelope {
     pub schema_version: String,
     pub status: String,
     pub valid: bool,
-    pub normalized_request: Value,
-    pub resolved_inputs: Value,
+    pub normalized_request: NormalizedBuildRequest,
+    pub resolved_inputs: ResolvedInputsSummary,
+    pub preflight: PreflightSummary,
     pub warnings: Vec<ErrorDetail>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, JsonSchema)]
+pub struct BuildPhaseTimingsMs {
+    compile_plan: u64,
+    resolve_junctions: u64,
+    prepare_graph_specs: u64,
+    build_graph: u64,
+    solver_cleanup: u64,
+    user_relax: u64,
+    artifact_write: u64,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct NormalizedSourceRef {
+    pub bundle_id: String,
+    pub bundle_path: String,
+    pub bundle_digest: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct NormalizedRealization {
+    pub conformation_mode: String,
+    pub seed: u64,
+    pub seed_policy: String,
+    pub alignment_axis: Option<String>,
+    pub ensemble_size: Option<usize>,
+    pub relax: Option<RelaxSpec>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ResolvedArtifactSummary {
+    pub coordinates: String,
+    pub raw_coordinates: Option<String>,
+    pub build_manifest: String,
+    pub charge_manifest: String,
+    pub inpcrd: String,
+    pub topology: Option<String>,
+    pub topology_graph: String,
+    pub ensemble_manifest: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct NormalizedBuildRequest {
+    pub schema_version: String,
+    pub request_id: String,
+    pub source_ref: NormalizedSourceRef,
+    pub target: BuildTarget,
+    pub realization: NormalizedRealization,
+    pub conformer_policy: Option<ConformerPolicy>,
+    pub port_cap_overrides: Vec<PortCapOverride>,
+    pub artifacts: ResolvedArtifactSummary,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ValidationDepthSummary {
+    pub requested_depth: String,
+    pub default_depth: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ResolvedTerminiPolicy {
+    pub head: String,
+    pub tail: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ResolvedSourceArtifacts {
+    pub coordinates: String,
+    pub charge_manifest: Option<String>,
+    pub topology: Option<String>,
+    pub forcefield_ref: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct TopologyTransferRequestedOutputs {
+    pub inpcrd: bool,
+    pub topology: bool,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct TopologyTransferRequirements {
+    pub topology: String,
+    pub inpcrd: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct TopologyTransferSummary {
+    pub supported: bool,
+    pub requested_outputs: TopologyTransferRequestedOutputs,
+    pub requirements: TopologyTransferRequirements,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct TargetNormalizationSummary {
+    pub applied: String,
+    pub reason: String,
+    pub head_token: String,
+    pub tail_token: String,
+    pub sequence: Vec<String>,
+    pub requested_mode: String,
+    pub requested_repeat_unit: Option<String>,
+    pub requested_n_repeat: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ResolvedInputsSummary {
+    pub source_bundle_id: String,
+    pub source_bundle_path: String,
+    pub source_bundle_digest: Option<String>,
+    pub target_mode: String,
+    pub realization_mode: String,
+    pub validation: ValidationDepthSummary,
+    pub resolved_termini_policy: ResolvedTerminiPolicy,
+    pub resolved_seed: u64,
+    pub seed_policy: String,
+    pub target_normalization: Option<TargetNormalizationSummary>,
+    pub resolved_artifacts: ResolvedArtifactSummary,
+    pub resolved_source_artifacts: ResolvedSourceArtifacts,
+    pub topology_transfer: TopologyTransferSummary,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct AppliedJunctionSummary {
+    pub head_attach_atom: Option<String>,
+    pub head_leaving_atoms: Vec<String>,
+    pub tail_attach_atom: Option<String>,
+    pub tail_leaving_atoms: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct PreflightSummary {
+    pub executed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_conformation_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_residue_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_junctions: Option<BTreeMap<String, AppliedJunctionSummary>>,
+    pub timings_ms: BuildPhaseTimingsMs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qc: Option<crate::polymer::BuildQcReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver: Option<crate::polymer::BuildSolverReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_cleanup: Option<RelaxReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relax: Option<RelaxReport>,
+    pub overlap_status: OverlapStatusSummary,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct RunSummary {
+    pub build_mode: String,
+    pub n_repeat: usize,
+    pub atom_count: usize,
+    pub total_repeat_units: usize,
+    pub total_residues: usize,
+    pub conformation_mode: String,
+    pub seed: u64,
+    pub ensemble_size: usize,
+    pub topology_graph_version: String,
+    pub qc: crate::polymer::BuildQcReport,
+    pub solver: Option<crate::polymer::BuildSolverReport>,
+    pub timings_ms: BuildPhaseTimingsMs,
+    pub solver_cleanup: Option<RelaxReport>,
+    pub relax: Option<RelaxReport>,
+    pub overlap_status: OverlapStatusSummary,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct BuildManifestSourceBundle {
+    pub bundle_id: String,
+    pub bundle_path: String,
+    pub bundle_digest: Option<String>,
+    pub training_context: TrainingContext,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct BuildManifestRealization {
+    pub conformation_mode: String,
+    pub seed: u64,
+    pub seed_policy: String,
+    pub relax: Option<RelaxSpec>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct BuildManifestArtifacts {
+    pub coordinates: String,
+    pub raw_coordinates: Option<String>,
+    pub charge_manifest: String,
+    pub inpcrd: String,
+    pub topology: Option<String>,
+    pub topology_graph: String,
+    pub ensemble_manifest: Option<String>,
+    pub forcefield_ref: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct BuildArtifactDigests {
+    pub coordinates: Option<String>,
+    pub raw_coordinates: Option<String>,
+    pub charge_manifest: Option<String>,
+    pub inpcrd: Option<String>,
+    pub topology: Option<String>,
+    pub topology_graph: Option<String>,
+    pub ensemble_manifest: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct HandoffCoordinates {
+    pub path: String,
+    pub format: String,
+    pub strict_columns: bool,
+    pub write_conect: bool,
+    pub has_cryst1: bool,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct HandoffChainInstanceMapping {
+    pub copy_index: usize,
+    pub source_chain_indices: Vec<usize>,
+    pub packed_chain_indices: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct MdReadyHandoff {
+    pub version: String,
+    pub coordinates: HandoffCoordinates,
+    pub topology_graph: String,
+    pub topology: Option<String>,
+    pub charge_manifest: String,
+    pub source_structure_path: String,
+    pub source_topology_path: Option<String>,
+    pub source_charge_manifest_path: Option<String>,
+    pub sequence_tokens: Vec<String>,
+    pub template_sequence_resnames: Vec<String>,
+    pub applied_residue_resnames: Vec<String>,
+    pub copy_count: usize,
+    pub chain_instance_mapping: Vec<HandoffChainInstanceMapping>,
+    pub forcefield_ref: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct AppliedTerminusSummary {
+    pub requested_policy: String,
+    pub resolved_token: Option<String>,
+    pub template_resname: Option<String>,
+    pub applied_resname: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct AppliedTerminiSummary {
+    pub head: AppliedTerminusSummary,
+    pub tail: AppliedTerminusSummary,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct AppliedCapSummary {
+    pub node_id: String,
+    pub request_node_id: String,
+    pub port_name: String,
+    pub cap: CapBinding,
+    pub application_source: String,
+    pub cap_node_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct BuildManifestSummary {
+    pub atom_count: usize,
+    pub total_repeat_units: usize,
+    pub total_residues: usize,
+    pub net_charge_e: Option<f32>,
+    pub resolved_sequence: Vec<String>,
+    pub template_sequence_resnames: Vec<String>,
+    pub applied_residue_resnames: Vec<String>,
+    pub request_root_node_id: String,
+    pub expanded_root_node_id: String,
+    pub graph_has_cycle: bool,
+    pub applied_termini: AppliedTerminiSummary,
+    pub applied_caps: Vec<AppliedCapSummary>,
+    pub bond_count: usize,
+    pub realization_mode: String,
+    pub ensemble_size: usize,
+    pub relax: Option<RelaxReport>,
+    pub solver_cleanup: Option<RelaxReport>,
+    pub solver: Option<crate::polymer::BuildSolverReport>,
+    pub applied_junctions: BTreeMap<String, AppliedJunctionSummary>,
+    pub timings_ms: BuildPhaseTimingsMs,
+    pub qc: crate::polymer::BuildQcReport,
+    pub overlap_status: OverlapStatusSummary,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct OverlapStatusSummary {
+    pub status: String,
+    pub may_report_no_overlaps: bool,
+    pub metric: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlap_pairs: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_overlap_angstrom: Option<f32>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct BuildMetadataSummary {
+    pub git_commit: Option<String>,
+    pub build_timestamp: Option<String>,
+    pub target_triple: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct BuildManifestProvenance {
+    pub schema_version: String,
+    pub builder_version: String,
+    pub binary_version: String,
+    pub algorithm_version: String,
+    pub topology_transfer_mode: String,
+    pub source_bundle_path: String,
+    pub source_bundle_digest: Option<String>,
+    pub target_normalization: Option<TargetNormalizationSummary>,
+    pub build_metadata: BuildMetadataSummary,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedBuildExecution {
+    compiled_plan: CompiledBuildPlan,
+    compiled_sequence: Vec<String>,
+    token_junctions: BTreeMap<String, TokenJunctionSpec>,
+    base_mode: String,
+    graph_node_specs: Vec<GraphNodeSpec>,
+    graph_edge_specs: Vec<GraphEdgeSpec>,
+    graph_root_idx: usize,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -555,6 +916,10 @@ fn default_stereo() -> String {
     "inherit".to_string()
 }
 
+fn default_validation_depth() -> String {
+    "shallow".to_string()
+}
+
 fn default_bond_order() -> u8 {
     1
 }
@@ -577,6 +942,14 @@ fn default_ring_mode() -> String {
 
 fn default_relax_mode() -> String {
     "graph_spring".to_string()
+}
+
+fn canonical_relax_mode(mode: &str) -> Option<&'static str> {
+    match mode {
+        "graph_spring" => Some("graph_spring"),
+        "targeted_steric" | "targeted_stearic" => Some("targeted_steric"),
+        _ => None,
+    }
 }
 
 fn internal_solver_relax_spec() -> RelaxSpec {
@@ -824,20 +1197,20 @@ struct ResolvedBuildRequest {
     seed: u64,
     seed_policy: String,
     warnings: Vec<ErrorDetail>,
-    normalization: Option<Value>,
+    normalization: Option<TargetNormalizationSummary>,
     source_coordinates: String,
     source_charge_manifest: Option<String>,
     source_topology_ref: Option<String>,
     artifacts: ResolvedArtifacts,
-    normalized_request: Value,
-    resolved_inputs: Value,
+    normalized_request: NormalizedBuildRequest,
+    resolved_inputs: ResolvedInputsSummary,
 }
 
 #[derive(Clone, Debug)]
 struct NormalizeRequestResult {
     request: BuildRequest,
     warnings: Vec<ErrorDetail>,
-    normalization: Option<Value>,
+    normalization: Option<TargetNormalizationSummary>,
 }
 
 fn deterministic_seed(req: &BuildRequest) -> u64 {
@@ -1006,16 +1379,16 @@ fn normalize_request_for_execution(
                     head, tail
                 ),
             ));
-            normalization = Some(json!({
-                "applied": "linear_homopolymer_to_linear_sequence_polymer",
-                "reason": "terminal_aware_source_bundle",
-                "head_token": head,
-                "tail_token": tail,
-                "sequence": sequence,
-                "requested_mode": req.target.mode,
-                "requested_repeat_unit": req.target.repeat_unit,
-                "requested_n_repeat": req.target.n_repeat,
-            }));
+            normalization = Some(TargetNormalizationSummary {
+                applied: "linear_homopolymer_to_linear_sequence_polymer".into(),
+                reason: "terminal_aware_source_bundle".into(),
+                head_token: head,
+                tail_token: tail,
+                sequence,
+                requested_mode: req.target.mode.clone(),
+                requested_repeat_unit: req.target.repeat_unit.clone(),
+                requested_n_repeat: req.target.n_repeat,
+            });
         }
         Ok(None) => {}
         Err(error) => return Err(vec![error]),
@@ -1031,7 +1404,7 @@ fn resolve_request_state(
     req: &BuildRequest,
     bundle: &SourceBundle,
     preflight_warnings: Vec<ErrorDetail>,
-    normalization: Option<Value>,
+    normalization: Option<TargetNormalizationSummary>,
 ) -> Result<ResolvedBuildRequest, Vec<ErrorDetail>> {
     let errors = validate_request(req, bundle);
     if !errors.is_empty() {
@@ -1096,66 +1469,85 @@ fn resolve_request_state(
     let mut warnings = preflight_warnings;
     warnings.extend(collect_warnings(req));
     let bundle_digest = sha256_file(Path::new(&req.source_ref.bundle_path)).ok();
-    let normalized_request = json!({
-        "schema_version": BUILD_SCHEMA_VERSION,
-        "request_id": req.request_id,
-        "source_ref": {
-            "bundle_id": req.source_ref.bundle_id,
-            "bundle_path": req.source_ref.bundle_path,
-            "bundle_digest": req.source_ref.bundle_digest.clone().or_else(|| bundle_digest.clone()),
+    let normalized_artifacts = ResolvedArtifactSummary {
+        coordinates: artifacts.coordinates.clone(),
+        raw_coordinates: artifacts.raw_coordinates.clone(),
+        build_manifest: artifacts.build_manifest.clone(),
+        charge_manifest: artifacts.charge_manifest.clone(),
+        inpcrd: artifacts.inpcrd.clone(),
+        topology: artifacts.topology.clone(),
+        topology_graph: artifacts.topology_graph.clone(),
+        ensemble_manifest: artifacts.ensemble_manifest.clone(),
+    };
+    let normalized_request = NormalizedBuildRequest {
+        schema_version: BUILD_SCHEMA_VERSION.into(),
+        request_id: req.request_id.clone(),
+        source_ref: NormalizedSourceRef {
+            bundle_id: req.source_ref.bundle_id.clone(),
+            bundle_path: req.source_ref.bundle_path.clone(),
+            bundle_digest: req
+                .source_ref
+                .bundle_digest
+                .clone()
+                .or_else(|| bundle_digest.clone()),
         },
-        "target": req.target,
-        "realization": {
-            "conformation_mode": req.realization.conformation_mode,
-            "seed": seed,
-            "seed_policy": seed_policy,
-            "alignment_axis": req.realization.alignment_axis,
-            "ensemble_size": req.realization.ensemble_size,
-            "relax": req.realization.relax,
+        target: req.target.clone(),
+        realization: NormalizedRealization {
+            conformation_mode: req.realization.conformation_mode.clone(),
+            seed,
+            seed_policy: seed_policy.clone(),
+            alignment_axis: req.realization.alignment_axis.clone(),
+            ensemble_size: req.realization.ensemble_size,
+            relax: req.realization.relax.clone(),
         },
-        "conformer_policy": req.conformer_policy,
-        "port_cap_overrides": req.port_cap_overrides,
-        "artifacts": {
-            "coordinates": artifacts.coordinates,
-            "raw_coordinates": artifacts.raw_coordinates,
-            "build_manifest": artifacts.build_manifest,
-            "charge_manifest": artifacts.charge_manifest,
-            "inpcrd": artifacts.inpcrd,
-            "topology": artifacts.topology,
-            "topology_graph": artifacts.topology_graph,
-            "ensemble_manifest": artifacts.ensemble_manifest,
+        conformer_policy: req.conformer_policy.clone(),
+        port_cap_overrides: req.port_cap_overrides.clone(),
+        artifacts: normalized_artifacts.clone(),
+    };
+    let resolved_inputs = ResolvedInputsSummary {
+        source_bundle_id: bundle.bundle_id.clone(),
+        source_bundle_path: req.source_ref.bundle_path.clone(),
+        source_bundle_digest: bundle_digest.clone(),
+        target_mode: req.target.mode.clone(),
+        realization_mode: req.realization.conformation_mode.clone(),
+        validation: ValidationDepthSummary {
+            requested_depth: req.validation.depth.clone(),
+            default_depth: default_validation_depth(),
         },
-    });
-    let resolved_inputs = json!({
-        "source_bundle_id": bundle.bundle_id,
-        "source_bundle_path": req.source_ref.bundle_path,
-        "source_bundle_digest": bundle_digest,
-        "target_mode": req.target.mode,
-        "realization_mode": req.realization.conformation_mode,
-        "resolved_termini_policy": {
-            "head": if req.target.termini.head == "default" { "source_default" } else { req.target.termini.head.as_str() },
-            "tail": if req.target.termini.tail == "default" { "source_default" } else { req.target.termini.tail.as_str() },
+        resolved_termini_policy: ResolvedTerminiPolicy {
+            head: if req.target.termini.head == "default" {
+                "source_default".into()
+            } else {
+                req.target.termini.head.clone()
+            },
+            tail: if req.target.termini.tail == "default" {
+                "source_default".into()
+            } else {
+                req.target.termini.tail.clone()
+            },
         },
-        "resolved_seed": seed,
-        "seed_policy": seed_policy,
-        "target_normalization": normalization.clone(),
-        "resolved_artifacts": {
-            "coordinates": artifacts.coordinates,
-            "raw_coordinates": artifacts.raw_coordinates,
-            "build_manifest": artifacts.build_manifest,
-            "charge_manifest": artifacts.charge_manifest,
-            "inpcrd": artifacts.inpcrd,
-            "topology": artifacts.topology,
-            "topology_graph": artifacts.topology_graph,
-            "ensemble_manifest": artifacts.ensemble_manifest,
+        resolved_seed: seed,
+        seed_policy: seed_policy.clone(),
+        target_normalization: normalization.clone(),
+        resolved_artifacts: normalized_artifacts,
+        resolved_source_artifacts: ResolvedSourceArtifacts {
+            coordinates: source_coordinates.clone(),
+            charge_manifest: source_charge_manifest.clone(),
+            topology: source_topology_ref.clone(),
+            forcefield_ref: bundle.artifacts.forcefield_ref.clone(),
         },
-        "resolved_source_artifacts": {
-            "coordinates": source_coordinates,
-            "charge_manifest": source_charge_manifest,
-            "topology": source_topology_ref,
-            "forcefield_ref": bundle.artifacts.forcefield_ref,
+        topology_transfer: TopologyTransferSummary {
+            supported: topology_transfer_supported(bundle),
+            requested_outputs: TopologyTransferRequestedOutputs {
+                inpcrd: req.artifacts.inpcrd.is_some(),
+                topology: req.artifacts.topology.is_some(),
+            },
+            requirements: TopologyTransferRequirements {
+                topology: "artifacts.topology requires bundle.artifacts.source_topology_ref to reference a transferable .prmtop".into(),
+                inpcrd: "artifacts.inpcrd is coordinate-only and does not transfer bonded terms by itself".into(),
+            },
         },
-    });
+    };
     Ok(ResolvedBuildRequest {
         bundle_digest,
         seed,
@@ -1168,6 +1560,317 @@ fn resolve_request_state(
         artifacts,
         normalized_request,
         resolved_inputs,
+    })
+}
+
+fn validation_depth(req: &BuildRequest) -> Result<&str, ErrorDetail> {
+    match req.validation.depth.as_str() {
+        "shallow" => Ok("shallow"),
+        "deep" => Ok("deep"),
+        other => Err(to_error(
+            "E_INVALID_REQUEST",
+            Some("/validation/depth".into()),
+            format!(
+                "unsupported validation depth '{}'; expected 'shallow' or 'deep'",
+                other
+            ),
+        )),
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+fn requested_n_repeat(
+    normalization: Option<&TargetNormalizationSummary>,
+    fallback: usize,
+) -> usize {
+    normalization
+        .and_then(|value| value.requested_n_repeat)
+        .unwrap_or(fallback)
+}
+
+fn build_metadata_summary() -> BuildMetadataSummary {
+    BuildMetadataSummary {
+        git_commit: option_env!("VERGEN_GIT_SHA").map(str::to_string),
+        build_timestamp: option_env!("VERGEN_BUILD_TIMESTAMP").map(str::to_string),
+        target_triple: option_env!("TARGET").map(str::to_string),
+    }
+}
+
+fn applied_junctions_value(
+    token_junctions: &BTreeMap<String, TokenJunctionSpec>,
+) -> BTreeMap<String, AppliedJunctionSummary> {
+    token_junctions
+        .iter()
+        .map(|(token, junction)| {
+            (
+                token.clone(),
+                AppliedJunctionSummary {
+                    head_attach_atom: junction.head_attach_atom.clone(),
+                    head_leaving_atoms: junction.head_leaving_atoms.clone(),
+                    tail_attach_atom: junction.tail_attach_atom.clone(),
+                    tail_leaving_atoms: junction.tail_leaving_atoms.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>()
+}
+
+fn prepare_build_execution(
+    req: &BuildRequest,
+    bundle: &SourceBundle,
+    seed: u64,
+) -> Result<(PreparedBuildExecution, BuildPhaseTimingsMs), ErrorDetail> {
+    let mut timings = BuildPhaseTimingsMs::default();
+
+    let compile_started = Instant::now();
+    let compiled_plan = match compile_build_plan(req, bundle, seed)? {
+        Some(plan) => plan,
+        None => {
+            return Err(to_error(
+                "E_INVALID_TARGET",
+                Some("/target".into()),
+                "target expands to an empty sequence",
+            ))
+        }
+    };
+    timings.compile_plan = elapsed_ms(compile_started);
+
+    let compiled_sequence = compiled_plan
+        .nodes
+        .iter()
+        .map(|node| node.token.clone())
+        .collect::<Vec<_>>();
+
+    let junction_started = Instant::now();
+    let token_junctions = token_junction_specs(bundle, &compiled_sequence)
+        .map_err(|err| to_error("E_SOURCE_SCHEMA", None, err.to_string()))?;
+    timings.resolve_junctions = elapsed_ms(junction_started);
+
+    let graph_prep_started = Instant::now();
+    let base_mode = base_conformation_mode(&req.realization.conformation_mode)?.to_string();
+    let graph_node_specs = compiled_plan
+        .nodes
+        .iter()
+        .map(|node| GraphNodeSpec {
+            sequence_label: node.token.clone(),
+            template_resname: node.template_resname.clone(),
+            applied_resname: node.applied_resname.clone(),
+        })
+        .collect::<Vec<_>>();
+    let graph_edge_specs = compiled_plan
+        .edges
+        .iter()
+        .map(|edge| GraphEdgeSpec {
+            edge_id: edge.edge_id.clone(),
+            parent: edge.parent,
+            child: edge.child,
+            parent_port: edge.parent_port.clone(),
+            child_port: edge.child_port.clone(),
+            parent_attach_atom: edge.parent_attach_atom.clone(),
+            parent_leaving_atoms: edge.parent_leaving_atoms.clone(),
+            child_attach_atom: edge.child_attach_atom.clone(),
+            child_leaving_atoms: edge.child_leaving_atoms.clone(),
+            bond_order: edge.bond_order,
+            layout_mode: edge.layout_mode.clone(),
+            branch_spread: edge.branch_spread.clone(),
+            torsion_mode: edge.torsion_mode.clone(),
+            torsion_deg: edge.torsion_deg,
+            torsion_window_deg: edge.torsion_window_deg,
+            ring_mode: edge.ring_mode.clone(),
+        })
+        .collect::<Vec<_>>();
+    let graph_root_idx = compiled_plan
+        .nodes
+        .iter()
+        .position(|node| node.node_id == compiled_plan.expanded_root_node_id)
+        .unwrap_or(0);
+    timings.prepare_graph_specs = elapsed_ms(graph_prep_started);
+
+    Ok((
+        PreparedBuildExecution {
+            compiled_plan,
+            compiled_sequence,
+            token_junctions,
+            base_mode,
+            graph_node_specs,
+            graph_edge_specs,
+            graph_root_idx,
+        },
+        timings,
+    ))
+}
+
+fn preflight_temp_dir(request_id: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "warp_build_preflight_{}_{}_{}",
+        request_id.replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"),
+        std::process::id(),
+        nanos
+    ))
+}
+
+fn shallow_preflight_summary() -> PreflightSummary {
+    PreflightSummary {
+        executed: false,
+        mode: Some("shallow".into()),
+        reason: Some(
+            "geometry/QC preflight skipped; set validation.depth=deep to execute build and QC during validation"
+                .into(),
+        ),
+        base_conformation_mode: None,
+        target_residue_count: None,
+        applied_junctions: None,
+        timings_ms: BuildPhaseTimingsMs::default(),
+        qc: None,
+        solver: None,
+        solver_cleanup: None,
+        relax: None,
+        overlap_status: overlap_status_summary(None, None, None),
+    }
+}
+
+fn qc_failure_warnings(built_path: &Path, raw_coordinates: Option<&str>) -> Vec<ErrorDetail> {
+    let mut warnings = vec![to_warning(
+        "W_DEBUG_ARTIFACT",
+        Some("/artifacts/coordinates".into()),
+        format!(
+            "staged debug coordinates retained at '{}' for recovery/debugging; final build artifacts were not written",
+            built_path.display()
+        ),
+    )];
+    if let Some(path) = raw_coordinates {
+        warnings.push(to_warning(
+            "W_DEBUG_ARTIFACT",
+            Some("/artifacts/raw_coordinates".into()),
+            format!(
+                "raw debug coordinates retained at '{}' for recovery/debugging",
+                path
+            ),
+        ));
+    }
+    warnings
+}
+
+fn preflight_build(
+    req: &BuildRequest,
+    bundle: &SourceBundle,
+    resolved: &ResolvedBuildRequest,
+) -> Result<PreflightSummary, Vec<ErrorDetail>> {
+    let (prepared, mut timings_ms) =
+        prepare_build_execution(req, bundle, resolved.seed).map_err(|err| vec![err])?;
+    let temp_dir = preflight_temp_dir(&req.request_id);
+    fs::create_dir_all(&temp_dir)
+        .map_err(|err| vec![to_error("E_OUTPUT_WRITE", None, err.to_string())])?;
+    let final_coords = temp_dir.join("preflight_coordinates.pdb");
+    let raw_coords = temp_dir.join("preflight_raw_coordinates.pdb");
+    let final_coords_text = final_coords.to_string_lossy().to_string();
+    let raw_coords_text = raw_coords.to_string_lossy().to_string();
+    let build_started = Instant::now();
+    let build_result = build_polymer_graph(
+        &resolved.source_coordinates,
+        resolved.source_charge_manifest.as_deref(),
+        resolved.source_topology_ref.as_deref(),
+        bundle.training_context.training_oligomer_n,
+        &prepared.graph_node_specs,
+        &prepared.graph_edge_specs,
+        prepared.graph_root_idx,
+        &prepared.base_mode,
+        match req.target.stereochemistry.mode.as_str() {
+            "inherit" => "training",
+            other => other,
+        },
+        resolved.seed,
+        &final_coords_text,
+    );
+    timings_ms.build_graph = elapsed_ms(build_started);
+    let mut built = match build_result {
+        Ok(built) => built,
+        Err(err) => {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(vec![to_error(
+                "E_SOURCE_GEOMETRY",
+                Some("/source_ref/bundle_path".into()),
+                format!("preflight build failed: {err}"),
+            )]);
+        }
+    };
+    let internal_cleanup_report = if matches!(
+        req.realization.conformation_mode.as_str(),
+        "random_walk" | "ensemble"
+    ) {
+        let cleanup_started = Instant::now();
+        let report = relax_built_output(
+            &mut built.output,
+            &prepared.compiled_plan,
+            built.step_length_angstrom,
+            &internal_solver_relax_spec(),
+            None,
+        );
+        timings_ms.solver_cleanup = elapsed_ms(cleanup_started);
+        Some(report)
+    } else {
+        None
+    };
+    if internal_cleanup_report.is_some() {
+        built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
+        if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(vec![to_error(
+                "E_SOURCE_GEOMETRY",
+                Some("/source_ref/bundle_path".into()),
+                format!("preflight QC failed: {err}"),
+            )]);
+        }
+    }
+    let relax_report = req.realization.relax.as_ref().map(|relax| {
+        let relax_started = Instant::now();
+        let report = relax_built_output(
+            &mut built.output,
+            &prepared.compiled_plan,
+            built.step_length_angstrom,
+            relax,
+            Some(raw_coords_text.clone()),
+        );
+        timings_ms.user_relax = elapsed_ms(relax_started);
+        report
+    });
+    if relax_report.is_some() {
+        built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
+        if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(vec![to_error(
+                "E_SOURCE_GEOMETRY",
+                Some("/source_ref/bundle_path".into()),
+                format!("preflight QC failed after relax: {err}"),
+            )]);
+        }
+    }
+    let overlap_status = overlap_status_summary(
+        Some(&built.output),
+        internal_cleanup_report.as_ref(),
+        relax_report.as_ref(),
+    );
+    let _ = fs::remove_dir_all(&temp_dir);
+    Ok(PreflightSummary {
+        executed: true,
+        mode: None,
+        reason: None,
+        base_conformation_mode: Some(prepared.base_mode),
+        target_residue_count: Some(prepared.compiled_plan.nodes.len()),
+        applied_junctions: Some(applied_junctions_value(&prepared.token_junctions)),
+        timings_ms,
+        qc: Some(built.qc_report),
+        solver: built.solver_report,
+        solver_cleanup: internal_cleanup_report,
+        relax: relax_report,
+        overlap_status,
     })
 }
 
@@ -3375,7 +4078,7 @@ fn validate_relax_spec(req: &BuildRequest) -> Vec<ErrorDetail> {
         }
         return errors;
     };
-    if relax.mode != "graph_spring" {
+    if canonical_relax_mode(&relax.mode).is_none() {
         errors.push(to_error(
             "E_INVALID_TARGET",
             Some("/realization/relax/mode".into()),
@@ -3682,6 +4385,9 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     errors.extend(validate_motif_library(bundle));
     errors.extend(validate_relax_spec(req));
     errors.extend(validate_port_cap_overrides(req, bundle));
+    if let Err(err) = validation_depth(req) {
+        errors.push(err);
+    }
     if req.schema_version != BUILD_SCHEMA_VERSION {
         errors.push(to_error(
             "E_CONFIG_VERSION",
@@ -4331,7 +5037,7 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
         errors.push(to_error(
             "E_UNSUPPORTED_TARGET",
             Some("/artifacts/topology".into()),
-            "source bundle does not provide a transferable source prmtop",
+            "artifacts.topology requires bundle.artifacts.source_topology_ref to point to a transferable .prmtop; update the source bundle or omit topology transfer outputs",
         ));
     }
     errors
@@ -4363,7 +5069,7 @@ fn derived_member_path(coordinates_path: &str, member_idx: usize) -> String {
         .to_string()
 }
 
-fn rotate_output_along_axis(output: &mut warp_pack::pack::PackOutput, axis_name: &str) {
+fn rotate_output_along_axis(output: &mut PackOutput, axis_name: &str) {
     if output.atoms.is_empty() {
         return;
     }
@@ -4396,14 +5102,14 @@ fn rotate_output_along_axis(output: &mut warp_pack::pack::PackOutput, axis_name:
         from = output.atoms[0]
             .position
             .scale(0.0)
-            .add(warp_pack::geom::Vec3::new(1.0, 0.0, 0.0));
+            .add(Vec3::new(1.0, 0.0, 0.0));
     }
-    let target = warp_pack::geom::Vec3::new(target[0], target[1], target[2]);
+    let target = Vec3::new(target[0], target[1], target[2]);
     let dot = (from.dot(target) / (from.norm() * target.norm()).max(1.0e-6)).clamp(-1.0, 1.0);
     let axis = from.cross(target);
     let theta = dot.acos();
     let axis = if axis.norm() <= 1.0e-6 {
-        warp_pack::geom::Vec3::new(0.0, 0.0, 1.0)
+        Vec3::new(0.0, 0.0, 1.0)
     } else {
         axis.scale(1.0 / axis.norm())
     };
@@ -4419,15 +5125,102 @@ fn rotate_output_along_axis(output: &mut warp_pack::pack::PackOutput, axis_name:
     }
 }
 
-#[derive(Clone, Debug)]
-struct RelaxReport {
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct RelaxReport {
     mode: String,
     steps_requested: usize,
     steps_executed: usize,
     initial_max_clash: f32,
     final_max_clash: f32,
     rms_displacement: f32,
+    initial_overlap_pairs: usize,
+    final_overlap_pairs: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    movable_atom_count: Option<usize>,
+    max_atom_displacement_angstrom: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback_steps_requested: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback_steps_executed: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pre_fallback_max_clash: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pre_fallback_overlap_pairs: Option<usize>,
     raw_coordinates: Option<String>,
+}
+
+fn overlap_status_summary(
+    output: Option<&PackOutput>,
+    solver_cleanup: Option<&RelaxReport>,
+    relax: Option<&RelaxReport>,
+) -> OverlapStatusSummary {
+    let (report_source, report) = if let Some(report) = relax {
+        (Some("relax"), Some(report))
+    } else if let Some(report) = solver_cleanup {
+        (Some("solver_cleanup"), Some(report))
+    } else {
+        (None, None)
+    };
+    if let Some(report) = report {
+        let clear = report.final_overlap_pairs == 0;
+        return OverlapStatusSummary {
+            status: if clear { "clear" } else { "remaining" }.into(),
+            may_report_no_overlaps: clear,
+            metric: OVERLAP_REPORT_METRIC.into(),
+            report_source: report_source.map(str::to_string),
+            overlap_pairs: Some(report.final_overlap_pairs),
+            max_overlap_angstrom: Some(report.final_max_clash),
+        };
+    }
+    let Some(output) = output else {
+        return OverlapStatusSummary {
+            status: "not_evaluated".into(),
+            may_report_no_overlaps: false,
+            metric: OVERLAP_REPORT_METRIC.into(),
+            report_source: None,
+            overlap_pairs: None,
+            max_overlap_angstrom: None,
+        };
+    };
+    let positions = output
+        .atoms
+        .iter()
+        .map(|atom| atom.position)
+        .collect::<Vec<_>>();
+    let topology_context = build_relax_topology_context(output.atoms.len(), &output.bonds);
+    let stats = collect_overlap_stats(&output.atoms, &positions, 0.9, &topology_context, false);
+    let clear = stats.pair_count == 0;
+    OverlapStatusSummary {
+        status: if clear { "clear" } else { "remaining" }.into(),
+        may_report_no_overlaps: clear,
+        metric: OVERLAP_REPORT_METRIC.into(),
+        report_source: Some("final_structure".into()),
+        overlap_pairs: Some(stats.pair_count),
+        max_overlap_angstrom: Some(stats.max_overlap),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct OverlapPair {
+    left: usize,
+    right: usize,
+    distance: f32,
+    overlap: f32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct OverlapStats {
+    pair_count: usize,
+    max_overlap: f32,
+    pairs: Vec<OverlapPair>,
+}
+
+#[derive(Clone, Debug)]
+struct RelaxTopologyContext {
+    adjacency: Vec<Vec<usize>>,
+    excluded_pairs: BTreeSet<(usize, usize)>,
 }
 
 fn atom_vdw_radius(element: &str) -> f32 {
@@ -4442,7 +5235,7 @@ fn atom_vdw_radius(element: &str) -> f32 {
     }
 }
 
-fn max_atom_clash(output: &warp_pack::pack::PackOutput, clash_scale: f32) -> f32 {
+fn max_atom_clash(output: &PackOutput, clash_scale: f32) -> f32 {
     let bonded = output
         .bonds
         .iter()
@@ -4469,8 +5262,182 @@ fn max_atom_clash(output: &warp_pack::pack::PackOutput, clash_scale: f32) -> f32
     max_clash.max(0.0)
 }
 
-fn relax_built_output(
-    output: &mut warp_pack::pack::PackOutput,
+fn ordered_pair(a: usize, b: usize) -> (usize, usize) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn fallback_pair_direction(left: usize, right: usize) -> Vec3 {
+    let mut seed = (left as u64).wrapping_mul(6364136223846793005);
+    seed = seed
+        .wrapping_add(right as u64)
+        .wrapping_add(1442695040888963407);
+    let x = ((seed & 0xFF) as f32 / 255.0) * 2.0 - 1.0;
+    let y = (((seed >> 8) & 0xFF) as f32 / 255.0) * 2.0 - 1.0;
+    let z = (((seed >> 16) & 0xFF) as f32 / 255.0) * 2.0 - 1.0;
+    let direction = Vec3::new(x, y, z);
+    let norm = direction.norm();
+    if norm > 1.0e-6 {
+        direction.scale(1.0 / norm)
+    } else {
+        Vec3::new(1.0, 0.0, 0.0)
+    }
+}
+
+fn build_relax_topology_context(
+    atom_count: usize,
+    bonds: &[(usize, usize)],
+) -> RelaxTopologyContext {
+    let adjacency = bond_adjacency(atom_count, bonds);
+    let mut excluded_pairs = bonds
+        .iter()
+        .map(|&(left, right)| ordered_pair(left, right))
+        .collect::<BTreeSet<_>>();
+    for neighbors in &adjacency {
+        for left_idx in 0..neighbors.len() {
+            for right_idx in (left_idx + 1)..neighbors.len() {
+                excluded_pairs.insert(ordered_pair(neighbors[left_idx], neighbors[right_idx]));
+            }
+        }
+    }
+    RelaxTopologyContext {
+        adjacency,
+        excluded_pairs,
+    }
+}
+
+fn collect_overlap_stats(
+    atoms: &[AtomRecord],
+    positions: &[Vec3],
+    clash_scale: f32,
+    context: &RelaxTopologyContext,
+    collect_pairs: bool,
+) -> OverlapStats {
+    if atoms.len() != positions.len() {
+        return OverlapStats::default();
+    }
+    let mut stats = OverlapStats::default();
+    for left in 0..atoms.len() {
+        for right in (left + 1)..atoms.len() {
+            if context.excluded_pairs.contains(&(left, right)) {
+                continue;
+            }
+            let cutoff = (atom_vdw_radius(&atoms[left].element)
+                + atom_vdw_radius(&atoms[right].element))
+                * clash_scale;
+            let distance = positions[left].sub(positions[right]).norm();
+            let overlap = (cutoff - distance).max(0.0);
+            if overlap <= 1.0e-4 {
+                continue;
+            }
+            stats.pair_count += 1;
+            stats.max_overlap = stats.max_overlap.max(overlap);
+            if collect_pairs {
+                stats.pairs.push(OverlapPair {
+                    left,
+                    right,
+                    distance,
+                    overlap,
+                });
+            }
+        }
+    }
+    stats
+}
+
+fn movable_overlap_shell_depths(
+    atom_count: usize,
+    adjacency: &[Vec<usize>],
+    seed_atoms: &BTreeSet<usize>,
+    max_depth: usize,
+) -> Vec<Option<usize>> {
+    let mut depths = vec![None; atom_count];
+    let mut queue = VecDeque::new();
+    for &atom_idx in seed_atoms {
+        if atom_idx >= atom_count {
+            continue;
+        }
+        depths[atom_idx] = Some(0);
+        queue.push_back(atom_idx);
+    }
+    while let Some(atom_idx) = queue.pop_front() {
+        let depth = depths[atom_idx].unwrap_or(0);
+        if depth >= max_depth {
+            continue;
+        }
+        for &neighbor in adjacency.get(atom_idx).into_iter().flatten() {
+            let next_depth = depth + 1;
+            if depths[neighbor].map_or(true, |current| next_depth < current) {
+                depths[neighbor] = Some(next_depth);
+                queue.push_back(neighbor);
+            }
+        }
+    }
+    depths
+}
+
+fn max_atom_displacement(initial_positions: &[Vec3], positions: &[Vec3]) -> f32 {
+    initial_positions
+        .iter()
+        .zip(positions.iter())
+        .map(|(initial, current)| current.sub(*initial).norm())
+        .fold(0.0, f32::max)
+}
+
+fn rms_atom_displacement(initial_positions: &[Vec3], positions: &[Vec3]) -> f32 {
+    (positions
+        .iter()
+        .zip(initial_positions.iter())
+        .map(|(position, initial)| position.sub(*initial).norm().powi(2))
+        .sum::<f32>()
+        / positions.len().max(1) as f32)
+        .sqrt()
+}
+
+fn targeted_steric_fallback_spec(relax: &RelaxSpec) -> RelaxSpec {
+    RelaxSpec {
+        mode: "targeted_steric".into(),
+        steps: Some(relax.steps.unwrap_or(64).clamp(24, 128)),
+        step_scale: Some(relax.step_scale.unwrap_or(0.25).clamp(0.2, 0.5)),
+        clash_scale: Some(relax.clash_scale.unwrap_or(0.9)),
+    }
+}
+
+fn merge_relax_report_with_targeted_fallback(
+    primary: RelaxReport,
+    fallback: RelaxReport,
+    initial_positions: &[Vec3],
+    final_positions: &[Vec3],
+) -> RelaxReport {
+    RelaxReport {
+        mode: primary.mode,
+        steps_requested: primary
+            .steps_requested
+            .saturating_add(fallback.steps_requested),
+        steps_executed: primary
+            .steps_executed
+            .saturating_add(fallback.steps_executed),
+        initial_max_clash: primary.initial_max_clash,
+        final_max_clash: fallback.final_max_clash,
+        rms_displacement: rms_atom_displacement(initial_positions, final_positions),
+        initial_overlap_pairs: primary.initial_overlap_pairs,
+        final_overlap_pairs: fallback.final_overlap_pairs,
+        movable_atom_count: fallback.movable_atom_count.or(primary.movable_atom_count),
+        max_atom_displacement_angstrom: max_atom_displacement(initial_positions, final_positions),
+        fallback_mode: Some(fallback.mode),
+        fallback_steps_requested: Some(fallback.steps_requested),
+        fallback_steps_executed: Some(fallback.steps_executed),
+        pre_fallback_max_clash: Some(primary.final_max_clash),
+        pre_fallback_overlap_pairs: Some(primary.final_overlap_pairs),
+        raw_coordinates: primary.raw_coordinates.or(fallback.raw_coordinates),
+    }
+}
+
+fn relax_graph_spring_output(
+    output: &mut PackOutput,
     plan: &CompiledBuildPlan,
     step_length: f32,
     relax: &RelaxSpec,
@@ -4484,15 +5451,34 @@ fn relax_built_output(
         .iter()
         .map(|atom| atom.position)
         .collect::<Vec<_>>();
-    let initial_max_clash = max_atom_clash(output, clash_scale);
+    let topology_context = build_relax_topology_context(output.atoms.len(), &output.bonds);
+    let initial_overlap_stats = collect_overlap_stats(
+        &output.atoms,
+        &initial_positions,
+        clash_scale,
+        &topology_context,
+        false,
+    );
+    let initial_max_clash = initial_overlap_stats.max_overlap;
     if output.atoms.is_empty() || steps_requested == 0 {
         return RelaxReport {
-            mode: relax.mode.clone(),
+            mode: canonical_relax_mode(&relax.mode)
+                .unwrap_or("graph_spring")
+                .into(),
             steps_requested,
             steps_executed: 0,
             initial_max_clash,
             final_max_clash: initial_max_clash,
             rms_displacement: 0.0,
+            initial_overlap_pairs: initial_overlap_stats.pair_count,
+            final_overlap_pairs: initial_overlap_stats.pair_count,
+            movable_atom_count: None,
+            max_atom_displacement_angstrom: 0.0,
+            fallback_mode: None,
+            fallback_steps_requested: None,
+            fallback_steps_executed: None,
+            pre_fallback_max_clash: None,
+            pre_fallback_overlap_pairs: None,
             raw_coordinates,
         };
     }
@@ -4553,13 +5539,13 @@ fn relax_built_output(
                     .map(|idx| output.atoms[*idx].position)
                     .collect::<Vec<_>>();
                 if points.is_empty() {
-                    warp_pack::geom::Vec3::new(0.0, 0.0, 0.0)
+                    Vec3::new(0.0, 0.0, 0.0)
                 } else {
                     center_of_geometry(&points)
                 }
             })
             .collect::<Vec<_>>();
-        let mut deltas = vec![warp_pack::geom::Vec3::new(0.0, 0.0, 0.0); residue_atoms.len()];
+        let mut deltas = vec![Vec3::new(0.0, 0.0, 0.0); residue_atoms.len()];
         for &(parent_group, child_group, parent_idx, child_idx, target) in &edge_targets {
             if parent_group >= centers.len() || child_group >= centers.len() {
                 continue;
@@ -4622,23 +5608,653 @@ fn relax_built_output(
             break;
         }
     }
-    let final_max_clash = max_atom_clash(output, clash_scale);
-    let rms_displacement = (output
+    let final_positions = output
         .atoms
         .iter()
-        .zip(initial_positions.iter())
-        .map(|(atom, initial)| atom.position.sub(*initial).norm().powi(2))
-        .sum::<f32>()
-        / output.atoms.len().max(1) as f32)
-        .sqrt();
+        .map(|atom| atom.position)
+        .collect::<Vec<_>>();
+    let final_overlap_stats = collect_overlap_stats(
+        &output.atoms,
+        &final_positions,
+        clash_scale,
+        &topology_context,
+        false,
+    );
+    let rms_displacement = rms_atom_displacement(&initial_positions, &final_positions);
+    let final_max_clash = final_overlap_stats.max_overlap;
     RelaxReport {
-        mode: relax.mode.clone(),
+        mode: canonical_relax_mode(&relax.mode)
+            .unwrap_or("graph_spring")
+            .into(),
         steps_requested,
         steps_executed,
         initial_max_clash,
         final_max_clash,
         rms_displacement,
+        initial_overlap_pairs: initial_overlap_stats.pair_count,
+        final_overlap_pairs: final_overlap_stats.pair_count,
+        movable_atom_count: None,
+        max_atom_displacement_angstrom: max_atom_displacement(&initial_positions, &final_positions),
+        fallback_mode: None,
+        fallback_steps_requested: None,
+        fallback_steps_executed: None,
+        pre_fallback_max_clash: None,
+        pre_fallback_overlap_pairs: None,
         raw_coordinates,
+    }
+}
+
+fn targeted_steric_position_weight(depth: usize) -> f32 {
+    match depth {
+        0 => 0.04,
+        1 => 0.14,
+        _ => 0.28,
+    }
+}
+
+fn targeted_steric_objective(
+    stats: &OverlapStats,
+    positions: &[Vec3],
+    anchor_positions: &[Vec3],
+    movable_depths: &[Option<usize>],
+    movable_atoms: &[usize],
+    bond_targets: &[(usize, usize, f32)],
+    bond_weight: f32,
+    steric_weight: f32,
+    anchor_weight_scale: f32,
+) -> f32 {
+    let steric_energy = stats
+        .pairs
+        .iter()
+        .map(|pair| 0.5 * steric_weight * pair.overlap * pair.overlap)
+        .sum::<f32>();
+    let bond_energy = bond_targets
+        .iter()
+        .filter(|&&(left, right, _)| {
+            movable_depths.get(left).and_then(|depth| *depth).is_some()
+                || movable_depths.get(right).and_then(|depth| *depth).is_some()
+        })
+        .map(|&(left, right, target)| {
+            let stretch = positions[left].sub(positions[right]).norm() - target;
+            0.5 * bond_weight * stretch * stretch
+        })
+        .sum::<f32>();
+    let anchor_energy = movable_atoms
+        .iter()
+        .map(|&atom_idx| {
+            let depth = movable_depths[atom_idx].unwrap_or(2);
+            let displacement = positions[atom_idx].sub(anchor_positions[atom_idx]).norm();
+            0.5 * targeted_steric_position_weight(depth)
+                * anchor_weight_scale
+                * displacement
+                * displacement
+        })
+        .sum::<f32>();
+    steric_energy + bond_energy + anchor_energy
+}
+
+fn restore_targeted_steric_bonds(
+    positions: &mut [Vec3],
+    bond_targets: &[(usize, usize, f32)],
+    movable_depths: &[Option<usize>],
+    max_step: f32,
+) {
+    for _ in 0..2 {
+        for &(left, right, target) in bond_targets {
+            let left_movable = movable_depths[left].is_some();
+            let right_movable = movable_depths[right].is_some();
+            if !left_movable && !right_movable {
+                continue;
+            }
+            let delta = positions[right].sub(positions[left]);
+            let distance = delta.norm().max(1.0e-6);
+            let stretch = distance - target;
+            if stretch.abs() <= 1.0e-4 {
+                continue;
+            }
+            let direction = delta.scale(1.0 / distance);
+            let correction = (0.5 * stretch).clamp(-max_step, max_step);
+            match (left_movable, right_movable) {
+                (true, true) => {
+                    let shift = direction.scale(0.5 * correction);
+                    positions[left] = positions[left].add(shift);
+                    positions[right] = positions[right].sub(shift);
+                }
+                (true, false) => {
+                    positions[left] = positions[left].add(direction.scale(correction));
+                }
+                (false, true) => {
+                    positions[right] = positions[right].sub(direction.scale(correction));
+                }
+                (false, false) => {}
+            }
+        }
+    }
+}
+
+fn apply_targeted_steric_overlap_push(
+    atoms: &[AtomRecord],
+    positions: &mut [Vec3],
+    clash_scale: f32,
+    context: &RelaxTopologyContext,
+    movable_depths: &[Option<usize>],
+    movable_atoms: &[usize],
+    bond_targets: &[(usize, usize, f32)],
+    max_step: f32,
+) -> OverlapStats {
+    let residual_stats = collect_overlap_stats(atoms, positions, clash_scale, context, true);
+    if residual_stats.pair_count == 0 {
+        return residual_stats;
+    }
+    let mut deltas = vec![Vec3::new(0.0, 0.0, 0.0); positions.len()];
+    for pair in &residual_stats.pairs {
+        let left_movable = movable_depths[pair.left].is_some();
+        let right_movable = movable_depths[pair.right].is_some();
+        if !left_movable && !right_movable {
+            continue;
+        }
+        let delta = positions[pair.left].sub(positions[pair.right]);
+        let direction = if pair.distance > 1.0e-6 {
+            delta.scale(1.0 / pair.distance)
+        } else {
+            fallback_pair_direction(pair.left, pair.right)
+        };
+        let push = (pair.overlap * 0.55 + 1.0e-3).min(max_step);
+        match (left_movable, right_movable) {
+            (true, true) => {
+                let shift = direction.scale(0.5 * push);
+                deltas[pair.left] = deltas[pair.left].add(shift);
+                deltas[pair.right] = deltas[pair.right].sub(shift);
+            }
+            (true, false) => {
+                deltas[pair.left] = deltas[pair.left].add(direction.scale(push));
+            }
+            (false, true) => {
+                deltas[pair.right] = deltas[pair.right].sub(direction.scale(push));
+            }
+            (false, false) => {}
+        }
+    }
+    for &atom_idx in movable_atoms {
+        let delta = deltas[atom_idx];
+        let norm = delta.norm();
+        let applied = if norm > max_step && norm > 1.0e-8 {
+            delta.scale(max_step / norm)
+        } else {
+            delta
+        };
+        positions[atom_idx] = positions[atom_idx].add(applied);
+    }
+    restore_targeted_steric_bonds(positions, bond_targets, movable_depths, max_step * 0.5);
+    collect_overlap_stats(atoms, positions, clash_scale, context, true)
+}
+
+fn run_targeted_steric_stage(
+    atoms: &[AtomRecord],
+    bonds: &[(usize, usize)],
+    positions: &mut [Vec3],
+    clash_scale: f32,
+    step_scale: f32,
+    steps_requested: usize,
+    context: &RelaxTopologyContext,
+    shell_depth: usize,
+) -> (OverlapStats, usize, usize) {
+    let mut current_stats = collect_overlap_stats(atoms, positions, clash_scale, context, true);
+    if current_stats.pair_count == 0 {
+        return (current_stats, 0, 0);
+    }
+
+    let seed_atoms = current_stats
+        .pairs
+        .iter()
+        .flat_map(|pair| [pair.left, pair.right])
+        .collect::<BTreeSet<_>>();
+    let movable_depths =
+        movable_overlap_shell_depths(atoms.len(), &context.adjacency, &seed_atoms, shell_depth);
+    let movable_atoms = movable_depths
+        .iter()
+        .enumerate()
+        .filter_map(|(atom_idx, depth)| depth.map(|_| atom_idx))
+        .collect::<Vec<_>>();
+    if movable_atoms.is_empty() {
+        return (current_stats, 0, 0);
+    }
+
+    let anchor_positions = positions.to_vec();
+    let bond_targets = bonds
+        .iter()
+        .map(|&(left, right)| {
+            (
+                left,
+                right,
+                anchor_positions[right]
+                    .sub(anchor_positions[left])
+                    .norm()
+                    .max(1.0e-3),
+            )
+        })
+        .collect::<Vec<_>>();
+    let shell_boost = 1.0 + 0.2 * shell_depth.saturating_sub(2) as f32;
+    let anchor_weight_scale = match shell_depth {
+        0..=2 => 1.0,
+        3 => 0.7,
+        _ => 0.5,
+    };
+    let base_alpha = 0.18 * step_scale.max(0.05) * shell_boost;
+    let base_max_step =
+        0.14 * step_scale.max(0.05) * (1.0 + 0.3 * shell_depth.saturating_sub(2) as f32);
+    let bond_weight = 4.0f32;
+    let steric_weight = 3.0f32 * shell_boost;
+    let mut current_objective = targeted_steric_objective(
+        &current_stats,
+        positions,
+        &anchor_positions,
+        &movable_depths,
+        &movable_atoms,
+        &bond_targets,
+        bond_weight,
+        steric_weight,
+        anchor_weight_scale,
+    );
+    let mut steps_executed = 0usize;
+
+    for step_idx in 0..steps_requested {
+        if current_stats.pair_count == 0 {
+            break;
+        }
+        let mut gradient = vec![Vec3::new(0.0, 0.0, 0.0); positions.len()];
+
+        for pair in &current_stats.pairs {
+            let delta = positions[pair.left].sub(positions[pair.right]);
+            let direction = if pair.distance > 1.0e-6 {
+                delta.scale(1.0 / pair.distance)
+            } else {
+                fallback_pair_direction(pair.left, pair.right)
+            };
+            let overlap_grad = direction.scale(-pair.overlap * steric_weight);
+            if movable_depths[pair.left].is_some() {
+                gradient[pair.left] = gradient[pair.left].add(overlap_grad);
+            }
+            if movable_depths[pair.right].is_some() {
+                gradient[pair.right] = gradient[pair.right].sub(overlap_grad);
+            }
+        }
+
+        for &(left, right, target) in &bond_targets {
+            if movable_depths[left].is_none() && movable_depths[right].is_none() {
+                continue;
+            }
+            let delta = positions[left].sub(positions[right]);
+            let distance = delta.norm().max(1.0e-6);
+            let direction = delta.scale(1.0 / distance);
+            let stretch = distance - target;
+            let bond_grad = direction.scale(bond_weight * stretch);
+            if movable_depths[left].is_some() {
+                gradient[left] = gradient[left].add(bond_grad);
+            }
+            if movable_depths[right].is_some() {
+                gradient[right] = gradient[right].sub(bond_grad);
+            }
+        }
+
+        for &atom_idx in &movable_atoms {
+            let depth = movable_depths[atom_idx].unwrap_or(shell_depth);
+            let weight = targeted_steric_position_weight(depth) * anchor_weight_scale;
+            gradient[atom_idx] = gradient[atom_idx].add(
+                positions[atom_idx]
+                    .sub(anchor_positions[atom_idx])
+                    .scale(weight),
+            );
+        }
+
+        let mut accepted = None;
+        let mut trial_scale = 1.0f32;
+        for _ in 0..8 {
+            let alpha = base_alpha * trial_scale;
+            let max_step = base_max_step * trial_scale;
+            let mut candidate_positions = positions.to_vec();
+            for &atom_idx in &movable_atoms {
+                let mut delta = gradient[atom_idx].scale(-alpha);
+                let norm = delta.norm();
+                if norm > max_step && norm > 1.0e-8 {
+                    delta = delta.scale(max_step / norm);
+                }
+                candidate_positions[atom_idx] = candidate_positions[atom_idx].add(delta);
+            }
+            let candidate_stats =
+                collect_overlap_stats(atoms, &candidate_positions, clash_scale, context, true);
+            let candidate_objective = targeted_steric_objective(
+                &candidate_stats,
+                &candidate_positions,
+                &anchor_positions,
+                &movable_depths,
+                &movable_atoms,
+                &bond_targets,
+                bond_weight,
+                steric_weight,
+                anchor_weight_scale,
+            );
+            if candidate_stats.pair_count == 0 || candidate_objective + 1.0e-5 < current_objective {
+                accepted = Some((candidate_positions, candidate_stats, candidate_objective));
+                break;
+            }
+            trial_scale *= 0.5;
+        }
+
+        let Some((candidate_positions, candidate_stats, candidate_objective)) = accepted else {
+            break;
+        };
+        positions.copy_from_slice(&candidate_positions);
+        current_stats = candidate_stats;
+        current_objective = candidate_objective;
+        steps_executed = step_idx + 1;
+    }
+
+    let residual_passes = (steps_requested / 3).clamp(8, 32);
+    let residual_max_step = base_max_step * (1.25 + 0.15 * shell_depth.saturating_sub(2) as f32);
+    for _ in 0..residual_passes {
+        if current_stats.pair_count == 0 {
+            break;
+        }
+        let mut candidate_positions = positions.to_vec();
+        let next_stats = apply_targeted_steric_overlap_push(
+            atoms,
+            &mut candidate_positions,
+            clash_scale,
+            context,
+            &movable_depths,
+            &movable_atoms,
+            &bond_targets,
+            residual_max_step,
+        );
+        let next_objective = targeted_steric_objective(
+            &next_stats,
+            &candidate_positions,
+            &anchor_positions,
+            &movable_depths,
+            &movable_atoms,
+            &bond_targets,
+            bond_weight,
+            steric_weight,
+            anchor_weight_scale,
+        );
+        if next_stats.pair_count == 0 || next_objective + 1.0e-5 < current_objective {
+            positions.copy_from_slice(&candidate_positions);
+            current_stats = next_stats;
+            current_objective = next_objective;
+            steps_executed = steps_executed.saturating_add(1);
+            continue;
+        }
+        break;
+    }
+
+    (current_stats, steps_executed, movable_atoms.len())
+}
+
+fn clear_targeted_steric_residual_overlaps(
+    atoms: &[AtomRecord],
+    bonds: &[(usize, usize)],
+    positions: &mut [Vec3],
+    clash_scale: f32,
+    context: &RelaxTopologyContext,
+) -> (OverlapStats, usize, usize) {
+    let mut current_stats = collect_overlap_stats(atoms, positions, clash_scale, context, true);
+    if current_stats.pair_count == 0 {
+        return (current_stats, 0, 0);
+    }
+
+    let seed_atoms = current_stats
+        .pairs
+        .iter()
+        .flat_map(|pair| [pair.left, pair.right])
+        .collect::<BTreeSet<_>>();
+    let movable_depths =
+        movable_overlap_shell_depths(atoms.len(), &context.adjacency, &seed_atoms, 4);
+    let movable_atoms = movable_depths
+        .iter()
+        .enumerate()
+        .filter_map(|(atom_idx, depth)| depth.map(|_| atom_idx))
+        .collect::<Vec<_>>();
+    if movable_atoms.is_empty() {
+        return (current_stats, 0, 0);
+    }
+
+    let bond_targets = bonds
+        .iter()
+        .map(|&(left, right)| {
+            (
+                left,
+                right,
+                positions[right].sub(positions[left]).norm().max(1.0e-3),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut steps_executed = 0usize;
+    let mut no_progress = 0usize;
+
+    for _ in 0..16 {
+        if current_stats.pair_count == 0 {
+            break;
+        }
+        let max_step = (current_stats.max_overlap + 0.01).clamp(0.01, 0.08);
+        let mut candidate_positions = positions.to_vec();
+        let mut deltas = vec![Vec3::new(0.0, 0.0, 0.0); candidate_positions.len()];
+        for pair in &current_stats.pairs {
+            let left_movable = movable_depths[pair.left].is_some();
+            let right_movable = movable_depths[pair.right].is_some();
+            if !left_movable && !right_movable {
+                continue;
+            }
+            let delta = candidate_positions[pair.left].sub(candidate_positions[pair.right]);
+            let direction = if pair.distance > 1.0e-6 {
+                delta.scale(1.0 / pair.distance)
+            } else {
+                fallback_pair_direction(pair.left, pair.right)
+            };
+            let push = (pair.overlap * 0.75 + 0.0025).min(max_step);
+            match (left_movable, right_movable) {
+                (true, true) => {
+                    let shift = direction.scale(0.5 * push);
+                    deltas[pair.left] = deltas[pair.left].add(shift);
+                    deltas[pair.right] = deltas[pair.right].sub(shift);
+                }
+                (true, false) => {
+                    deltas[pair.left] = deltas[pair.left].add(direction.scale(push));
+                }
+                (false, true) => {
+                    deltas[pair.right] = deltas[pair.right].sub(direction.scale(push));
+                }
+                (false, false) => {}
+            }
+        }
+        for &atom_idx in &movable_atoms {
+            let delta = deltas[atom_idx];
+            let norm = delta.norm();
+            let applied = if norm > max_step && norm > 1.0e-8 {
+                delta.scale(max_step / norm)
+            } else {
+                delta
+            };
+            candidate_positions[atom_idx] = candidate_positions[atom_idx].add(applied);
+        }
+        restore_targeted_steric_bonds(
+            &mut candidate_positions,
+            &bond_targets,
+            &movable_depths,
+            max_step * 0.35,
+        );
+        let candidate_stats =
+            collect_overlap_stats(atoms, &candidate_positions, clash_scale, context, true);
+        let improved = candidate_stats.pair_count < current_stats.pair_count
+            || (candidate_stats.pair_count == current_stats.pair_count
+                && candidate_stats.max_overlap + 1.0e-5 < current_stats.max_overlap);
+        if improved || candidate_stats.pair_count == 0 {
+            positions.copy_from_slice(&candidate_positions);
+            current_stats = candidate_stats;
+            steps_executed = steps_executed.saturating_add(1);
+            no_progress = 0;
+            continue;
+        }
+        no_progress += 1;
+        if no_progress >= 2 {
+            break;
+        }
+    }
+
+    (current_stats, steps_executed, movable_atoms.len())
+}
+
+fn relax_targeted_steric_output(
+    output: &mut PackOutput,
+    relax: &RelaxSpec,
+    raw_coordinates: Option<String>,
+) -> RelaxReport {
+    let steps_requested = relax.steps.unwrap_or(64);
+    let step_scale = relax.step_scale.unwrap_or(0.25);
+    let clash_scale = relax.clash_scale.unwrap_or(0.9);
+    let initial_positions = output
+        .atoms
+        .iter()
+        .map(|atom| atom.position)
+        .collect::<Vec<_>>();
+    let topology_context = build_relax_topology_context(output.atoms.len(), &output.bonds);
+    let initial_overlap_stats = collect_overlap_stats(
+        &output.atoms,
+        &initial_positions,
+        clash_scale,
+        &topology_context,
+        true,
+    );
+    let initial_max_clash = initial_overlap_stats.max_overlap;
+    if output.atoms.is_empty() || steps_requested == 0 || initial_overlap_stats.pair_count == 0 {
+        return RelaxReport {
+            mode: "targeted_steric".into(),
+            steps_requested,
+            steps_executed: 0,
+            initial_max_clash,
+            final_max_clash: initial_max_clash,
+            rms_displacement: 0.0,
+            initial_overlap_pairs: initial_overlap_stats.pair_count,
+            final_overlap_pairs: initial_overlap_stats.pair_count,
+            movable_atom_count: Some(0),
+            max_atom_displacement_angstrom: 0.0,
+            fallback_mode: None,
+            fallback_steps_requested: None,
+            fallback_steps_executed: None,
+            pre_fallback_max_clash: None,
+            pre_fallback_overlap_pairs: None,
+            raw_coordinates,
+        };
+    }
+
+    let mut positions = initial_positions.clone();
+    let mut steps_executed = 0usize;
+    let mut current_stats = initial_overlap_stats.clone();
+    let mut max_movable_atom_count = 0usize;
+    for (shell_depth, stage_steps) in [
+        (2usize, steps_requested),
+        (3usize, (steps_requested / 2).max(16)),
+        (4usize, (steps_requested / 2).max(16)),
+    ] {
+        if current_stats.pair_count == 0 {
+            break;
+        }
+        let (stage_stats, stage_steps_executed, movable_atom_count) = run_targeted_steric_stage(
+            &output.atoms,
+            &output.bonds,
+            &mut positions,
+            clash_scale,
+            step_scale,
+            stage_steps,
+            &topology_context,
+            shell_depth,
+        );
+        current_stats = stage_stats;
+        steps_executed = steps_executed.saturating_add(stage_steps_executed);
+        max_movable_atom_count = max_movable_atom_count.max(movable_atom_count);
+    }
+    if current_stats.pair_count > 0 && current_stats.max_overlap <= 0.02 {
+        let (_clearance_stats, clearance_steps, movable_atom_count) =
+            clear_targeted_steric_residual_overlaps(
+                &output.atoms,
+                &output.bonds,
+                &mut positions,
+                clash_scale,
+                &topology_context,
+            );
+        steps_executed = steps_executed.saturating_add(clearance_steps);
+        max_movable_atom_count = max_movable_atom_count.max(movable_atom_count);
+    }
+
+    for (atom, position) in output.atoms.iter_mut().zip(positions.iter()) {
+        atom.position = *position;
+    }
+    let final_overlap_stats = collect_overlap_stats(
+        &output.atoms,
+        &positions,
+        clash_scale,
+        &topology_context,
+        false,
+    );
+    let rms_displacement = rms_atom_displacement(&initial_positions, &positions);
+    RelaxReport {
+        mode: "targeted_steric".into(),
+        steps_requested,
+        steps_executed,
+        initial_max_clash,
+        final_max_clash: final_overlap_stats.max_overlap,
+        rms_displacement,
+        initial_overlap_pairs: initial_overlap_stats.pair_count,
+        final_overlap_pairs: final_overlap_stats.pair_count,
+        movable_atom_count: Some(max_movable_atom_count),
+        max_atom_displacement_angstrom: max_atom_displacement(&initial_positions, &positions),
+        fallback_mode: None,
+        fallback_steps_requested: None,
+        fallback_steps_executed: None,
+        pre_fallback_max_clash: None,
+        pre_fallback_overlap_pairs: None,
+        raw_coordinates,
+    }
+}
+
+fn relax_built_output(
+    output: &mut PackOutput,
+    plan: &CompiledBuildPlan,
+    step_length: f32,
+    relax: &RelaxSpec,
+    raw_coordinates: Option<String>,
+) -> RelaxReport {
+    match canonical_relax_mode(&relax.mode).unwrap_or("graph_spring") {
+        "graph_spring" => {
+            let stage_initial_positions = output
+                .atoms
+                .iter()
+                .map(|atom| atom.position)
+                .collect::<Vec<_>>();
+            let primary =
+                relax_graph_spring_output(output, plan, step_length, relax, raw_coordinates);
+            if primary.final_overlap_pairs == 0 {
+                return primary;
+            }
+            let fallback = relax_targeted_steric_output(
+                output,
+                &targeted_steric_fallback_spec(relax),
+                primary.raw_coordinates.clone(),
+            );
+            let final_positions = output
+                .atoms
+                .iter()
+                .map(|atom| atom.position)
+                .collect::<Vec<_>>();
+            merge_relax_report_with_targeted_fallback(
+                primary,
+                fallback,
+                &stage_initial_positions,
+                &final_positions,
+            )
+        }
+        "targeted_steric" => relax_targeted_steric_output(output, relax, raw_coordinates),
+        _ => relax_graph_spring_output(output, plan, step_length, relax, raw_coordinates),
     }
 }
 
@@ -5475,7 +7091,7 @@ pub fn example_bundle() -> Value {
         "training_context": {
             "mode": "oligomer_training",
             "training_oligomer_n": 3,
-            "notes": "RESP/GAFF2 surrogate training"
+            "notes": "RESP/GAFF2 surrogate training. attach_atom keeps the atom that forms the new inter-unit bond, leaving_atoms are deleted before bonding, and anchor_atoms are local orientation hints near the junction."
         },
         "provenance": {},
         "unit_library": {
@@ -5522,25 +7138,29 @@ pub fn example_bundle() -> Value {
                 "attach_atom": {"scope": "unit", "selector": "name C1"},
                 "leaving_atoms": [],
                 "bond_order": 1,
-                "anchor_atoms": [{"scope": "unit", "selector": "name C1"}]
+                "anchor_atoms": [{"scope": "unit", "selector": "name C1"}],
+                "notes": "Head-cap junction. attach_atom is retained and bonded to the next unit. anchor_atoms mark nearby atoms that preserve local junction orientation."
             },
             "pmma_head": {
                 "attach_atom": {"scope": "unit", "selector": "name C2"},
                 "leaving_atoms": [],
                 "bond_order": 1,
-                "anchor_atoms": [{"scope": "unit", "selector": "name C2"}]
+                "anchor_atoms": [{"scope": "unit", "selector": "name C2"}],
+                "notes": "Repeat-unit head junction. Use leaving_atoms for atoms removed before the new bond is created."
             },
             "pmma_tail": {
                 "attach_atom": {"scope": "unit", "selector": "name C2"},
                 "leaving_atoms": [],
                 "bond_order": 1,
-                "anchor_atoms": [{"scope": "unit", "selector": "name C2"}]
+                "anchor_atoms": [{"scope": "unit", "selector": "name C2"}],
+                "notes": "Repeat-unit tail junction. attach_atom names the retained bonding atom; anchor_atoms help orient the residue around that junction."
             },
             "pmma_tail_cap": {
                 "attach_atom": {"scope": "unit", "selector": "name C3"},
                 "leaving_atoms": [],
                 "bond_order": 1,
-                "anchor_atoms": [{"scope": "unit", "selector": "name C3"}]
+                "anchor_atoms": [{"scope": "unit", "selector": "name C3"}],
+                "notes": "Tail-cap junction. Prefer leaving_atoms, not attach_atom changes, when custom chemistry needs atoms deleted before bonding."
             }
         },
         "capabilities": {
@@ -5810,6 +7430,9 @@ pub fn example_request_for_bundle(mode: &str, bundle_path: &str) -> Value {
             None
         },
         "port_cap_overrides": Vec::<Value>::new(),
+        "validation": {
+            "depth": "shallow"
+        },
         "artifacts": {
             "coordinates": "pmma_50mer.pdb",
             "raw_coordinates": "pmma_50mer.raw.pdb",
@@ -5850,6 +7473,8 @@ pub fn capabilities() -> Value {
         },
         "supported_tacticity_modes": SUPPORTED_TACTICITY_MODES,
         "supported_termini_policies": SUPPORTED_TERMINI_POLICIES,
+        "supported_validation_depths": ["shallow", "deep"],
+        "default_validation_depth": "shallow",
         "artifact_outputs": [
             "coordinates",
             "raw_coordinates",
@@ -5861,6 +7486,17 @@ pub fn capabilities() -> Value {
             "ensemble_manifest"
         ],
         "topology_outputs": ["inpcrd", "prmtop"],
+        "artifact_contract": {
+            "coordinates": "final accepted coordinates written only after QC passes",
+            "raw_coordinates": "optional pre-relax snapshot when realization.relax is enabled",
+            "built_solute_debug": "*_built_solute.pdb may be staged during execution; treat it as a recovery/debug artifact, not the final contract output",
+            "topology_transfer_requirement": "artifacts.topology requires bundle.artifacts.source_topology_ref to reference a transferable .prmtop",
+        },
+        "junction_selector_semantics": {
+            "attach_atom": "retained atom on the unit that forms the new inter-unit bond",
+            "leaving_atoms": "atoms removed from the unit before the new bond is created",
+            "anchor_atoms": "orientation hints near the junction; they do not create bonds by themselves",
+        },
         "parameter_outputs": ["forcefield_ref"],
         "agent_contract": {
             "machine_readable_errors": true,
@@ -5873,7 +7509,7 @@ pub fn capabilities() -> Value {
         "supports_motif_tokens": true,
         "supports_conformer_policy": true,
         "supports_port_cap_overrides": true,
-        "supports_relax_modes": ["graph_spring"],
+        "supports_relax_modes": ["graph_spring", "targeted_steric"],
         "topology_graph_features": [
             "atom_neighbors",
             "bonds",
@@ -5914,6 +7550,17 @@ pub fn inspect_source_json(path: &str) -> (i32, Value) {
                 "sequence_token_support": bundle.capabilities.sequence_token_support,
                 "charge_transfer_supported": bundle.capabilities.charge_transfer_supported,
                 "topology_transfer_supported": topology_transfer_supported(&bundle),
+                "artifact_contract": {
+                    "coordinates": "final accepted coordinates written only after QC passes",
+                    "raw_coordinates": "optional pre-relax snapshot when realization.relax is enabled",
+                    "built_solute_debug": "*_built_solute.pdb may be staged during execution; treat it as a recovery/debug artifact, not the final contract output",
+                    "topology_transfer_requirement": "artifacts.topology requires bundle.artifacts.source_topology_ref to reference a transferable .prmtop",
+                },
+                "junction_selector_semantics": {
+                    "attach_atom": "retained atom on the unit that forms the new inter-unit bond",
+                    "leaving_atoms": "atoms removed from the unit before the new bond is created",
+                    "anchor_atoms": "orientation hints near the junction; they do not create bonds by themselves",
+                },
                 "unit_tokens": bundle.unit_library.keys().cloned().collect::<Vec<_>>(),
                 "motif_tokens": bundle.motif_library.keys().cloned().collect::<Vec<_>>(),
                 "artifacts": bundle.artifacts,
@@ -5975,17 +7622,55 @@ pub fn validate_request_json(text: &str) -> (i32, Value) {
         normalized.warnings,
         normalized.normalization,
     ) {
-        Ok(resolved) => (
-            0,
-            json!(ValidateEnvelope {
-                schema_version: BUILD_SCHEMA_VERSION.into(),
-                status: "ok".into(),
-                valid: true,
-                normalized_request: resolved.normalized_request,
-                resolved_inputs: resolved.resolved_inputs,
-                warnings: resolved.warnings,
-            }),
-        ),
+        Ok(resolved) => match validation_depth(&normalized.request) {
+            Ok("deep") => match preflight_build(&normalized.request, &bundle, &resolved) {
+                Ok(preflight) => (
+                    0,
+                    json!(ValidateEnvelope {
+                        schema_version: BUILD_SCHEMA_VERSION.into(),
+                        status: "ok".into(),
+                        valid: true,
+                        normalized_request: resolved.normalized_request,
+                        resolved_inputs: resolved.resolved_inputs,
+                        preflight,
+                        warnings: resolved.warnings,
+                    }),
+                ),
+                Err(errors) => (
+                    2,
+                    json!({
+                        "schema_version": BUILD_SCHEMA_VERSION,
+                        "status": "error",
+                        "valid": false,
+                        "errors": errors,
+                        "warnings": resolved.warnings,
+                    }),
+                ),
+            },
+            Ok("shallow") => (
+                0,
+                json!(ValidateEnvelope {
+                    schema_version: BUILD_SCHEMA_VERSION.into(),
+                    status: "ok".into(),
+                    valid: true,
+                    normalized_request: resolved.normalized_request,
+                    resolved_inputs: resolved.resolved_inputs,
+                    preflight: shallow_preflight_summary(),
+                    warnings: resolved.warnings,
+                }),
+            ),
+            Ok(_) => unreachable!(),
+            Err(err) => (
+                2,
+                json!({
+                    "schema_version": BUILD_SCHEMA_VERSION,
+                    "status": "error",
+                    "valid": false,
+                    "errors": [err],
+                    "warnings": resolved.warnings,
+                }),
+            ),
+        },
         Err(errors) => (
             2,
             json!({
@@ -6108,45 +7793,8 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     );
 
     let seed = resolved.seed;
-    let _expanded_sequence = match expand_sequence(&req.target, seed) {
-        Ok(sequence) => sequence,
-        Err(err) => {
-            if req.target.mode != "star_polymer"
-                && req.target.mode != "branched_polymer"
-                && req.target.mode != "polymer_graph"
-            {
-                return (
-                    2,
-                    json!(ErrorEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "error".into(),
-                        request_id: req.request_id,
-                        errors: vec![err],
-                        warnings: vec![],
-                    }),
-                );
-            }
-            Vec::new()
-        }
-    };
-    let compiled_plan = match compile_build_plan(&req, &bundle, seed) {
-        Ok(Some(plan)) => plan,
-        Ok(None) => {
-            return (
-                2,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: req.request_id,
-                    errors: vec![to_error(
-                        "E_INVALID_TARGET",
-                        Some("target".into()),
-                        "target expands to an empty sequence"
-                    )],
-                    warnings: vec![],
-                }),
-            )
-        }
+    let (prepared, mut timings_ms) = match prepare_build_execution(&req, &bundle, seed) {
+        Ok(prepared) => prepared,
         Err(err) => {
             return (
                 2,
@@ -6160,12 +7808,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             );
         }
     };
-    let compiled_sequence = compiled_plan
-        .nodes
-        .iter()
-        .map(|node| node.token.clone())
-        .collect::<Vec<_>>();
-    let n_repeat = compiled_sequence.len();
+    let n_repeat = prepared.compiled_sequence.len();
     emit(
         &RunEvent::ChainGrowthStarted {
             request_id: req.request_id.clone(),
@@ -6188,44 +7831,6 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     let raw_coordinates_path = resolved.artifacts.raw_coordinates.clone();
     let ensemble_manifest_path = resolved.artifacts.ensemble_manifest.clone();
     let topology_path = resolved.artifacts.topology.clone();
-    let token_junctions = match token_junction_specs(&bundle, &compiled_sequence) {
-        Ok(specs) => specs,
-        Err(err) => {
-            let detail = to_error("E_SOURCE_SCHEMA", None, err.to_string());
-            emit(
-                &RunEvent::RunFailed {
-                    request_id: req.request_id.clone(),
-                    error: detail.clone(),
-                },
-                stream_ndjson,
-            );
-            return (
-                2,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: req.request_id,
-                    errors: vec![detail],
-                    warnings: vec![],
-                }),
-            );
-        }
-    };
-    let base_mode = match base_conformation_mode(&req.realization.conformation_mode) {
-        Ok(mode) => mode,
-        Err(err) => {
-            return (
-                2,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: req.request_id,
-                    errors: vec![err],
-                    warnings: vec![],
-                }),
-            );
-        }
-    };
     let ensemble_size = if req.realization.conformation_mode == "ensemble" {
         req.realization.ensemble_size.unwrap_or(4)
     } else {
@@ -6246,55 +7851,23 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 derived_member_path(path, member_idx)
             }
         });
-        let graph_node_specs = compiled_plan
-            .nodes
-            .iter()
-            .map(|node| GraphNodeSpec {
-                sequence_label: node.token.clone(),
-                template_resname: node.template_resname.clone(),
-                applied_resname: node.applied_resname.clone(),
-            })
-            .collect::<Vec<_>>();
-        let graph_edge_specs = compiled_plan
-            .edges
-            .iter()
-            .map(|edge| GraphEdgeSpec {
-                edge_id: edge.edge_id.clone(),
-                parent: edge.parent,
-                child: edge.child,
-                parent_port: edge.parent_port.clone(),
-                child_port: edge.child_port.clone(),
-                parent_attach_atom: edge.parent_attach_atom.clone(),
-                parent_leaving_atoms: edge.parent_leaving_atoms.clone(),
-                child_attach_atom: edge.child_attach_atom.clone(),
-                child_leaving_atoms: edge.child_leaving_atoms.clone(),
-                bond_order: edge.bond_order,
-                layout_mode: edge.layout_mode.clone(),
-                branch_spread: edge.branch_spread.clone(),
-                torsion_mode: edge.torsion_mode.clone(),
-                torsion_deg: edge.torsion_deg,
-                torsion_window_deg: edge.torsion_window_deg,
-                ring_mode: edge.ring_mode.clone(),
-            })
-            .collect::<Vec<_>>();
-        let graph_root_idx = compiled_plan
-            .nodes
-            .iter()
-            .position(|node| node.node_id == compiled_plan.expanded_root_node_id)
-            .unwrap_or(0);
+        let build_started = Instant::now();
         let build_result = build_polymer_graph(
             &source_coordinates,
             source_charge_manifest.as_deref(),
             source_topology_ref.as_deref(),
             bundle.training_context.training_oligomer_n,
-            &graph_node_specs,
-            &graph_edge_specs,
-            graph_root_idx,
-            base_mode,
+            &prepared.graph_node_specs,
+            &prepared.graph_edge_specs,
+            prepared.graph_root_idx,
+            &prepared.base_mode,
             tacticity,
             member_seed,
             &member_target_path,
         );
+        timings_ms.build_graph = timings_ms
+            .build_graph
+            .saturating_add(elapsed_ms(build_started));
         let mut built = match build_result {
             Ok(built) => built,
             Err(err) => {
@@ -6322,13 +7895,18 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             req.realization.conformation_mode.as_str(),
             "random_walk" | "ensemble"
         ) {
-            Some(relax_built_output(
+            let cleanup_started = Instant::now();
+            let report = relax_built_output(
                 &mut built.output,
-                &compiled_plan,
+                &prepared.compiled_plan,
                 built.step_length_angstrom,
                 &internal_solver_relax_spec(),
                 None,
-            ))
+            );
+            timings_ms.solver_cleanup = timings_ms
+                .solver_cleanup
+                .saturating_add(elapsed_ms(cleanup_started));
+            Some(report)
         } else {
             None
         };
@@ -6347,7 +7925,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                         status: "error".into(),
                         request_id: req.request_id,
                         errors: vec![detail],
-                        warnings: vec![],
+                        warnings: qc_failure_warnings(&built.path, member_raw_path.as_deref(),),
                     }),
                 );
             }
@@ -6369,13 +7947,18 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     );
                 }
             }
-            Some(relax_built_output(
+            let relax_started = Instant::now();
+            let report = relax_built_output(
                 &mut built.output,
-                &compiled_plan,
+                &prepared.compiled_plan,
                 built.step_length_angstrom,
                 relax,
                 member_raw_path.clone(),
-            ))
+            );
+            timings_ms.user_relax = timings_ms
+                .user_relax
+                .saturating_add(elapsed_ms(relax_started));
+            Some(report)
         } else {
             None
         };
@@ -6390,7 +7973,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                         status: "error".into(),
                         request_id: req.request_id,
                         errors: vec![detail],
-                        warnings: vec![],
+                        warnings: qc_failure_warnings(&built.path, member_raw_path.as_deref(),),
                     }),
                 );
             }
@@ -6408,6 +7991,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         .into_iter()
         .collect::<BTreeSet<_>>()
         {
+            let write_started = Instant::now();
             ensure_parent(&path).ok();
             if let Err(err) = write_output(
                 &built.output,
@@ -6433,6 +8017,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     }),
                 );
             }
+            timings_ms.artifact_write = timings_ms
+                .artifact_write
+                .saturating_add(elapsed_ms(write_started));
         }
         built_members.push((
             member_target_path,
@@ -6448,6 +8035,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     let primary_relax_report = built_members[0].4.clone();
     ensure_parent(&resolved.artifacts.coordinates).ok();
     if primary_coordinates != resolved.artifacts.coordinates {
+        let write_started = Instant::now();
         if let Err(err) = fs::copy(&primary_coordinates, &resolved.artifacts.coordinates) {
             return (
                 4,
@@ -6460,18 +8048,21 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 }),
             );
         }
+        timings_ms.artifact_write = timings_ms
+            .artifact_write
+            .saturating_add(elapsed_ms(write_started));
     }
     ensure_parent(&topology_graph_path).ok();
     let topology_graph = topology_graph_value(
         &req.request_id,
         &built,
-        &compiled_sequence,
+        &prepared.compiled_sequence,
         &bundle,
         &req.target.mode,
         &req.realization.conformation_mode,
-        &token_junctions,
+        &prepared.token_junctions,
         &req.target.termini,
-        Some(&compiled_plan),
+        Some(&prepared.compiled_plan),
         primary_relax_report
             .as_ref()
             .or(primary_internal_cleanup_report.as_ref())
@@ -6482,10 +8073,14 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 steps_executed: report.steps_executed,
                 initial_max_clash: report.initial_max_clash,
                 final_max_clash: report.final_max_clash,
+                initial_overlap_pairs: report.initial_overlap_pairs,
+                final_overlap_pairs: report.final_overlap_pairs,
+                overlap_metric: OVERLAP_REPORT_METRIC.into(),
                 rms_displacement: report.rms_displacement,
                 raw_coordinates: report.raw_coordinates.clone(),
             }),
     );
+    let write_started = Instant::now();
     if let Err(err) = fs::write(
         &topology_graph_path,
         format!(
@@ -6508,6 +8103,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             }),
         );
     }
+    timings_ms.artifact_write = timings_ms
+        .artifact_write
+        .saturating_add(elapsed_ms(write_started));
     if ensemble_size > 1 {
         let ensemble_manifest_path = ensemble_manifest_path
             .clone()
@@ -6528,6 +8126,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 "charge_manifest": resolved.artifacts.charge_manifest,
             },
         });
+        let write_started = Instant::now();
         if let Err(err) = fs::write(
             &ensemble_manifest_path,
             format!(
@@ -6550,8 +8149,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 }),
             );
         }
+        timings_ms.artifact_write = timings_ms
+            .artifact_write
+            .saturating_add(elapsed_ms(write_started));
     }
     ensure_parent(&inpcrd_path).ok();
+    let write_started = Instant::now();
     if let Err(err) = write_amber_inpcrd(&built.output, &inpcrd_path, 1.0) {
         return (
             4,
@@ -6564,6 +8167,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             }),
         );
     }
+    timings_ms.artifact_write = timings_ms
+        .artifact_write
+        .saturating_add(elapsed_ms(write_started));
     if let (Some(source_topology_ref), Some(topology_path)) = (
         bundle.artifacts.source_topology_ref.as_ref(),
         topology_path.as_ref(),
@@ -6571,6 +8177,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         let source_topology_path =
             resolve_relative(Path::new(&req.source_ref.bundle_path), source_topology_ref);
         ensure_parent(topology_path).ok();
+        let write_started = Instant::now();
         if let Err(err) = write_polymer_prmtop_from_source(
             &built,
             Path::new(&source_topology_path),
@@ -6591,6 +8198,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 }),
             );
         }
+        timings_ms.artifact_write = timings_ms
+            .artifact_write
+            .saturating_add(elapsed_ms(write_started));
     }
     emit(
         &RunEvent::ChainGrowthProgress {
@@ -6718,190 +8328,151 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     }
 
     ensure_parent(&resolved.artifacts.build_manifest).ok();
-    let applied_head_terminus = json!({
-        "requested_policy": req.target.termini.head.clone(),
-        "resolved_token": built.sequence_labels.first().cloned(),
-        "template_resname": built.template_sequence_resnames.first().cloned(),
-        "applied_resname": built.residue_resnames.first().cloned(),
-    });
-    let applied_tail_terminus = json!({
-        "requested_policy": req.target.termini.tail.clone(),
-        "resolved_token": built.sequence_labels.last().cloned(),
-        "template_resname": built.template_sequence_resnames.last().cloned(),
-        "applied_resname": built.residue_resnames.last().cloned(),
-    });
-    let artifact_digests = json!({
-        "coordinates": sha256_file(Path::new(&resolved.artifacts.coordinates)).ok(),
-        "raw_coordinates": raw_coordinates_path
+    let applied_head_terminus = AppliedTerminusSummary {
+        requested_policy: req.target.termini.head.clone(),
+        resolved_token: built.sequence_labels.first().cloned(),
+        template_resname: built.template_sequence_resnames.first().cloned(),
+        applied_resname: built.residue_resnames.first().cloned(),
+    };
+    let applied_tail_terminus = AppliedTerminusSummary {
+        requested_policy: req.target.termini.tail.clone(),
+        resolved_token: built.sequence_labels.last().cloned(),
+        template_resname: built.template_sequence_resnames.last().cloned(),
+        applied_resname: built.residue_resnames.last().cloned(),
+    };
+    let artifact_digests = BuildArtifactDigests {
+        coordinates: sha256_file(Path::new(&resolved.artifacts.coordinates)).ok(),
+        raw_coordinates: raw_coordinates_path
             .as_ref()
             .and_then(|path| sha256_file(Path::new(path)).ok()),
-        "charge_manifest": sha256_file(Path::new(&resolved.artifacts.charge_manifest)).ok(),
-        "inpcrd": sha256_file(Path::new(&inpcrd_path)).ok(),
-        "topology": topology_path
+        charge_manifest: sha256_file(Path::new(&resolved.artifacts.charge_manifest)).ok(),
+        inpcrd: sha256_file(Path::new(&inpcrd_path)).ok(),
+        topology: topology_path
             .as_ref()
             .and_then(|path| sha256_file(Path::new(path)).ok()),
-        "topology_graph": sha256_file(Path::new(&topology_graph_path)).ok(),
-        "ensemble_manifest": ensemble_manifest_path
+        topology_graph: sha256_file(Path::new(&topology_graph_path)).ok(),
+        ensemble_manifest: ensemble_manifest_path
             .as_ref()
             .and_then(|path| sha256_file(Path::new(path)).ok()),
-    });
-    let md_ready_handoff = json!({
-        "version": "warp-md.polymer-md-handoff.v1",
-        "coordinates": {
-            "path": resolved.artifacts.coordinates,
-            "format": "pdb-strict",
-            "strict_columns": true,
-            "write_conect": true,
-            "has_cryst1": false,
+    };
+    let md_ready_handoff = MdReadyHandoff {
+        version: "warp-md.polymer-md-handoff.v1".into(),
+        coordinates: HandoffCoordinates {
+            path: resolved.artifacts.coordinates.clone(),
+            format: "pdb-strict".into(),
+            strict_columns: true,
+            write_conect: true,
+            has_cryst1: false,
         },
-        "topology_graph": topology_graph_path,
-        "topology": topology_path,
-        "charge_manifest": resolved.artifacts.charge_manifest,
-        "source_structure_path": source_coordinates,
-        "source_topology_path": source_topology_ref,
-        "source_charge_manifest_path": source_charge_manifest,
-        "sequence_tokens": built.sequence_labels,
-        "template_sequence_resnames": built.template_sequence_resnames,
-        "applied_residue_resnames": built.residue_resnames,
-        "copy_count": 1,
-        "chain_instance_mapping": [
-            {
-                "copy_index": 1,
-                "source_chain_indices": [1],
-                "packed_chain_indices": [1],
-            }
-        ],
-        "forcefield_ref": bundle.artifacts.forcefield_ref,
-    });
-    let manifest = json!({
-        "schema_version": BUILD_MANIFEST_VERSION,
-        "request_id": req.request_id,
-        "normalized_request": resolved.normalized_request,
-        "resolved_inputs": resolved.resolved_inputs,
-        "source_bundle": {
-            "bundle_id": bundle.bundle_id,
-            "bundle_path": req.source_ref.bundle_path,
-            "bundle_digest": resolved.bundle_digest,
-            "training_context": bundle.training_context,
+        topology_graph: topology_graph_path.clone(),
+        topology: topology_path.clone(),
+        charge_manifest: resolved.artifacts.charge_manifest.clone(),
+        source_structure_path: source_coordinates.clone(),
+        source_topology_path: source_topology_ref.clone(),
+        source_charge_manifest_path: source_charge_manifest.clone(),
+        sequence_tokens: built.sequence_labels.clone(),
+        template_sequence_resnames: built.template_sequence_resnames.clone(),
+        applied_residue_resnames: built.residue_resnames.clone(),
+        copy_count: 1,
+        chain_instance_mapping: vec![HandoffChainInstanceMapping {
+            copy_index: 1,
+            source_chain_indices: vec![1],
+            packed_chain_indices: vec![1],
+        }],
+        forcefield_ref: bundle.artifacts.forcefield_ref.clone(),
+    };
+    let manifest = BuildManifestSchema {
+        schema_version: BUILD_MANIFEST_VERSION.into(),
+        version: None,
+        request_id: req.request_id.clone(),
+        normalized_request: resolved.normalized_request.clone(),
+        resolved_inputs: resolved.resolved_inputs.clone(),
+        source_bundle: BuildManifestSourceBundle {
+            bundle_id: bundle.bundle_id.clone(),
+            bundle_path: req.source_ref.bundle_path.clone(),
+            bundle_digest: resolved.bundle_digest.clone(),
+            training_context: bundle.training_context.clone(),
         },
-        "target": req.target,
-        "realization": {
-            "conformation_mode": req.realization.conformation_mode,
-            "seed": seed,
-            "seed_policy": resolved.seed_policy,
-            "relax": req.realization.relax,
+        target: req.target.clone(),
+        realization: BuildManifestRealization {
+            conformation_mode: req.realization.conformation_mode.clone(),
+            seed,
+            seed_policy: resolved.seed_policy.clone(),
+            relax: req.realization.relax.clone(),
         },
-        "artifacts": {
-            "coordinates": resolved.artifacts.coordinates,
-            "raw_coordinates": raw_coordinates_path,
-            "charge_manifest": resolved.artifacts.charge_manifest,
-            "inpcrd": inpcrd_path,
-            "topology": topology_path,
-            "topology_graph": topology_graph_path,
-            "ensemble_manifest": ensemble_manifest_path,
-            "forcefield_ref": bundle.artifacts.forcefield_ref,
+        artifacts: BuildManifestArtifacts {
+            coordinates: resolved.artifacts.coordinates.clone(),
+            raw_coordinates: raw_coordinates_path.clone(),
+            charge_manifest: resolved.artifacts.charge_manifest.clone(),
+            inpcrd: inpcrd_path.clone(),
+            topology: topology_path.clone(),
+            topology_graph: topology_graph_path.clone(),
+            ensemble_manifest: ensemble_manifest_path.clone(),
+            forcefield_ref: bundle.artifacts.forcefield_ref.clone(),
         },
-        "artifact_digests": artifact_digests,
-        "md_ready_handoff": md_ready_handoff,
-        "summary": {
-            "atom_count": built.output.atoms.len(),
-            "total_repeat_units": resolved
-                .normalization
-                .as_ref()
-                .and_then(|value| value.get("requested_n_repeat"))
-                .cloned()
-                .unwrap_or_else(|| json!(n_repeat)),
-            "total_residues": n_repeat,
-            "net_charge_e": net_charge,
-            "resolved_sequence": built.sequence_labels,
-            "template_sequence_resnames": built.template_sequence_resnames,
-            "applied_residue_resnames": built.residue_resnames,
-            "request_root_node_id": compiled_plan.request_root_node_id,
-            "expanded_root_node_id": compiled_plan.expanded_root_node_id,
-            "graph_has_cycle": compiled_plan.graph_has_cycle,
-            "applied_termini": {
-                "head": applied_head_terminus,
-                "tail": applied_tail_terminus,
+        artifact_digests,
+        md_ready_handoff,
+        summary: BuildManifestSummary {
+            atom_count: built.output.atoms.len(),
+            total_repeat_units: requested_n_repeat(resolved.normalization.as_ref(), n_repeat),
+            total_residues: n_repeat,
+            net_charge_e: net_charge,
+            resolved_sequence: built.sequence_labels.clone(),
+            template_sequence_resnames: built.template_sequence_resnames.clone(),
+            applied_residue_resnames: built.residue_resnames.clone(),
+            request_root_node_id: prepared.compiled_plan.request_root_node_id.clone(),
+            expanded_root_node_id: prepared.compiled_plan.expanded_root_node_id.clone(),
+            graph_has_cycle: prepared.compiled_plan.graph_has_cycle,
+            applied_termini: AppliedTerminiSummary {
+                head: applied_head_terminus,
+                tail: applied_tail_terminus,
             },
-            "applied_caps": compiled_plan
+            applied_caps: prepared
+                .compiled_plan
                 .applied_caps
                 .iter()
-                .map(|cap| json!({
-                    "node_id": cap.node_id,
-                    "request_node_id": cap.request_node_id,
-                    "port_name": cap.port_name,
-                    "cap": cap.cap,
-                    "application_source": cap.application_source,
-                    "cap_node_id": cap.cap_node_id,
-                }))
-                .collect::<Vec<_>>(),
-            "bond_count": built.output.bonds.len(),
-            "realization_mode": req.realization.conformation_mode,
-            "ensemble_size": ensemble_size,
-            "relax": primary_relax_report.as_ref().map(|report| json!({
-                "mode": report.mode,
-                "steps_requested": report.steps_requested,
-                "steps_executed": report.steps_executed,
-                "initial_max_clash": report.initial_max_clash,
-                "final_max_clash": report.final_max_clash,
-                "rms_displacement": report.rms_displacement,
-                "raw_coordinates": report.raw_coordinates,
-            })),
-            "solver_cleanup": primary_internal_cleanup_report.as_ref().map(|report| json!({
-                "mode": report.mode,
-                "steps_requested": report.steps_requested,
-                "steps_executed": report.steps_executed,
-                "initial_max_clash": report.initial_max_clash,
-                "final_max_clash": report.final_max_clash,
-                "rms_displacement": report.rms_displacement,
-                "raw_coordinates": report.raw_coordinates,
-            })),
-            "solver": built.solver_report.as_ref().map(|report| json!(report)),
-            "applied_junctions": token_junctions
-                .iter()
-                .map(|(token, junction)| {
-                    (
-                        token.clone(),
-                        json!({
-                            "head_attach_atom": junction.head_attach_atom,
-                            "head_leaving_atoms": junction.head_leaving_atoms,
-                            "tail_attach_atom": junction.tail_attach_atom,
-                            "tail_leaving_atoms": junction.tail_leaving_atoms,
-                        }),
-                    )
+                .map(|cap| AppliedCapSummary {
+                    node_id: cap.node_id.clone(),
+                    request_node_id: cap.request_node_id.clone(),
+                    port_name: cap.port_name.clone(),
+                    cap: cap.cap.clone(),
+                    application_source: cap.application_source.clone(),
+                    cap_node_id: cap.cap_node_id.clone(),
                 })
-                .collect::<BTreeMap<_, _>>(),
-            "qc": {
-                "inter_residue_bond_count": built.qc_report.inter_residue_bond_count,
-                "terminal_connectivity_consistent": built.qc_report.terminal_connectivity_consistent,
-                "sequence_token_template_consistent": built.qc_report.sequence_token_template_consistent,
-                "min_nonbonded_distance_angstrom": built.qc_report.min_nonbonded_distance_angstrom,
-                "severe_nonbonded_clash_count": built.qc_report.severe_nonbonded_clash_count,
-                "severe_bond_violations": built.qc_report.severe_bond_violations,
-                "severe_clash_examples": built.qc_report.severe_clash_examples,
-            },
+                .collect::<Vec<_>>(),
+            bond_count: built.output.bonds.len(),
+            realization_mode: req.realization.conformation_mode.clone(),
+            ensemble_size,
+            relax: primary_relax_report.clone(),
+            solver_cleanup: primary_internal_cleanup_report.clone(),
+            solver: built.solver_report.clone(),
+            applied_junctions: applied_junctions_value(&prepared.token_junctions),
+            timings_ms: timings_ms.clone(),
+            qc: built.qc_report.clone(),
+            overlap_status: overlap_status_summary(
+                Some(&built.output),
+                primary_internal_cleanup_report.as_ref(),
+                primary_relax_report.as_ref(),
+            ),
         },
-        "provenance": {
-            "schema_version": BUILD_MANIFEST_VERSION,
-            "builder_version": env!("CARGO_PKG_VERSION"),
-            "binary_version": env!("CARGO_PKG_VERSION"),
-            "algorithm_version": format!("{}.v1", req.realization.conformation_mode),
-            "topology_transfer_mode": if topology_path.is_some() {
-                "residue_filtered_with_bonds"
+        provenance: BuildManifestProvenance {
+            schema_version: BUILD_MANIFEST_VERSION.into(),
+            builder_version: env!("CARGO_PKG_VERSION").into(),
+            binary_version: env!("CARGO_PKG_VERSION").into(),
+            algorithm_version: format!("{}.v1", req.realization.conformation_mode),
+            topology_transfer_mode: if topology_path.is_some() {
+                "residue_filtered_with_bonds".into()
             } else {
-                "none"
+                "none".into()
             },
-            "source_bundle_path": req.source_ref.bundle_path,
-            "source_bundle_digest": resolved.bundle_digest,
-            "target_normalization": resolved.normalization,
-            "build_metadata": {
-                "git_commit": option_env!("VERGEN_GIT_SHA"),
-                "build_timestamp": option_env!("VERGEN_BUILD_TIMESTAMP"),
-                "target_triple": option_env!("TARGET"),
-            },
+            source_bundle_path: req.source_ref.bundle_path.clone(),
+            source_bundle_digest: resolved.bundle_digest.clone(),
+            target_normalization: resolved.normalization.clone(),
+            build_metadata: build_metadata_summary(),
         },
-        "warnings": resolved.warnings,
-    });
+        warnings: resolved.warnings.clone(),
+    };
+    let write_started = Instant::now();
     if let Err(err) = fs::write(
         &resolved.artifacts.build_manifest,
         format!(
@@ -6920,6 +8491,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             }),
         );
     }
+    timings_ms.artifact_write = timings_ms
+        .artifact_write
+        .saturating_add(elapsed_ms(write_started));
 
     emit(
         &RunEvent::ManifestWritten {
@@ -6968,48 +8542,150 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 topology_graph: Some(topology_graph_path),
                 ensemble_manifest: ensemble_manifest_path,
             },
-            summary: json!({
-                "build_mode": req.target.mode,
-                "n_repeat": resolved
-                    .normalization
-                    .as_ref()
-                    .and_then(|value| value.get("requested_n_repeat"))
-                    .cloned()
-                    .unwrap_or_else(|| json!(n_repeat)),
-                "atom_count": built.output.atoms.len(),
-                "total_repeat_units": resolved
-                    .normalization
-                    .as_ref()
-                    .and_then(|value| value.get("requested_n_repeat"))
-                    .cloned()
-                    .unwrap_or_else(|| json!(n_repeat)),
-                "total_residues": n_repeat,
-                "conformation_mode": req.realization.conformation_mode,
-                "seed": seed,
-                "ensemble_size": ensemble_size,
-                "topology_graph_version": TOPOLOGY_GRAPH_VERSION,
-                "qc": built.qc_report,
-                "solver": built.solver_report.as_ref().map(|report| json!(report)),
-                "solver_cleanup": primary_internal_cleanup_report.as_ref().map(|report| json!({
-                    "mode": report.mode,
-                    "steps_requested": report.steps_requested,
-                    "steps_executed": report.steps_executed,
-                    "initial_max_clash": report.initial_max_clash,
-                    "final_max_clash": report.final_max_clash,
-                    "rms_displacement": report.rms_displacement,
-                    "raw_coordinates": report.raw_coordinates,
-                })),
-                "relax": primary_relax_report.as_ref().map(|report| json!({
-                    "mode": report.mode,
-                    "steps_requested": report.steps_requested,
-                    "steps_executed": report.steps_executed,
-                    "initial_max_clash": report.initial_max_clash,
-                    "final_max_clash": report.final_max_clash,
-                    "rms_displacement": report.rms_displacement,
-                    "raw_coordinates": report.raw_coordinates,
-                })),
-            }),
+            summary: RunSummary {
+                build_mode: req.target.mode.clone(),
+                n_repeat: requested_n_repeat(resolved.normalization.as_ref(), n_repeat),
+                atom_count: built.output.atoms.len(),
+                total_repeat_units: requested_n_repeat(resolved.normalization.as_ref(), n_repeat),
+                total_residues: n_repeat,
+                conformation_mode: req.realization.conformation_mode.clone(),
+                seed,
+                ensemble_size,
+                topology_graph_version: TOPOLOGY_GRAPH_VERSION.into(),
+                qc: built.qc_report.clone(),
+                solver: built.solver_report.clone(),
+                timings_ms,
+                solver_cleanup: primary_internal_cleanup_report.clone(),
+                relax: primary_relax_report.clone(),
+                overlap_status: overlap_status_summary(
+                    Some(&built.output),
+                    primary_internal_cleanup_report.as_ref(),
+                    primary_relax_report.as_ref(),
+                ),
+            },
             warnings: resolved.warnings,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use warp_structure::{AtomRecord, AtomRecordKind, PackOutput, Vec3};
+
+    fn test_atom(name: &str, element: &str, resid: i32, position: Vec3) -> AtomRecord {
+        AtomRecord {
+            record_kind: AtomRecordKind::Atom,
+            name: name.into(),
+            element: element.into(),
+            resname: "TST".into(),
+            resid,
+            chain: 'A',
+            segid: String::new(),
+            charge: 0.0,
+            position,
+            mol_id: 1,
+            pdb_metadata: None,
+        }
+    }
+
+    fn test_plan() -> CompiledBuildPlan {
+        CompiledBuildPlan {
+            nodes: vec![CompiledBuildNode {
+                node_id: "n1".into(),
+                request_node_id: "n1".into(),
+                token: "A".into(),
+                token_kind: "unit".into(),
+                source_token: "A".into(),
+                motif_instance_id: None,
+                motif_token: None,
+                template_resname: "TST".into(),
+                applied_resname: "TST".into(),
+                branch_depth: 0,
+                branch_path: "0".into(),
+            }],
+            edges: Vec::new(),
+            applied_caps: Vec::new(),
+            request_root_node_id: "n1".into(),
+            expanded_root_node_id: "n1".into(),
+            root_token: "A".into(),
+            arm_count: 1,
+            max_branch_depth: 0,
+            graph_has_cycle: false,
+        }
+    }
+
+    #[test]
+    fn targeted_steric_relax_resolves_local_overlap_shell() {
+        let mut output = PackOutput {
+            atoms: vec![
+                test_atom("C1", "C", 1, Vec3::new(0.0, 0.0, 0.0)),
+                test_atom("H1", "H", 1, Vec3::new(0.0, 1.0, 0.0)),
+                test_atom("C2", "C", 2, Vec3::new(1.54, 0.0, 0.0)),
+                test_atom("H2", "H", 2, Vec3::new(1.54, 1.0, 0.0)),
+            ],
+            bonds: vec![(0, 1), (0, 2), (2, 3)],
+            box_size: [0.0, 0.0, 0.0],
+            ter_after: vec![1, 3],
+            box_vectors: None,
+        };
+        let report = relax_built_output(
+            &mut output,
+            &test_plan(),
+            1.5,
+            &RelaxSpec {
+                mode: "targeted_steric".into(),
+                steps: Some(128),
+                step_scale: Some(0.5),
+                clash_scale: Some(0.9),
+            },
+            None,
+        );
+        assert_eq!(report.mode, "targeted_steric");
+        assert!(report.initial_overlap_pairs > 0, "{report:#?}");
+        assert_eq!(report.final_overlap_pairs, 0, "{report:#?}");
+        assert!(report.max_atom_displacement_angstrom > 0.0);
+        assert_eq!(report.movable_atom_count, Some(4));
+    }
+
+    #[test]
+    fn graph_spring_relax_falls_back_to_targeted_steric_for_residual_overlap() {
+        let output = PackOutput {
+            atoms: vec![
+                test_atom("C1", "C", 1, Vec3::new(0.0, 0.0, 0.0)),
+                test_atom("H1", "H", 1, Vec3::new(0.0, 1.0, 0.0)),
+                test_atom("C2", "C", 2, Vec3::new(1.54, 0.0, 0.0)),
+                test_atom("H2", "H", 2, Vec3::new(1.54, 1.0, 0.0)),
+            ],
+            bonds: vec![(0, 1), (0, 2), (2, 3)],
+            box_size: [0.0, 0.0, 0.0],
+            ter_after: vec![1, 3],
+            box_vectors: None,
+        };
+        let relax = RelaxSpec {
+            mode: "graph_spring".into(),
+            steps: Some(8),
+            step_scale: Some(0.0),
+            clash_scale: Some(0.9),
+        };
+
+        let mut graph_only_output = output.clone();
+        let graph_only =
+            relax_graph_spring_output(&mut graph_only_output, &test_plan(), 1.5, &relax, None);
+        assert!(graph_only.final_overlap_pairs > 0, "{graph_only:#?}");
+
+        let mut fallback_output = output;
+        let report = relax_built_output(&mut fallback_output, &test_plan(), 1.5, &relax, None);
+        assert_eq!(report.mode, "graph_spring");
+        assert_eq!(report.fallback_mode.as_deref(), Some("targeted_steric"));
+        assert_eq!(
+            report.pre_fallback_overlap_pairs,
+            Some(graph_only.final_overlap_pairs)
+        );
+        assert_eq!(report.final_overlap_pairs, 0, "{report:#?}");
+        assert!(
+            report.fallback_steps_executed.unwrap_or(0) > 0,
+            "{report:#?}"
+        );
+    }
 }

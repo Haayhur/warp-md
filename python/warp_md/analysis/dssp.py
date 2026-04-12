@@ -53,11 +53,15 @@ def dssp(
     codes = np.asarray(codes, dtype=np.uint8)
     if codes.size == 0:
         return labels, np.empty((0, labels.shape[0]), dtype="U1"), {}
-    lut = np.asarray(["C", "H", "E"], dtype="U1")
-    ss = lut[np.clip(codes.astype(np.int64, copy=False), 0, 2)]
-    avg = _avg_counts(ss)
+    full_codes = np.clip(codes.astype(np.int64, copy=False), 0, 7)
     if simplified:
-        return labels, ss, avg
+        lut = np.asarray(["C", "H", "E"], dtype="U1")
+        collapse = np.asarray([0, 1, 2, 2, 1, 1, 0, 0], dtype=np.int64)
+        ss = lut[collapse[full_codes]]
+    else:
+        lut = np.asarray(["C", "H", "B", "E", "G", "I", "T", "S"], dtype="U1")
+        ss = lut[full_codes]
+    avg = _avg_counts(ss)
     return labels, ss, avg
 
 

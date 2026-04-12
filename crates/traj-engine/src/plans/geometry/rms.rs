@@ -300,6 +300,134 @@ impl Plan for AtomicFluctPlan {
     }
 }
 
+pub struct AtomicAdpPlan {
+    selection: Selection,
+    sum: Vec<[f64; 3]>,
+    sum_products: Vec<[f64; 6]>,
+    frames: usize,
+}
+
+impl AtomicAdpPlan {
+    pub fn new(selection: Selection) -> Self {
+        Self {
+            selection,
+            sum: Vec::new(),
+            sum_products: Vec::new(),
+            frames: 0,
+        }
+    }
+}
+
+impl Plan for AtomicAdpPlan {
+    fn name(&self) -> &'static str {
+        "atomic_adp"
+    }
+
+    fn init(&mut self, _system: &System, _device: &Device) -> TrajResult<()> {
+        let n = self.selection.indices.len();
+        self.sum = vec![[0.0; 3]; n];
+        self.sum_products = vec![[0.0; 6]; n];
+        self.frames = 0;
+        Ok(())
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        Some(self.selection.indices.as_slice())
+    }
+
+    fn preferred_selection_hint(&self, _system: &System) -> Option<&[u32]> {
+        Some(self.selection.indices.as_slice())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        let n_atoms = chunk.n_atoms;
+        for frame in 0..chunk.n_frames {
+            let frame_base = frame * n_atoms;
+            for (i, &idx) in self.selection.indices.iter().enumerate() {
+                let p = chunk.coords[frame_base + idx as usize];
+                accumulate_adp(&mut self.sum[i], &mut self.sum_products[i], p);
+            }
+            self.frames += 1;
+        }
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        _source_selection: &[u32],
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        for frame in 0..chunk.n_frames {
+            let frame_base = frame * chunk.n_atoms;
+            for i in 0..chunk.n_atoms {
+                let p = chunk.coords[frame_base + i];
+                accumulate_adp(&mut self.sum[i], &mut self.sum_products[i], p);
+            }
+            self.frames += 1;
+        }
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        if self.frames == 0 {
+            return Ok(PlanOutput::Matrix {
+                data: Vec::new(),
+                rows: 0,
+                cols: 6,
+            });
+        }
+        let inv = 1.0 / self.frames as f64;
+        let mut out = Vec::with_capacity(self.selection.indices.len() * 6);
+        for i in 0..self.selection.indices.len() {
+            let mean = [
+                self.sum[i][0] * inv,
+                self.sum[i][1] * inv,
+                self.sum[i][2] * inv,
+            ];
+            let prod = self.sum_products[i];
+            let uxx = (prod[0] * inv - mean[0] * mean[0]).max(0.0);
+            let uyy = (prod[1] * inv - mean[1] * mean[1]).max(0.0);
+            let uzz = (prod[2] * inv - mean[2] * mean[2]).max(0.0);
+            let uxy = prod[3] * inv - mean[0] * mean[1];
+            let uxz = prod[4] * inv - mean[0] * mean[2];
+            let uyz = prod[5] * inv - mean[1] * mean[2];
+            out.push(uxx as f32);
+            out.push(uyy as f32);
+            out.push(uzz as f32);
+            out.push(uxy as f32);
+            out.push(uxz as f32);
+            out.push(uyz as f32);
+        }
+        Ok(PlanOutput::Matrix {
+            data: out,
+            rows: self.selection.indices.len(),
+            cols: 6,
+        })
+    }
+}
+
+fn accumulate_adp(sum: &mut [f64; 3], products: &mut [f64; 6], p: [f32; 4]) {
+    let x = p[0] as f64;
+    let y = p[1] as f64;
+    let z = p[2] as f64;
+    sum[0] += x;
+    sum[1] += y;
+    sum[2] += z;
+    products[0] += x * x;
+    products[1] += y * y;
+    products[2] += z * z;
+    products[3] += x * y;
+    products[4] += x * z;
+    products[5] += y * z;
+}
+
 pub struct RmsdPerResPlan {
     selection: Selection,
     align: bool,

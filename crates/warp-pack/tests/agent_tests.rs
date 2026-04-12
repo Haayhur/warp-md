@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -705,36 +706,15 @@ fn capabilities_advertise_components_and_prmtop() {
     assert_eq!(
         caps["supported_ion_species"],
         json!([
-            "Br-",
-            "Ca2+",
-            "Cl-",
-            "HSO4-",
-            "I-",
-            "K+",
-            "Li+",
-            "Mg2+",
-            "Na+",
-            "NO3-",
-            "OAc-",
+            "Br-", "Ca2+", "Cl-", "HSO4-", "I-", "K+", "Li+", "Mg2+", "Na+", "NO3-", "OAc-",
             "SO4^2-"
         ])
     );
     assert_eq!(
         caps["supported_salt_names"],
         json!([
-            "cacl2",
-            "kcl",
-            "kno3",
-            "libr",
-            "licl",
-            "mgbr2",
-            "mgcl2",
-            "mgso4",
-            "na2so4",
-            "nabr",
-            "nacl",
-            "nai",
-            "naoac"
+            "cacl2", "kcl", "kno3", "libr", "licl", "mgbr2", "mgcl2", "mgso4", "na2so4", "nabr",
+            "nacl", "nai", "naoac"
         ])
     );
     assert_eq!(
@@ -761,6 +741,63 @@ fn capabilities_advertise_components_and_prmtop() {
         caps["supported_solute_inputs"],
         json!(["components", "solute", "polymer_build"])
     );
+}
+
+#[test]
+fn validate_without_ions_does_not_require_registry_files() {
+    let solute = write_solute("no_ions_solute.pdb");
+    let previous_ion = env::var_os("WARP_MD_ION_REGISTRY");
+    let previous_salt = env::var_os("WARP_MD_SALT_REGISTRY");
+    env::set_var(
+        "WARP_MD_ION_REGISTRY",
+        temp_path("missing_ions_registry.json")
+            .to_string_lossy()
+            .to_string(),
+    );
+    env::set_var(
+        "WARP_MD_SALT_REGISTRY",
+        temp_path("missing_salts_registry.json")
+            .to_string_lossy()
+            .to_string(),
+    );
+
+    let payload = json!({
+        "version": "warp-pack.agent.v1",
+        "solute": {
+            "path": solute.to_string_lossy(),
+        },
+        "environment": {
+            "box": {"mode": "fixed_size", "size_angstrom": 24.0, "shape": "cubic"},
+            "solvent": {"mode": "none"},
+            "ions": {"neutralize": false},
+            "morphology": {"mode": "single_chain_solution"},
+        },
+        "outputs": {
+            "coordinates": temp_path("no_ions_coords.pdb").to_string_lossy(),
+            "manifest": temp_path("no_ions_manifest.json").to_string_lossy(),
+        },
+    });
+
+    let (exit_code, result) = warp_pack::agent::validate_request_json(
+        &serde_json::to_string(&payload).expect("serialize payload"),
+    );
+
+    match previous_ion {
+        Some(value) => env::set_var("WARP_MD_ION_REGISTRY", value),
+        None => env::remove_var("WARP_MD_ION_REGISTRY"),
+    }
+    match previous_salt {
+        Some(value) => env::set_var("WARP_MD_SALT_REGISTRY", value),
+        None => env::remove_var("WARP_MD_SALT_REGISTRY"),
+    }
+
+    assert_eq!(
+        exit_code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&result).expect("validate result")
+    );
+    assert_eq!(result["valid"], true);
 }
 
 #[test]

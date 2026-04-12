@@ -142,6 +142,7 @@ pub fn sample_output() -> PackOutput {
                 charge: 0.1,
                 position: Vec3::new(1.0, 2.0, 3.0),
                 mol_id: 1,
+                pdb_metadata: None,
             },
             AtomRecord {
                 record_kind: AtomRecordKind::Atom,
@@ -154,10 +155,12 @@ pub fn sample_output() -> PackOutput {
                 charge: -0.1,
                 position: Vec3::new(2.0, 2.0, 3.0),
                 mol_id: 1,
+                pdb_metadata: None,
             },
         ],
         bonds: vec![(0, 1)],
         box_size: [10.0, 10.0, 10.0],
         ter_after: vec![1],
+        box_vectors: None,
     }
 }

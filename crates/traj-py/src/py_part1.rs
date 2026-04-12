@@ -41,6 +41,88 @@ impl PySystem {
         })
     }
 
+    #[staticmethod]
+    #[pyo3(signature = (atom_table, positions0=None))]
+    fn from_arrays(atom_table: &Bound<'_, PyAny>, positions0: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let names: Vec<String> = get_attr_or_item(atom_table, "name")?.extract()?;
+        let n_atoms = names.len();
+        let resnames: Vec<String> = match get_attr_or_item_opt(atom_table, "resname")? {
+            Some(value) => value.extract()?,
+            None => vec![String::new(); n_atoms],
+        };
+        let resid: Vec<i32> = match get_attr_or_item_opt(atom_table, "resid")? {
+            Some(value) => value.extract()?,
+            None => vec![0; n_atoms],
+        };
+        let masses: Vec<f32> = match get_attr_or_item_opt(atom_table, "mass")? {
+            Some(value) => value.extract()?,
+            None => vec![1.0; n_atoms],
+        };
+        let elements: Vec<String> = match get_attr_or_item_opt(atom_table, "element")? {
+            Some(value) => value.extract()?,
+            None => vec![String::new(); n_atoms],
+        };
+        let chains: Vec<String> = if let Some(value) = get_attr_or_item_opt(atom_table, "chain")? {
+            value.extract()?
+        } else if let Some(value) = get_attr_or_item_opt(atom_table, "chain_id")? {
+            if let Ok(v) = value.extract::<Vec<String>>() {
+                v
+            } else if let Ok(v) = value.extract::<Vec<u32>>() {
+                v.into_iter().map(|item| item.to_string()).collect()
+            } else if let Ok(v) = value.extract::<Vec<i32>>() {
+                v.into_iter().map(|item| item.to_string()).collect()
+            } else {
+                return Err(PyRuntimeError::new_err(
+                    "atom_table.chain_id must be strings or integers",
+                ));
+            }
+        } else {
+            vec![String::new(); n_atoms]
+        };
+
+        if resnames.len() != n_atoms
+            || resid.len() != n_atoms
+            || masses.len() != n_atoms
+            || elements.len() != n_atoms
+            || chains.len() != n_atoms
+        {
+            return Err(PyRuntimeError::new_err(
+                "atom_table fields must all have the same length",
+            ));
+        }
+
+        let mut interner = StringInterner::new();
+        let atoms = AtomTable {
+            name_id: names
+                .iter()
+                .map(|value| interner.intern_upper(value))
+                .collect(),
+            resname_id: resnames
+                .iter()
+                .map(|value| interner.intern_upper(value))
+                .collect(),
+            resid,
+            chain_id: chains
+                .iter()
+                .map(|value| interner.intern_upper(value))
+                .collect(),
+            element_id: elements
+                .iter()
+                .map(|value| interner.intern_upper(value))
+                .collect(),
+            mass: masses,
+        };
+        let positions0 = match positions0 {
+            Some(value) if !value.is_none() => Some(extract_positions0_rows(value, n_atoms)?),
+            _ => None,
+        };
+        let system = System::with_atoms(atoms, interner, positions0);
+        system.validate_positions0().map_err(to_py_err)?;
+        Ok(Self {
+            system: RefCell::new(system),
+        })
+    }
+
     fn select(&self, expr: &str) -> PyResult<PySelection> {
         let mut sys = self.system.borrow_mut();
         let selection = sys.select(expr).map_err(to_py_err)?;
@@ -377,8 +459,63 @@ fn selected_trr_frames_to_py<'py>(
 enum TrajKind {
     Dcd { reader: DcdReader },
     Xtc { reader: XtcReader },
+    Gro { reader: GroTrajReader },
+    G96 { reader: Gromos96TrajReader },
+    H5md { reader: H5mdReader },
+    Tng { reader: TngReader },
+    Cpt { reader: CptReader },
     Trr { reader: TrrReader },
     Pdb { reader: PdbTrajReader },
+    Memory { reader: MemoryTraj },
+}
+
+#[derive(Clone)]
+struct MemoryTraj {
+    n_atoms: usize,
+    frames: Vec<SelectedFrame>,
+    cursor: usize,
+}
+
+impl MemoryTraj {
+    fn new(frames: Vec<SelectedFrame>) -> Self {
+        let n_atoms = frames.first().map(|frame| frame.coords.len()).unwrap_or(0);
+        Self {
+            n_atoms,
+            frames,
+            cursor: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.cursor = 0;
+    }
+}
+
+impl TrajReader for MemoryTraj {
+    fn n_atoms(&self) -> usize {
+        self.n_atoms
+    }
+
+    fn n_frames_hint(&self) -> Option<usize> {
+        Some(self.frames.len())
+    }
+
+    fn read_chunk(&mut self, max_frames: usize, out: &mut FrameChunkBuilder) -> TrajResult<usize> {
+        let max_frames = max_frames.max(1);
+        if self.cursor >= self.frames.len() {
+            return Ok(0);
+        }
+        out.reset(self.n_atoms, max_frames);
+        let mut written = 0usize;
+        while written < max_frames && self.cursor < self.frames.len() {
+            let frame = &self.frames[self.cursor];
+            let dst = out.start_frame(frame.box_, frame.time_ps);
+            dst.copy_from_slice(&frame.coords);
+            self.cursor += 1;
+            written += 1;
+        }
+        Ok(written)
+    }
 }
 
 #[pyclass(unsendable)]
@@ -390,6 +527,23 @@ struct PyTrajectory {
 
 #[pymethods]
 impl PyTrajectory {
+    #[staticmethod]
+    #[pyo3(signature = (coords, r#box=None, time_ps=None))]
+    fn from_numpy(
+        coords: &Bound<'_, PyAny>,
+        r#box: Option<&Bound<'_, PyAny>>,
+        time_ps: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let frames = extract_selected_frames(coords, r#box, time_ps)?;
+        Ok(Self {
+            inner: RefCell::new(TrajKind::Memory {
+                reader: MemoryTraj::new(frames),
+            }),
+            auto_chunk_frames: RefCell::new(None),
+            chunk_builder: RefCell::new(None),
+        })
+    }
+
     #[staticmethod]
     #[pyo3(signature = (path, system, length_scale=None))]
     fn open_dcd(path: &str, system: &PySystem, length_scale: Option<f32>) -> PyResult<Self> {
@@ -419,6 +573,86 @@ impl PyTrajectory {
         }
         Ok(Self {
             inner: RefCell::new(TrajKind::Xtc { reader }),
+            auto_chunk_frames: RefCell::new(None),
+            chunk_builder: RefCell::new(None),
+        })
+    }
+
+    #[staticmethod]
+    fn open_gro(path: &str, system: &PySystem) -> PyResult<Self> {
+        let reader = GroTrajReader::open(path).map_err(to_py_err)?;
+        let sys = system.system.borrow();
+        if reader.n_atoms() != sys.n_atoms() {
+            return Err(PyRuntimeError::new_err(
+                "trajectory atom count does not match system",
+            ));
+        }
+        Ok(Self {
+            inner: RefCell::new(TrajKind::Gro { reader }),
+            auto_chunk_frames: RefCell::new(None),
+            chunk_builder: RefCell::new(None),
+        })
+    }
+
+    #[staticmethod]
+    fn open_g96(path: &str, system: &PySystem) -> PyResult<Self> {
+        let reader = Gromos96TrajReader::open(path).map_err(to_py_err)?;
+        let sys = system.system.borrow();
+        if reader.n_atoms() != sys.n_atoms() {
+            return Err(PyRuntimeError::new_err(
+                "trajectory atom count does not match system",
+            ));
+        }
+        Ok(Self {
+            inner: RefCell::new(TrajKind::G96 { reader }),
+            auto_chunk_frames: RefCell::new(None),
+            chunk_builder: RefCell::new(None),
+        })
+    }
+
+    #[staticmethod]
+    fn open_tng(path: &str, system: &PySystem) -> PyResult<Self> {
+        let reader = TngReader::open(path).map_err(to_py_err)?;
+        let sys = system.system.borrow();
+        if reader.n_atoms() != sys.n_atoms() {
+            return Err(PyRuntimeError::new_err(
+                "trajectory atom count does not match system",
+            ));
+        }
+        Ok(Self {
+            inner: RefCell::new(TrajKind::Tng { reader }),
+            auto_chunk_frames: RefCell::new(None),
+            chunk_builder: RefCell::new(None),
+        })
+    }
+
+    #[staticmethod]
+    fn open_h5md(path: &str, system: &PySystem) -> PyResult<Self> {
+        let reader = H5mdReader::open(path).map_err(to_py_err)?;
+        let sys = system.system.borrow();
+        if reader.n_atoms() != sys.n_atoms() {
+            return Err(PyRuntimeError::new_err(
+                "trajectory atom count does not match system",
+            ));
+        }
+        Ok(Self {
+            inner: RefCell::new(TrajKind::H5md { reader }),
+            auto_chunk_frames: RefCell::new(None),
+            chunk_builder: RefCell::new(None),
+        })
+    }
+
+    #[staticmethod]
+    fn open_cpt(path: &str, system: &PySystem) -> PyResult<Self> {
+        let reader = CptReader::open(path).map_err(to_py_err)?;
+        let sys = system.system.borrow();
+        if reader.n_atoms() != sys.n_atoms() {
+            return Err(PyRuntimeError::new_err(
+                "trajectory atom count does not match system",
+            ));
+        }
+        Ok(Self {
+            inner: RefCell::new(TrajKind::Cpt { reader }),
             auto_chunk_frames: RefCell::new(None),
             chunk_builder: RefCell::new(None),
         })
@@ -466,8 +700,14 @@ impl PyTrajectory {
         let n = match &*inner {
             TrajKind::Dcd { reader, .. } => reader.n_atoms(),
             TrajKind::Xtc { reader, .. } => reader.n_atoms(),
+            TrajKind::Gro { reader, .. } => reader.n_atoms(),
+            TrajKind::G96 { reader, .. } => reader.n_atoms(),
+            TrajKind::H5md { reader, .. } => reader.n_atoms(),
+            TrajKind::Tng { reader, .. } => reader.n_atoms(),
+            TrajKind::Cpt { reader, .. } => reader.n_atoms(),
             TrajKind::Trr { reader, .. } => reader.n_atoms(),
             TrajKind::Pdb { reader, .. } => reader.n_atoms(),
+            TrajKind::Memory { reader, .. } => reader.n_atoms(),
         };
         Ok(n)
     }
@@ -495,6 +735,45 @@ impl PyTrajectory {
                 reader.reset().map_err(to_py_err)?;
                 counted
             }
+            TrajKind::Gro { reader, .. } => {
+                let counted = traj_engine::count_frames(reader, chunk_frames).map_err(to_py_err)?;
+                reader.reset().map_err(to_py_err)?;
+                counted
+            }
+            TrajKind::G96 { reader, .. } => {
+                let counted = traj_engine::count_frames(reader, chunk_frames).map_err(to_py_err)?;
+                reader.reset().map_err(to_py_err)?;
+                counted
+            }
+            TrajKind::H5md { reader, .. } => {
+                if let Some(hint) = reader.n_frames_hint() {
+                    hint
+                } else {
+                    let counted =
+                        traj_engine::count_frames(reader, chunk_frames).map_err(to_py_err)?;
+                    reader.reset().map_err(to_py_err)?;
+                    counted
+                }
+            }
+            TrajKind::Tng { reader, .. } => {
+                if let Some(hint) = reader.n_frames_hint() {
+                    hint
+                } else {
+                    let counted =
+                        traj_engine::count_frames(reader, chunk_frames).map_err(to_py_err)?;
+                    reader.reset().map_err(to_py_err)?;
+                    counted
+                }
+            }
+            TrajKind::Cpt { reader, .. } => {
+                if let Some(hint) = reader.n_frames_hint() {
+                    hint
+                } else {
+                    let counted = traj_engine::count_frames(reader, chunk_frames).map_err(to_py_err)?;
+                    reader.reset().map_err(to_py_err)?;
+                    counted
+                }
+            }
             TrajKind::Trr { reader, .. } => {
                 if let Some(hint) = reader.n_frames_hint() {
                     hint
@@ -513,6 +792,7 @@ impl PyTrajectory {
                     counted
                 }
             }
+            TrajKind::Memory { reader, .. } => reader.n_frames_hint().unwrap_or(0),
         };
         Ok(total)
     }
@@ -526,10 +806,28 @@ impl PyTrajectory {
             TrajKind::Xtc { reader, .. } => {
                 reader.reset().map_err(to_py_err)?;
             }
+            TrajKind::Gro { reader, .. } => {
+                reader.reset().map_err(to_py_err)?;
+            }
+            TrajKind::G96 { reader, .. } => {
+                reader.reset().map_err(to_py_err)?;
+            }
+            TrajKind::H5md { reader, .. } => {
+                reader.reset().map_err(to_py_err)?;
+            }
+            TrajKind::Tng { reader, .. } => {
+                reader.reset().map_err(to_py_err)?;
+            }
+            TrajKind::Cpt { reader, .. } => {
+                reader.reset().map_err(to_py_err)?;
+            }
             TrajKind::Trr { reader, .. } => {
                 reader.reset().map_err(to_py_err)?;
             }
             TrajKind::Pdb { reader, .. } => {
+                reader.reset();
+            }
+            TrajKind::Memory { reader, .. } => {
                 reader.reset();
             }
         }
@@ -569,8 +867,16 @@ impl PyTrajectory {
                 let counted = match &mut *inner {
                     TrajKind::Dcd { reader, .. } => traj_engine::count_frames(reader, chunk_frames),
                     TrajKind::Xtc { reader, .. } => traj_engine::count_frames(reader, chunk_frames),
+                    TrajKind::Gro { reader, .. } => traj_engine::count_frames(reader, chunk_frames),
+                    TrajKind::G96 { reader, .. } => traj_engine::count_frames(reader, chunk_frames),
+                    TrajKind::H5md { reader, .. } => traj_engine::count_frames(reader, chunk_frames),
+                    TrajKind::Tng { reader, .. } => traj_engine::count_frames(reader, chunk_frames),
+                    TrajKind::Cpt { reader, .. } => traj_engine::count_frames(reader, chunk_frames),
                     TrajKind::Trr { reader, .. } => traj_engine::count_frames(reader, chunk_frames),
                     TrajKind::Pdb { reader, .. } => traj_engine::count_frames(reader, chunk_frames),
+                    TrajKind::Memory { reader, .. } => {
+                        traj_engine::count_frames(reader, chunk_frames)
+                    }
                 }
                 .map_err(to_py_err)?;
                 reset_traj(&mut inner).map_err(to_py_err)?;
@@ -628,8 +934,44 @@ impl PyTrajectory {
                 chunk_frames,
                 requirements,
             ),
+            TrajKind::Gro { reader, .. } => traj_engine::executor::collect_selected_frames_with_requirements(
+                reader,
+                &source_indices,
+                chunk_frames,
+                requirements,
+            ),
+            TrajKind::G96 { reader, .. } => traj_engine::executor::collect_selected_frames_with_requirements(
+                reader,
+                &source_indices,
+                chunk_frames,
+                requirements,
+            ),
+            TrajKind::H5md { reader, .. } => traj_engine::executor::collect_selected_frames_with_requirements(
+                reader,
+                &source_indices,
+                chunk_frames,
+                requirements,
+            ),
+            TrajKind::Tng { reader, .. } => traj_engine::executor::collect_selected_frames_with_requirements(
+                reader,
+                &source_indices,
+                chunk_frames,
+                requirements,
+            ),
+            TrajKind::Cpt { reader, .. } => traj_engine::executor::collect_selected_frames_with_requirements(
+                reader,
+                &source_indices,
+                chunk_frames,
+                requirements,
+            ),
             TrajKind::Trr { .. } => unreachable!(),
             TrajKind::Pdb { reader, .. } => traj_engine::executor::collect_selected_frames_with_requirements(
+                reader,
+                &source_indices,
+                chunk_frames,
+                requirements,
+            ),
+            TrajKind::Memory { reader, .. } => traj_engine::executor::collect_selected_frames_with_requirements(
                 reader,
                 &source_indices,
                 chunk_frames,
@@ -734,8 +1076,68 @@ impl PyTrajectory {
                     requirements,
                 )
             }
+            TrajKind::Gro { reader, .. } => {
+                traj_engine::executor::collect_strided_frames_with_requirements(
+                    reader,
+                    begin,
+                    end,
+                    step,
+                    chunk_frames,
+                    requirements,
+                )
+            }
+            TrajKind::G96 { reader, .. } => {
+                traj_engine::executor::collect_strided_frames_with_requirements(
+                    reader,
+                    begin,
+                    end,
+                    step,
+                    chunk_frames,
+                    requirements,
+                )
+            }
+            TrajKind::H5md { reader, .. } => {
+                traj_engine::executor::collect_strided_frames_with_requirements(
+                    reader,
+                    begin,
+                    end,
+                    step,
+                    chunk_frames,
+                    requirements,
+                )
+            }
+            TrajKind::Tng { reader, .. } => {
+                traj_engine::executor::collect_strided_frames_with_requirements(
+                    reader,
+                    begin,
+                    end,
+                    step,
+                    chunk_frames,
+                    requirements,
+                )
+            }
+            TrajKind::Cpt { reader, .. } => {
+                traj_engine::executor::collect_strided_frames_with_requirements(
+                    reader,
+                    begin,
+                    end,
+                    step,
+                    chunk_frames,
+                    requirements,
+                )
+            }
             TrajKind::Trr { .. } => unreachable!(),
             TrajKind::Pdb { reader, .. } => {
+                traj_engine::executor::collect_strided_frames_with_requirements(
+                    reader,
+                    begin,
+                    end,
+                    step,
+                    chunk_frames,
+                    requirements,
+                )
+            }
+            TrajKind::Memory { reader, .. } => {
                 traj_engine::executor::collect_strided_frames_with_requirements(
                     reader,
                     begin,
@@ -802,8 +1204,14 @@ impl PyTrajectory {
         let traj_n_atoms = match &*inner {
             TrajKind::Dcd { reader, .. } => reader.n_atoms(),
             TrajKind::Xtc { reader, .. } => reader.n_atoms(),
+            TrajKind::Gro { reader, .. } => reader.n_atoms(),
+            TrajKind::G96 { reader, .. } => reader.n_atoms(),
+            TrajKind::H5md { reader, .. } => reader.n_atoms(),
+            TrajKind::Tng { reader, .. } => reader.n_atoms(),
+            TrajKind::Cpt { reader, .. } => reader.n_atoms(),
             TrajKind::Trr { reader, .. } => reader.n_atoms(),
             TrajKind::Pdb { reader, .. } => reader.n_atoms(),
+            TrajKind::Memory { reader, .. } => reader.n_atoms(),
         };
         let n_atoms = atom_indices
             .as_ref()
@@ -821,6 +1229,26 @@ impl PyTrajectory {
                 reader.read_chunk_selected(max_frames, selection, &mut builder)
             }
             (TrajKind::Xtc { reader, .. }, None) => reader.read_chunk(max_frames, &mut builder),
+            (TrajKind::Gro { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(max_frames, selection, &mut builder)
+            }
+            (TrajKind::Gro { reader, .. }, None) => reader.read_chunk(max_frames, &mut builder),
+            (TrajKind::G96 { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(max_frames, selection, &mut builder)
+            }
+            (TrajKind::G96 { reader, .. }, None) => reader.read_chunk(max_frames, &mut builder),
+            (TrajKind::H5md { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(max_frames, selection, &mut builder)
+            }
+            (TrajKind::H5md { reader, .. }, None) => reader.read_chunk(max_frames, &mut builder),
+            (TrajKind::Tng { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(max_frames, selection, &mut builder)
+            }
+            (TrajKind::Tng { reader, .. }, None) => reader.read_chunk(max_frames, &mut builder),
+            (TrajKind::Cpt { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(max_frames, selection, &mut builder)
+            }
+            (TrajKind::Cpt { reader, .. }, None) => reader.read_chunk(max_frames, &mut builder),
             (TrajKind::Trr { reader, .. }, Some(selection)) => {
                 reader.read_chunk_selected(max_frames, selection, &mut builder)
             }
@@ -829,6 +1257,10 @@ impl PyTrajectory {
                 reader.read_chunk_selected(max_frames, selection, &mut builder)
             }
             (TrajKind::Pdb { reader, .. }, None) => reader.read_chunk(max_frames, &mut builder),
+            (TrajKind::Memory { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(max_frames, selection, &mut builder)
+            }
+            (TrajKind::Memory { reader, .. }, None) => reader.read_chunk(max_frames, &mut builder),
         }
         .map_err(to_py_err)?;
         if frames == 0 {
@@ -1043,8 +1475,14 @@ impl PyTrajectory {
         let traj_n_atoms = match &*inner {
             TrajKind::Dcd { reader, .. } => reader.n_atoms(),
             TrajKind::Xtc { reader, .. } => reader.n_atoms(),
+            TrajKind::Gro { reader, .. } => reader.n_atoms(),
+            TrajKind::G96 { reader, .. } => reader.n_atoms(),
+            TrajKind::H5md { reader, .. } => reader.n_atoms(),
+            TrajKind::Tng { reader, .. } => reader.n_atoms(),
+            TrajKind::Cpt { reader, .. } => reader.n_atoms(),
             TrajKind::Trr { reader, .. } => reader.n_atoms(),
             TrajKind::Pdb { reader, .. } => reader.n_atoms(),
+            TrajKind::Memory { reader, .. } => reader.n_atoms(),
         };
         let expected_atoms = atom_indices
             .as_ref()
@@ -1089,8 +1527,14 @@ impl PyTrajectory {
                         .map_err(to_py_err)?;
                     return Ok(read);
                 }
+                (TrajKind::Gro { .. }, _) => {}
+                (TrajKind::G96 { .. }, _) => {}
+                (TrajKind::H5md { .. }, _) => {}
+                (TrajKind::Tng { .. }, _) => {}
+                (TrajKind::Cpt { .. }, _) => {}
                 (TrajKind::Trr { .. }, _) => {}
                 (TrajKind::Pdb { .. }, _) => {}
+                (TrajKind::Memory { .. }, _) => {}
             }
         }
 
@@ -1109,6 +1553,26 @@ impl PyTrajectory {
                 reader.read_chunk_selected(target_frames, selection, &mut builder)
             }
             (TrajKind::Xtc { reader, .. }, None) => reader.read_chunk(target_frames, &mut builder),
+            (TrajKind::Gro { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(target_frames, selection, &mut builder)
+            }
+            (TrajKind::Gro { reader, .. }, None) => reader.read_chunk(target_frames, &mut builder),
+            (TrajKind::G96 { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(target_frames, selection, &mut builder)
+            }
+            (TrajKind::G96 { reader, .. }, None) => reader.read_chunk(target_frames, &mut builder),
+            (TrajKind::H5md { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(target_frames, selection, &mut builder)
+            }
+            (TrajKind::H5md { reader, .. }, None) => reader.read_chunk(target_frames, &mut builder),
+            (TrajKind::Tng { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(target_frames, selection, &mut builder)
+            }
+            (TrajKind::Tng { reader, .. }, None) => reader.read_chunk(target_frames, &mut builder),
+            (TrajKind::Cpt { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(target_frames, selection, &mut builder)
+            }
+            (TrajKind::Cpt { reader, .. }, None) => reader.read_chunk(target_frames, &mut builder),
             (TrajKind::Trr { reader, .. }, Some(selection)) => {
                 reader.read_chunk_selected(target_frames, selection, &mut builder)
             }
@@ -1117,6 +1581,10 @@ impl PyTrajectory {
                 reader.read_chunk_selected(target_frames, selection, &mut builder)
             }
             (TrajKind::Pdb { reader, .. }, None) => reader.read_chunk(target_frames, &mut builder),
+            (TrajKind::Memory { reader, .. }, Some(selection)) => {
+                reader.read_chunk_selected(target_frames, selection, &mut builder)
+            }
+            (TrajKind::Memory { reader, .. }, None) => reader.read_chunk(target_frames, &mut builder),
         }
         .map_err(to_py_err)?;
         if read == 0 {
@@ -1224,9 +1692,322 @@ impl PyTrajectory {
     }
 }
 
+fn extract_positions0_rows(any: &Bound<'_, PyAny>, n_atoms: usize) -> PyResult<Vec<[f32; 4]>> {
+    if let Ok(array) = any.extract::<PyReadonlyArrayDyn<f32>>() {
+        let view = array.as_array();
+        return positions0_from_view_f32(&view, n_atoms);
+    }
+    if let Ok(array) = any.extract::<PyReadonlyArrayDyn<f64>>() {
+        let view = array.as_array();
+        return positions0_from_view_f64(&view, n_atoms);
+    }
+    Err(PyRuntimeError::new_err(
+        "positions0 must be a numpy array with shape (atoms, 3) or (atoms, 4)",
+    ))
+}
+
+fn positions0_from_view_f32(
+    view: &numpy::ndarray::ArrayViewD<'_, f32>,
+    n_atoms: usize,
+) -> PyResult<Vec<[f32; 4]>> {
+    if view.ndim() != 2 {
+        return Err(PyRuntimeError::new_err(
+            "positions0 must have shape (atoms, 3) or (atoms, 4)",
+        ));
+    }
+    let shape = view.shape();
+    if shape[0] != n_atoms || (shape[1] != 3 && shape[1] != 4) {
+        return Err(PyRuntimeError::new_err(
+            "positions0 must match atom count and have 3 or 4 columns",
+        ));
+    }
+    let mut out = Vec::with_capacity(n_atoms);
+    for row in view.outer_iter() {
+        out.push([
+            row[0],
+            row[1],
+            row[2],
+            if shape[1] == 4 { row[3] } else { 1.0 },
+        ]);
+    }
+    Ok(out)
+}
+
+fn positions0_from_view_f64(
+    view: &numpy::ndarray::ArrayViewD<'_, f64>,
+    n_atoms: usize,
+) -> PyResult<Vec<[f32; 4]>> {
+    if view.ndim() != 2 {
+        return Err(PyRuntimeError::new_err(
+            "positions0 must have shape (atoms, 3) or (atoms, 4)",
+        ));
+    }
+    let shape = view.shape();
+    if shape[0] != n_atoms || (shape[1] != 3 && shape[1] != 4) {
+        return Err(PyRuntimeError::new_err(
+            "positions0 must match atom count and have 3 or 4 columns",
+        ));
+    }
+    let mut out = Vec::with_capacity(n_atoms);
+    for row in view.outer_iter() {
+        out.push([
+            row[0] as f32,
+            row[1] as f32,
+            row[2] as f32,
+            if shape[1] == 4 { row[3] as f32 } else { 1.0 },
+        ]);
+    }
+    Ok(out)
+}
+
+fn extract_selected_frames(
+    coords: &Bound<'_, PyAny>,
+    box_any: Option<&Bound<'_, PyAny>>,
+    time_any: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Vec<SelectedFrame>> {
+    let coord_frames = if let Ok(array) = coords.extract::<PyReadonlyArrayDyn<f32>>() {
+        selected_frames_from_coords_f32(array.as_array())?
+    } else if let Ok(array) = coords.extract::<PyReadonlyArrayDyn<f64>>() {
+        selected_frames_from_coords_f64(array.as_array())?
+    } else {
+        return Err(PyRuntimeError::new_err(
+            "coords must be a numpy array with shape (frames, atoms, 3) or (atoms, 3)",
+        ));
+    };
+    let n_frames = coord_frames.len();
+    let boxes = extract_box_frames(box_any, n_frames)?;
+    let times = extract_time_frames(time_any, n_frames)?;
+    let mut frames = Vec::with_capacity(n_frames);
+    for (index, coords) in coord_frames.into_iter().enumerate() {
+        frames.push(SelectedFrame {
+            coords,
+            box_: boxes[index],
+            time_ps: times[index],
+        });
+    }
+    Ok(frames)
+}
+
+fn selected_frames_from_coords_f32(
+    view: numpy::ndarray::ArrayViewD<'_, f32>,
+) -> PyResult<Vec<Vec<[f32; 4]>>> {
+    match view.ndim() {
+        2 => {
+            let shape = view.shape();
+            if shape[1] != 3 {
+                return Err(PyRuntimeError::new_err(
+                    "coords must have final dimension 3",
+                ));
+            }
+            let mut frame = Vec::with_capacity(shape[0]);
+            for row in view.outer_iter() {
+                frame.push([row[0], row[1], row[2], 1.0]);
+            }
+            Ok(vec![frame])
+        }
+        3 => {
+            let shape = view.shape();
+            if shape[2] != 3 {
+                return Err(PyRuntimeError::new_err(
+                    "coords must have final dimension 3",
+                ));
+            }
+            let mut frames = Vec::with_capacity(shape[0]);
+            for frame in view.outer_iter() {
+                let mut coords = Vec::with_capacity(shape[1]);
+                for row in frame.outer_iter() {
+                    coords.push([row[0], row[1], row[2], 1.0]);
+                }
+                frames.push(coords);
+            }
+            Ok(frames)
+        }
+        _ => Err(PyRuntimeError::new_err(
+            "coords must have shape (frames, atoms, 3) or (atoms, 3)",
+        )),
+    }
+}
+
+fn selected_frames_from_coords_f64(
+    view: numpy::ndarray::ArrayViewD<'_, f64>,
+) -> PyResult<Vec<Vec<[f32; 4]>>> {
+    match view.ndim() {
+        2 => {
+            let shape = view.shape();
+            if shape[1] != 3 {
+                return Err(PyRuntimeError::new_err(
+                    "coords must have final dimension 3",
+                ));
+            }
+            let mut frame = Vec::with_capacity(shape[0]);
+            for row in view.outer_iter() {
+                frame.push([row[0] as f32, row[1] as f32, row[2] as f32, 1.0]);
+            }
+            Ok(vec![frame])
+        }
+        3 => {
+            let shape = view.shape();
+            if shape[2] != 3 {
+                return Err(PyRuntimeError::new_err(
+                    "coords must have final dimension 3",
+                ));
+            }
+            let mut frames = Vec::with_capacity(shape[0]);
+            for frame in view.outer_iter() {
+                let mut coords = Vec::with_capacity(shape[1]);
+                for row in frame.outer_iter() {
+                    coords.push([row[0] as f32, row[1] as f32, row[2] as f32, 1.0]);
+                }
+                frames.push(coords);
+            }
+            Ok(frames)
+        }
+        _ => Err(PyRuntimeError::new_err(
+            "coords must have shape (frames, atoms, 3) or (atoms, 3)",
+        )),
+    }
+}
+
+fn extract_box_frames(
+    box_any: Option<&Bound<'_, PyAny>>,
+    n_frames: usize,
+) -> PyResult<Vec<Box3>> {
+    let Some(value) = box_any else {
+        return Ok(vec![Box3::None; n_frames]);
+    };
+    if value.is_none() {
+        return Ok(vec![Box3::None; n_frames]);
+    }
+    if let Ok(array) = value.extract::<PyReadonlyArrayDyn<f32>>() {
+        return box_frames_from_view_f32(array.as_array(), n_frames);
+    }
+    if let Ok(array) = value.extract::<PyReadonlyArrayDyn<f64>>() {
+        return box_frames_from_view_f64(array.as_array(), n_frames);
+    }
+    Err(PyRuntimeError::new_err(
+        "box must be a numpy array with shape (3,) or (frames, 3)",
+    ))
+}
+
+fn box_frames_from_view_f32(
+    view: numpy::ndarray::ArrayViewD<'_, f32>,
+    n_frames: usize,
+) -> PyResult<Vec<Box3>> {
+    match view.ndim() {
+        1 => {
+            if view.shape()[0] != 3 {
+                return Err(PyRuntimeError::new_err("box must have length 3"));
+            }
+            let box_ = Box3::Orthorhombic {
+                lx: view[0],
+                ly: view[1],
+                lz: view[2],
+            };
+            Ok(vec![box_; n_frames])
+        }
+        2 => {
+            let shape = view.shape();
+            if shape[0] != n_frames || shape[1] != 3 {
+                return Err(PyRuntimeError::new_err(
+                    "box must have shape (frames, 3)",
+                ));
+            }
+            let mut out = Vec::with_capacity(n_frames);
+            for row in view.outer_iter() {
+                out.push(Box3::Orthorhombic {
+                    lx: row[0],
+                    ly: row[1],
+                    lz: row[2],
+                });
+            }
+            Ok(out)
+        }
+        _ => Err(PyRuntimeError::new_err(
+            "box must have shape (3,) or (frames, 3)",
+        )),
+    }
+}
+
+fn box_frames_from_view_f64(
+    view: numpy::ndarray::ArrayViewD<'_, f64>,
+    n_frames: usize,
+) -> PyResult<Vec<Box3>> {
+    match view.ndim() {
+        1 => {
+            if view.shape()[0] != 3 {
+                return Err(PyRuntimeError::new_err("box must have length 3"));
+            }
+            let box_ = Box3::Orthorhombic {
+                lx: view[0] as f32,
+                ly: view[1] as f32,
+                lz: view[2] as f32,
+            };
+            Ok(vec![box_; n_frames])
+        }
+        2 => {
+            let shape = view.shape();
+            if shape[0] != n_frames || shape[1] != 3 {
+                return Err(PyRuntimeError::new_err(
+                    "box must have shape (frames, 3)",
+                ));
+            }
+            let mut out = Vec::with_capacity(n_frames);
+            for row in view.outer_iter() {
+                out.push(Box3::Orthorhombic {
+                    lx: row[0] as f32,
+                    ly: row[1] as f32,
+                    lz: row[2] as f32,
+                });
+            }
+            Ok(out)
+        }
+        _ => Err(PyRuntimeError::new_err(
+            "box must have shape (3,) or (frames, 3)",
+        )),
+    }
+}
+
+fn extract_time_frames(
+    time_any: Option<&Bound<'_, PyAny>>,
+    n_frames: usize,
+) -> PyResult<Vec<Option<f32>>> {
+    let Some(value) = time_any else {
+        return Ok(vec![None; n_frames]);
+    };
+    if value.is_none() {
+        return Ok(vec![None; n_frames]);
+    }
+    if let Ok(array) = value.extract::<PyReadonlyArray1<f32>>() {
+        let view = array.as_array();
+        if view.len() != n_frames {
+            return Err(PyRuntimeError::new_err(
+                "time_ps must have length equal to frames",
+            ));
+        }
+        return Ok(view.iter().copied().map(Some).collect());
+    }
+    if let Ok(array) = value.extract::<PyReadonlyArray1<f64>>() {
+        let view = array.as_array();
+        if view.len() != n_frames {
+            return Err(PyRuntimeError::new_err(
+                "time_ps must have length equal to frames",
+            ));
+        }
+        return Ok(view.iter().map(|value| Some(*value as f32)).collect());
+    }
+    Err(PyRuntimeError::new_err(
+        "time_ps must be a 1D numpy array",
+    ))
+}
+
 enum TrajWriteKind {
     Dcd { writer: DcdWriter },
     Xtc { writer: XtcWriter },
+    Gro { writer: GroTrajWriter },
+    G96 { writer: Gromos96TrajWriter },
+    H5md { writer: H5mdWriter },
+    Tng { writer: TngWriter },
+    Cpt { writer: CptWriter },
     Trr { writer: TrrWriter },
 }
 
@@ -1250,6 +2031,21 @@ impl PyTrajectoryWriter {
             },
             "xtc" => TrajWriteKind::Xtc {
                 writer: XtcWriter::create(path, n_atoms).map_err(to_py_err)?,
+            },
+            "gro" => TrajWriteKind::Gro {
+                writer: GroTrajWriter::create(path, n_atoms).map_err(to_py_err)?,
+            },
+            "g96" => TrajWriteKind::G96 {
+                writer: Gromos96TrajWriter::create(path, n_atoms).map_err(to_py_err)?,
+            },
+            "h5md" => TrajWriteKind::H5md {
+                writer: H5mdWriter::create(path, n_atoms).map_err(to_py_err)?,
+            },
+            "tng" => TrajWriteKind::Tng {
+                writer: TngWriter::create(path, n_atoms).map_err(to_py_err)?,
+            },
+            "cpt" => TrajWriteKind::Cpt {
+                writer: CptWriter::create(path, n_atoms).map_err(to_py_err)?,
             },
             "trr" => TrajWriteKind::Trr {
                 writer: TrrWriter::create(path, n_atoms).map_err(to_py_err)?,
@@ -1285,12 +2081,55 @@ impl PyTrajectoryWriter {
         let box_ = py_box_to_box3(box_lengths, box_matrix)?;
         let mut frames_written = self.frames_written.borrow_mut();
         let step = step.unwrap_or(*frames_written);
+        let drops_extras = {
+            let inner = self.inner.borrow();
+            (matches!(&*inner, TrajWriteKind::Gro { .. } | TrajWriteKind::G96 { .. })
+                && (forces.is_some() || lambda_value.is_some()))
+                || matches!(&*inner, TrajWriteKind::Cpt { .. }) && forces.is_some()
+        };
+        if drops_extras {
+            return Err(PyRuntimeError::new_err(
+                "selected trajectory writer does not support the requested extras",
+            ));
+        }
         let mut inner = self.inner.borrow_mut();
         match &mut *inner {
             TrajWriteKind::Dcd { writer } => writer.write_frame(&coords, box_).map_err(to_py_err)?,
             TrajWriteKind::Xtc { writer } => {
                 writer
                     .write_frame(&coords, box_, step, time_ps)
+                    .map_err(to_py_err)?
+            }
+            TrajWriteKind::Gro { writer } => {
+                writer
+                    .write_frame(&coords, box_, step, time_ps, velocities.as_deref())
+                    .map_err(to_py_err)?
+            }
+            TrajWriteKind::G96 { writer } => {
+                writer
+                    .write_frame(&coords, box_, step, time_ps, velocities.as_deref())
+                    .map_err(to_py_err)?
+            }
+            TrajWriteKind::H5md { writer } => {
+                writer
+                    .write_frame(&coords, box_, step, time_ps, velocities.as_deref(), forces.as_deref())
+                    .map_err(to_py_err)?
+            }
+            TrajWriteKind::Tng { writer } => {
+                writer
+                    .write_frame(&coords, box_, step, time_ps, velocities.as_deref(), forces.as_deref())
+                    .map_err(to_py_err)?
+            }
+            TrajWriteKind::Cpt { writer } => {
+                writer
+                    .write_frame(
+                        &coords,
+                        box_,
+                        step,
+                        time_ps,
+                        velocities.as_deref(),
+                        lambda_value,
+                    )
                     .map_err(to_py_err)?
             }
             TrajWriteKind::Trr { writer } => {
@@ -1316,6 +2155,11 @@ impl PyTrajectoryWriter {
         match &mut *inner {
             TrajWriteKind::Dcd { writer } => writer.flush().map_err(to_py_err)?,
             TrajWriteKind::Xtc { writer } => writer.flush().map_err(to_py_err)?,
+            TrajWriteKind::Gro { writer } => writer.flush().map_err(to_py_err)?,
+            TrajWriteKind::G96 { writer } => writer.flush().map_err(to_py_err)?,
+            TrajWriteKind::H5md { writer } => writer.flush().map_err(to_py_err)?,
+            TrajWriteKind::Tng { writer } => writer.flush().map_err(to_py_err)?,
+            TrajWriteKind::Cpt { writer } => writer.flush().map_err(to_py_err)?,
             TrajWriteKind::Trr { writer } => writer.flush().map_err(to_py_err)?,
         }
         Ok(())
@@ -1453,7 +2297,7 @@ impl PyRadgyrTensorPlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -1461,15 +2305,17 @@ impl PyRadgyrTensorPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray2<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
@@ -1625,7 +2471,7 @@ impl PyPairwiseRmsdPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -1633,15 +2479,17 @@ impl PyPairwiseRmsdPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray2<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),

@@ -4,53 +4,18 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple, Union
+from typing import Optional, Sequence, Union
 
 import numpy as np
 
-from ._chunk_io import read_chunk_fields
+from ._runtime import (
+    load_native_symbol,
+    native_inputs,
+    native_selection,
+    native_system_from_atom_count,
+    read_all_frames,
+)
 from .trajectory import ArrayTrajectory
-
-
-def _all_resid_mask(system) -> str:
-    atoms = system.atom_table()
-    resids = atoms.get("resid", [])
-    if not resids:
-        return "resid 0:0"
-    return f"resid {min(resids)}:{max(resids)}"
-
-
-def _selection_indices(system, mask: Optional[str]) -> np.ndarray:
-    if mask:
-        sel = system.select(mask)
-    else:
-        sel = system.select(_all_resid_mask(system))
-    return np.asarray(list(sel.indices), dtype=np.int64)
-
-
-def _read_all(traj, chunk_frames: Optional[int]):
-    max_chunk = chunk_frames or 128
-    coords_list = []
-    box_list = []
-    time_list = []
-    chunk = read_chunk_fields(traj, max_chunk, include_box=True, include_time=True)
-    if chunk is None:
-        return None, None, None
-    while chunk is not None:
-        coords_list.append(np.asarray(chunk["coords"], dtype=np.float64))
-        box = chunk.get("box")
-        if box is not None:
-            box_list.append(np.asarray(box, dtype=np.float64))
-        time = chunk.get("time")
-        if time is None:
-            time = chunk.get("time_ps")
-        if time is not None:
-            time_list.append(np.asarray(time, dtype=np.float64))
-        chunk = read_chunk_fields(traj, max_chunk, include_box=True, include_time=True)
-    coords = np.concatenate(coords_list, axis=0) if coords_list else np.empty((0, 0, 3))
-    box = np.concatenate(box_list, axis=0) if box_list else None
-    time = np.concatenate(time_list, axis=0) if time_list else None
-    return coords, box, time
 
 
 def _as_vec3(value: Union[Sequence[float], np.ndarray], name: str) -> np.ndarray:
@@ -69,34 +34,102 @@ def _as_mat3(value: Union[Sequence[float], np.ndarray], name: str) -> np.ndarray
     return mat
 
 
-def translate(traj, delta: Sequence[float], chunk_frames: Optional[int] = None):
-    coords, box, time = _read_all(traj, chunk_frames)
+def _prepare_source(
+    traj,
+    chunk_frames: Optional[int],
+):
+    coords, box, time = read_all_frames(traj, chunk_frames, include_box=True, include_time=True)
     if coords is None:
         raise ValueError("trajectory has no frames")
-    delta = _as_vec3(delta, "delta")
-    out = coords + delta[None, None, :]
-    return ArrayTrajectory(out.astype(np.float32), box=box, time_ps=time)
+    return (
+        np.asarray(coords, dtype=np.float32),
+        None if box is None else np.asarray(box, dtype=np.float32),
+        None if time is None else np.asarray(time, dtype=np.float64),
+    )
+
+
+def _run_native_coord_plan(
+    traj,
+    system,
+    plan,
+    chunk_frames: Optional[int],
+    *,
+    include_box: bool = False,
+) -> np.ndarray:
+    native_traj, native_system = native_inputs(
+        traj,
+        system,
+        chunk_frames,
+        include_box=include_box,
+    )
+    if native_traj is None or native_system is None:
+        raise RuntimeError("failed to prepare native transform inputs")
+    try:
+        return np.asarray(
+            plan.run(native_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            dtype=np.float32,
+        )
+    except Exception as exc:
+        raise RuntimeError("native transform plan execution failed") from exc
+
+
+def translate(traj, delta: Sequence[float], chunk_frames: Optional[int] = None):
+    coords, box, time = _prepare_source(traj, chunk_frames)
+    delta_vec = _as_vec3(delta, "delta")
+    if coords.size == 0:
+        return ArrayTrajectory(coords, box=box, time_ps=time)
+    plan_cls = load_native_symbol("TranslatePlan")
+    if plan_cls is None:
+        raise RuntimeError("TranslatePlan binding unavailable")
+    source = ArrayTrajectory(coords, box=box, time_ps=time)
+    system = native_system_from_atom_count(coords.shape[1], positions0=coords[0])
+    if system is None:
+        raise RuntimeError("failed to synthesize native transform system")
+    values = _run_native_coord_plan(source, system, plan_cls(tuple(delta_vec)), chunk_frames)
+    return ArrayTrajectory(values.reshape(coords.shape), box=box, time_ps=time)
 
 
 def scale(traj, factor: Union[float, Sequence[float]], chunk_frames: Optional[int] = None):
-    coords, box, time = _read_all(traj, chunk_frames)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
+    coords, box, time = _prepare_source(traj, chunk_frames)
+    if coords.size == 0:
+        return ArrayTrajectory(coords, box=box, time_ps=time)
     if isinstance(factor, (float, int)):
-        vec = np.array([float(factor)] * 3, dtype=np.float64)
+        plan_cls = load_native_symbol("ScalePlan")
+        if plan_cls is None:
+            raise RuntimeError("ScalePlan binding unavailable")
+        plan = plan_cls(float(factor))
     else:
         vec = _as_vec3(factor, "factor")
-    out = coords * vec[None, None, :]
-    return ArrayTrajectory(out.astype(np.float32), box=box, time_ps=time)
+        plan_cls = load_native_symbol("TransformPlan")
+        if plan_cls is None:
+            raise RuntimeError("TransformPlan binding unavailable")
+        plan = plan_cls(tuple(np.diag(vec).reshape(-1)), (0.0, 0.0, 0.0))
+    source = ArrayTrajectory(coords, box=box, time_ps=time)
+    system = native_system_from_atom_count(coords.shape[1], positions0=coords[0])
+    if system is None:
+        raise RuntimeError("failed to synthesize native transform system")
+    values = _run_native_coord_plan(source, system, plan, chunk_frames)
+    return ArrayTrajectory(values.reshape(coords.shape), box=box, time_ps=time)
 
 
 def rotate(traj, rotation: Sequence[float], chunk_frames: Optional[int] = None):
-    coords, box, time = _read_all(traj, chunk_frames)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
-    r = _as_mat3(rotation, "rotation")
-    out = coords @ r.T
-    return ArrayTrajectory(out.astype(np.float32), box=box, time_ps=time)
+    coords, box, time = _prepare_source(traj, chunk_frames)
+    if coords.size == 0:
+        return ArrayTrajectory(coords, box=box, time_ps=time)
+    plan_cls = load_native_symbol("RotatePlan")
+    if plan_cls is None:
+        raise RuntimeError("RotatePlan binding unavailable")
+    source = ArrayTrajectory(coords, box=box, time_ps=time)
+    system = native_system_from_atom_count(coords.shape[1], positions0=coords[0])
+    if system is None:
+        raise RuntimeError("failed to synthesize native transform system")
+    values = _run_native_coord_plan(
+        source,
+        system,
+        plan_cls(tuple(_as_mat3(rotation, "rotation").reshape(-1))),
+        chunk_frames,
+    )
+    return ArrayTrajectory(values.reshape(coords.shape), box=box, time_ps=time)
 
 
 def transform(
@@ -105,17 +138,27 @@ def transform(
     translation: Optional[Sequence[float]] = None,
     chunk_frames: Optional[int] = None,
 ):
-    coords, box, time = _read_all(traj, chunk_frames)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
-    out = coords
-    if rotation is not None:
-        r = _as_mat3(rotation, "rotation")
-        out = out @ r.T
-    if translation is not None:
-        t = _as_vec3(translation, "translation")
-        out = out + t[None, None, :]
-    return ArrayTrajectory(out.astype(np.float32), box=box, time_ps=time)
+    coords, box, time = _prepare_source(traj, chunk_frames)
+    if coords.size == 0:
+        return ArrayTrajectory(coords, box=box, time_ps=time)
+    if rotation is None and translation is None:
+        return ArrayTrajectory(coords, box=box, time_ps=time)
+    mat = np.eye(3, dtype=np.float64) if rotation is None else _as_mat3(rotation, "rotation")
+    vec = np.zeros(3, dtype=np.float64) if translation is None else _as_vec3(translation, "translation")
+    plan_cls = load_native_symbol("TransformPlan")
+    if plan_cls is None:
+        raise RuntimeError("TransformPlan binding unavailable")
+    source = ArrayTrajectory(coords, box=box, time_ps=time)
+    system = native_system_from_atom_count(coords.shape[1], positions0=coords[0])
+    if system is None:
+        raise RuntimeError("failed to synthesize native transform system")
+    values = _run_native_coord_plan(
+        source,
+        system,
+        plan_cls(tuple(mat.reshape(-1)), tuple(vec)),
+        chunk_frames,
+    )
+    return ArrayTrajectory(values.reshape(coords.shape), box=box, time_ps=time)
 
 
 def center(
@@ -127,47 +170,48 @@ def center(
     mass: bool = False,
     chunk_frames: Optional[int] = None,
 ):
-    coords, box, time = _read_all(traj, chunk_frames)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
+    coords, box, time = _prepare_source(traj, chunk_frames)
     if coords.size == 0:
-        return ArrayTrajectory(coords.astype(np.float32), box=box, time_ps=time)
-    indices = _selection_indices(system, mask)
-    if indices.size == 0:
-        raise ValueError("selection resolved to empty set")
-    sel = coords[:, indices, :]
-    if mass:
-        atoms = system.atom_table()
-        masses = np.asarray(atoms.get("mass", []), dtype=np.float64)
-        if masses.size == 0:
-            weights = np.ones(indices.size, dtype=np.float64)
-        else:
-            weights = masses[indices]
-        wsum = weights.sum()
-        if wsum == 0.0:
-            weights = np.ones(indices.size, dtype=np.float64)
-            wsum = weights.sum()
-        com = (sel * weights[None, :, None]).sum(axis=1) / wsum
-    else:
-        com = sel.mean(axis=1)
+        return ArrayTrajectory(coords, box=box, time_ps=time)
 
-    mode = mode.lower()
-    if mode == "origin":
-        target = np.zeros_like(com)
-    elif mode == "point":
+    normalized_mode = str(mode).lower()
+    point_vec = None
+    if normalized_mode == "point":
         if point is None:
             raise ValueError("point is required when mode='point'")
-        target = np.tile(_as_vec3(point, "point"), (coords.shape[0], 1))
-    elif mode == "box":
+        point_vec = tuple(_as_vec3(point, "point"))
+    elif normalized_mode == "box":
         if box is None:
             raise ValueError("box lengths required when mode='box'")
-        target = box * 0.5
-    else:
+    elif normalized_mode != "origin":
         raise ValueError("mode must be 'origin', 'point', or 'box'")
 
-    shift = target - com
-    out = coords + shift[:, None, :]
-    return ArrayTrajectory(out.astype(np.float32), box=box, time_ps=time)
+    plan_cls = load_native_symbol("CenterTrajectoryPlan")
+    if plan_cls is None:
+        raise RuntimeError("CenterTrajectoryPlan binding unavailable")
+    source = ArrayTrajectory(coords, box=box, time_ps=time)
+    native_traj, native_system = native_inputs(
+        source,
+        system,
+        chunk_frames,
+        include_box=True,
+    )
+    if native_traj is None or native_system is None:
+        raise RuntimeError("failed to prepare native center inputs")
+    try:
+        plan = plan_cls(
+            native_selection(system, native_system, mask),
+            mode=normalized_mode,
+            point=point_vec,
+            mass_weighted=mass,
+        )
+        values = np.asarray(
+            plan.run(native_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            dtype=np.float32,
+        )
+    except Exception as exc:
+        raise RuntimeError("native center plan execution failed") from exc
+    return ArrayTrajectory(values.reshape(coords.shape), box=box, time_ps=time)
 
 
 __all__ = ["center", "translate", "rotate", "scale", "transform"]

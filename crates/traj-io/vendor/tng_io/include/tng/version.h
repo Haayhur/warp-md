@@ -1,0 +1,10 @@
+#ifndef VERSION_CONFIG_H
+#define VERSION_CONFIG_H
+
+#define TNG_API_VERSION 8
+#define TNG_VERSION_MAJOR 1
+#define TNG_VERSION_MINOR 8
+#define TNG_VERSION_PATCHLEVEL 4
+#define TNG_VERSION "1.8.4"
+
+#endif

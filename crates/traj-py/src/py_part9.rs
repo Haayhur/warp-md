@@ -64,8 +64,8 @@ fn pack_to_py<'py>(py: Python<'py>, cfg: &PackConfigInput) -> PyResult<PyObject>
         charge.push(atom.charge);
         mol_id.push(atom.mol_id);
         record_kind.push(match atom.record_kind {
-            warp_pack::pack::AtomRecordKind::Atom => "ATOM".to_string(),
-            warp_pack::pack::AtomRecordKind::HetAtom => "HETATM".to_string(),
+            AtomRecordKind::Atom => "ATOM".to_string(),
+            AtomRecordKind::HetAtom => "HETATM".to_string(),
         });
     }
     let coords = Array2::from_shape_vec((n, 3), coords)
@@ -119,7 +119,7 @@ fn get_attr_or_item_opt<'py>(
     Ok(None)
 }
 
-fn extract_coords(any: &Bound<'_, PyAny>) -> PyResult<Vec<warp_pack::geom::Vec3>> {
+fn extract_coords(any: &Bound<'_, PyAny>) -> PyResult<Vec<Vec3>> {
     if let Ok(array) = any.extract::<numpy::PyReadonlyArray2<f32>>() {
         let view = array.as_array();
         let shape = view.shape();
@@ -128,20 +128,20 @@ fn extract_coords(any: &Bound<'_, PyAny>) -> PyResult<Vec<warp_pack::geom::Vec3>
         }
         let mut coords = Vec::with_capacity(shape[0]);
         for row in view.outer_iter() {
-            coords.push(warp_pack::geom::Vec3::new(row[0], row[1], row[2]));
+            coords.push(Vec3::new(row[0], row[1], row[2]));
         }
         return Ok(coords);
     }
     if let Ok(vec) = any.extract::<Vec<[f32; 3]>>() {
         return Ok(vec
             .into_iter()
-            .map(|v| warp_pack::geom::Vec3::new(v[0], v[1], v[2]))
+            .map(|v| Vec3::new(v[0], v[1], v[2]))
             .collect());
     }
     if let Ok(vec) = any.extract::<Vec<(f32, f32, f32)>>() {
         return Ok(vec
             .into_iter()
-            .map(|v| warp_pack::geom::Vec3::new(v.0, v.1, v.2))
+            .map(|v| Vec3::new(v.0, v.1, v.2))
             .collect());
     }
     if let Ok(vec) = any.extract::<Vec<Vec<f32>>>() {
@@ -150,7 +150,7 @@ fn extract_coords(any: &Bound<'_, PyAny>) -> PyResult<Vec<warp_pack::geom::Vec3>
             if row.len() != 3 {
                 return Err(PyRuntimeError::new_err("coords rows must have 3 values"));
             }
-            coords.push(warp_pack::geom::Vec3::new(row[0], row[1], row[2]));
+            coords.push(Vec3::new(row[0], row[1], row[2]));
         }
         return Ok(coords);
     }
@@ -171,7 +171,7 @@ fn extract_box(any: &Bound<'_, PyAny>) -> PyResult<[f32; 3]> {
     Err(PyRuntimeError::new_err("box must be a 3-length sequence"))
 }
 
-fn build_pack_output(result: &Bound<'_, PyAny>) -> PyResult<warp_pack::pack::PackOutput> {
+fn build_pack_output(result: &Bound<'_, PyAny>) -> PyResult<PackOutput> {
     let coords_any = get_attr_or_item(result, "coords")?;
     let coords = extract_coords(&coords_any)?;
     let n = coords.len();
@@ -250,13 +250,13 @@ fn build_pack_output(result: &Bound<'_, PyAny>) -> PyResult<warp_pack::pack::Pac
             .map(|s| s.to_ascii_uppercase())
             .map(|s| {
                 if s.starts_with("HET") {
-                    warp_pack::pack::AtomRecordKind::HetAtom
+                    AtomRecordKind::HetAtom
                 } else {
-                    warp_pack::pack::AtomRecordKind::Atom
+                    AtomRecordKind::Atom
                 }
             })
-            .unwrap_or(warp_pack::pack::AtomRecordKind::Atom);
-        atoms.push(warp_pack::pack::AtomRecord {
+            .unwrap_or(AtomRecordKind::Atom);
+        atoms.push(AtomRecord {
             record_kind: kind,
             name: name[i].clone(),
             element: element[i].clone(),
@@ -267,6 +267,7 @@ fn build_pack_output(result: &Bound<'_, PyAny>) -> PyResult<warp_pack::pack::Pac
             charge: charge_val,
             position: coords[i],
             mol_id: mol_val,
+            pdb_metadata: None,
         });
     }
 
@@ -300,11 +301,12 @@ fn build_pack_output(result: &Bound<'_, PyAny>) -> PyResult<warp_pack::pack::Pac
         None => [0.0, 0.0, 0.0],
     };
 
-    Ok(warp_pack::pack::PackOutput {
+    Ok(PackOutput {
         atoms,
         bonds,
         box_size,
         ter_after,
+        box_vectors: None,
     })
 }
 
@@ -740,12 +742,12 @@ fn pack_write_output(
     hexadecimal_indices: bool,
  ) -> PyResult<PyObject> {
     let out = build_pack_output(result)?;
-    let spec = warp_pack::config::OutputSpec {
+    let spec = OutputSpec {
         path: path.to_string(),
         format: format.to_string(),
         scale: Some(scale),
     };
-    let written = warp_pack::io::write_output(
+    let written = warp_structure::io::write_output(
         &out,
         &spec,
         add_box_sides,
@@ -978,6 +980,7 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRmsfPlan>()?;
     m.add_class::<PyBfactorsPlan>()?;
     m.add_class::<PyAtomicFluctPlan>()?;
+    m.add_class::<PyAtomicAdpPlan>()?;
     m.add_class::<PyDistancePlan>()?;
     m.add_class::<PyLowestCurvePlan>()?;
     m.add_class::<PyVectorPlan>()?;
@@ -1030,6 +1033,7 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMsdPlan>()?;
     m.add_class::<PyAtomicCorrPlan>()?;
     m.add_class::<PyVelocityAutoCorrPlan>()?;
+    m.add_class::<PyVanHovePlan>()?;
     m.add_class::<PyXcorrPlan>()?;
     m.add_class::<PyWaveletPlan>()?;
     m.add_class::<PySurfPlan>()?;
@@ -1040,11 +1044,22 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNmrIredPlan>()?;
     m.add_class::<PyRotAcfPlan>()?;
     m.add_class::<PyConductivityPlan>()?;
+    m.add_class::<PyCurrentPlan>()?;
     m.add_class::<PyDielectricPlan>()?;
+    m.add_class::<PyBundlePlan>()?;
+    m.add_class::<PyH2OrderPlan>()?;
+    m.add_class::<PyHelixPlan>()?;
+    m.add_class::<PyMdmatPlan>()?;
+    m.add_class::<PyHelixOrientPlan>()?;
+    m.add_class::<PyHydOrderPlan>()?;
+    m.add_class::<PySOrientPlan>()?;
+    m.add_class::<PySpolPlan>()?;
     m.add_class::<PyDipoleAlignmentPlan>()?;
     m.add_class::<PyIonPairCorrelationPlan>()?;
+    m.add_class::<PySaltBridgePlan>()?;
     m.add_class::<PyStructureFactorPlan>()?;
     m.add_class::<PyDockingPlan>()?;
+    m.add_class::<PyRamaPlan>()?;
     m.add_class::<PyDsspPlan>()?;
     m.add_class::<PyGistGridPlan>()?;
     m.add_class::<PyGistDirectPlan>()?;
@@ -1052,6 +1067,8 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCountInVoxelPlan>()?;
     m.add_class::<PyDensityPlan>()?;
     m.add_class::<PyVolmapPlan>()?;
+    m.add_class::<PyDensityMapPlan>()?;
+    m.add_class::<PyPotentialPlan>()?;
     m.add_class::<PyFreeVolumePlan>()?;
     m.add_class::<PyBondiFfvPlan>()?;
     m.add_class::<PyEquipartitionPlan>()?;
@@ -1087,6 +1104,7 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pack_write_output, m)?)?;
     m.add_function(wrap_pyfunction!(pep_build, m)?)?;
     m.add_function(wrap_pyfunction!(pep_mutate, m)?)?;
+    register_warp_md_agent_contract(m)?;
     Ok(())
 }
 
@@ -1127,8 +1145,14 @@ fn run_plan<P: Plan>(
     let output = match traj {
         TrajKind::Dcd { reader, .. } => exec.run_plan(plan, reader),
         TrajKind::Xtc { reader, .. } => exec.run_plan(plan, reader),
+        TrajKind::Gro { reader, .. } => exec.run_plan(plan, reader),
+        TrajKind::G96 { reader, .. } => exec.run_plan(plan, reader),
+        TrajKind::Cpt { reader, .. } => exec.run_plan(plan, reader),
+        TrajKind::H5md { reader, .. } => exec.run_plan(plan, reader),
+        TrajKind::Tng { reader, .. } => exec.run_plan(plan, reader),
         TrajKind::Trr { reader, .. } => exec.run_plan(plan, reader),
         TrajKind::Pdb { reader, .. } => exec.run_plan(plan, reader),
+        TrajKind::Memory { reader, .. } => exec.run_plan(plan, reader),
     }
     .map_err(to_py_err)?;
     Ok(output)
@@ -1138,8 +1162,17 @@ fn reset_traj(traj: &mut TrajKind) -> TrajResult<()> {
     match traj {
         TrajKind::Dcd { reader, .. } => reader.reset(),
         TrajKind::Xtc { reader, .. } => reader.reset(),
+        TrajKind::Gro { reader, .. } => reader.reset(),
+        TrajKind::G96 { reader, .. } => reader.reset(),
+        TrajKind::Cpt { reader, .. } => reader.reset(),
+        TrajKind::H5md { reader, .. } => reader.reset(),
+        TrajKind::Tng { reader, .. } => reader.reset(),
         TrajKind::Trr { reader, .. } => reader.reset(),
         TrajKind::Pdb { reader, .. } => {
+            reader.reset();
+            Ok(())
+        }
+        TrajKind::Memory { reader, .. } => {
             reader.reset();
             Ok(())
         }
@@ -1186,8 +1219,14 @@ fn run_plan_with_frame_subset<P: Plan>(
             let counted = match traj {
                 TrajKind::Dcd { reader, .. } => traj_engine::count_frames(reader, max_frames),
                 TrajKind::Xtc { reader, .. } => traj_engine::count_frames(reader, max_frames),
+                TrajKind::Gro { reader, .. } => traj_engine::count_frames(reader, max_frames),
+                TrajKind::G96 { reader, .. } => traj_engine::count_frames(reader, max_frames),
+                TrajKind::Cpt { reader, .. } => traj_engine::count_frames(reader, max_frames),
+                TrajKind::H5md { reader, .. } => traj_engine::count_frames(reader, max_frames),
+                TrajKind::Tng { reader, .. } => traj_engine::count_frames(reader, max_frames),
                 TrajKind::Trr { reader, .. } => traj_engine::count_frames(reader, max_frames),
                 TrajKind::Pdb { reader, .. } => traj_engine::count_frames(reader, max_frames),
+                TrajKind::Memory { reader, .. } => traj_engine::count_frames(reader, max_frames),
             }
             .map_err(to_py_err)?;
             reset_traj(traj).map_err(to_py_err)?;
@@ -1212,10 +1251,28 @@ fn run_plan_with_frame_subset<P: Plan>(
         TrajKind::Xtc { reader, .. } => {
             exec.run_plan_on_selected_frames(plan, reader, &source_indices)
         }
+        TrajKind::Gro { reader, .. } => {
+            exec.run_plan_on_selected_frames(plan, reader, &source_indices)
+        }
+        TrajKind::G96 { reader, .. } => {
+            exec.run_plan_on_selected_frames(plan, reader, &source_indices)
+        }
+        TrajKind::Cpt { reader, .. } => {
+            exec.run_plan_on_selected_frames(plan, reader, &source_indices)
+        }
+        TrajKind::H5md { reader, .. } => {
+            exec.run_plan_on_selected_frames(plan, reader, &source_indices)
+        }
+        TrajKind::Tng { reader, .. } => {
+            exec.run_plan_on_selected_frames(plan, reader, &source_indices)
+        }
         TrajKind::Trr { reader, .. } => {
             exec.run_plan_on_selected_frames(plan, reader, &source_indices)
         }
         TrajKind::Pdb { reader, .. } => {
+            exec.run_plan_on_selected_frames(plan, reader, &source_indices)
+        }
+        TrajKind::Memory { reader, .. } => {
             exec.run_plan_on_selected_frames(plan, reader, &source_indices)
         }
     }
@@ -1284,8 +1341,14 @@ fn traj_n_atoms(traj: &TrajKind) -> usize {
     match traj {
         TrajKind::Dcd { reader, .. } => reader.n_atoms(),
         TrajKind::Xtc { reader, .. } => reader.n_atoms(),
+        TrajKind::Gro { reader, .. } => reader.n_atoms(),
+        TrajKind::G96 { reader, .. } => reader.n_atoms(),
+        TrajKind::Cpt { reader, .. } => reader.n_atoms(),
+        TrajKind::H5md { reader, .. } => reader.n_atoms(),
+        TrajKind::Tng { reader, .. } => reader.n_atoms(),
         TrajKind::Trr { reader, .. } => reader.n_atoms(),
         TrajKind::Pdb { reader, .. } => reader.n_atoms(),
+        TrajKind::Memory { reader, .. } => reader.n_atoms(),
     }
 }
 
@@ -1293,8 +1356,14 @@ fn traj_n_frames_hint(traj: &TrajKind) -> Option<usize> {
     match traj {
         TrajKind::Dcd { reader, .. } => reader.n_frames_hint(),
         TrajKind::Xtc { reader, .. } => reader.n_frames_hint(),
+        TrajKind::Gro { reader, .. } => reader.n_frames_hint(),
+        TrajKind::G96 { reader, .. } => reader.n_frames_hint(),
+        TrajKind::Cpt { reader, .. } => reader.n_frames_hint(),
+        TrajKind::H5md { reader, .. } => reader.n_frames_hint(),
+        TrajKind::Tng { reader, .. } => reader.n_frames_hint(),
         TrajKind::Trr { reader, .. } => reader.n_frames_hint(),
         TrajKind::Pdb { reader, .. } => reader.n_frames_hint(),
+        TrajKind::Memory { reader, .. } => reader.n_frames_hint(),
     }
 }
 
@@ -1360,6 +1429,61 @@ fn bench_chunk_frames(
                     reader.read_chunk(chunk_frames, &mut builder)
                 }
             }
+            TrajKind::Gro { reader, .. } => {
+                if let Some(selection) = preferred_selection {
+                    if use_selected {
+                        reader.read_chunk_selected(chunk_frames, selection, &mut builder)
+                    } else {
+                        reader.read_chunk(chunk_frames, &mut builder)
+                    }
+                } else {
+                    reader.read_chunk(chunk_frames, &mut builder)
+                }
+            }
+            TrajKind::G96 { reader, .. } => {
+                if let Some(selection) = preferred_selection {
+                    if use_selected {
+                        reader.read_chunk_selected(chunk_frames, selection, &mut builder)
+                    } else {
+                        reader.read_chunk(chunk_frames, &mut builder)
+                    }
+                } else {
+                    reader.read_chunk(chunk_frames, &mut builder)
+                }
+            }
+            TrajKind::Cpt { reader, .. } => {
+                if let Some(selection) = preferred_selection {
+                    if use_selected {
+                        reader.read_chunk_selected(chunk_frames, selection, &mut builder)
+                    } else {
+                        reader.read_chunk(chunk_frames, &mut builder)
+                    }
+                } else {
+                    reader.read_chunk(chunk_frames, &mut builder)
+                }
+            }
+            TrajKind::H5md { reader, .. } => {
+                if let Some(selection) = preferred_selection {
+                    if use_selected {
+                        reader.read_chunk_selected(chunk_frames, selection, &mut builder)
+                    } else {
+                        reader.read_chunk(chunk_frames, &mut builder)
+                    }
+                } else {
+                    reader.read_chunk(chunk_frames, &mut builder)
+                }
+            }
+            TrajKind::Tng { reader, .. } => {
+                if let Some(selection) = preferred_selection {
+                    if use_selected {
+                        reader.read_chunk_selected(chunk_frames, selection, &mut builder)
+                    } else {
+                        reader.read_chunk(chunk_frames, &mut builder)
+                    }
+                } else {
+                    reader.read_chunk(chunk_frames, &mut builder)
+                }
+            }
             TrajKind::Trr { reader, .. } => {
                 if let Some(selection) = preferred_selection {
                     if use_selected {
@@ -1372,6 +1496,17 @@ fn bench_chunk_frames(
                 }
             }
             TrajKind::Pdb { reader, .. } => {
+                if let Some(selection) = preferred_selection {
+                    if use_selected {
+                        reader.read_chunk_selected(chunk_frames, selection, &mut builder)
+                    } else {
+                        reader.read_chunk(chunk_frames, &mut builder)
+                    }
+                } else {
+                    reader.read_chunk(chunk_frames, &mut builder)
+                }
+            }
+            TrajKind::Memory { reader, .. } => {
                 if let Some(selection) = preferred_selection {
                     if use_selected {
                         reader.read_chunk_selected(chunk_frames, selection, &mut builder)
@@ -1413,6 +1548,40 @@ fn matrix_to_py<'py>(
     let array = Array2::from_shape_vec((rows, cols), data)
         .map_err(|_| PyRuntimeError::new_err("invalid matrix shape"))?;
     Ok(array.into_pyarray_bound(py).into_gil_ref())
+}
+
+fn split_rama_phi_psi(
+    data: &[f32],
+    rows: usize,
+    cols: usize,
+) -> PyResult<(Vec<f32>, Vec<f32>, usize)> {
+    if rows.saturating_mul(cols) != data.len() {
+        return Err(PyRuntimeError::new_err("rama output shape mismatch"));
+    }
+    if cols % 2 != 0 {
+        return Err(PyRuntimeError::new_err("rama output must have even column count"));
+    }
+    let n_res = cols / 2;
+    let mut phi = Vec::with_capacity(rows * n_res);
+    let mut psi = Vec::with_capacity(rows * n_res);
+    for row in 0..rows {
+        let row_offset = row * cols;
+        for resid in 0..n_res {
+            let base = row_offset + resid * 2;
+            phi.push(data[base]);
+            psi.push(data[base + 1]);
+        }
+    }
+    Ok((phi, psi, n_res))
+}
+
+fn saltbr_class_name(code: u8) -> &'static str {
+    match code {
+        0 => "plus_plus",
+        1 => "min_min",
+        2 => "plus_min",
+        _ => "unknown",
+    }
 }
 
 fn timeseries_to_py(
@@ -1477,6 +1646,449 @@ fn dielectric_to_py(py: Python<'_>, output: traj_engine::DielectricOutput) -> Py
     Ok(dict.into_py(py))
 }
 
+fn h2order_to_py(py: Python<'_>, output: traj_engine::H2OrderOutput) -> PyResult<PyObject> {
+    if output.rows.saturating_mul(output.cols) != output.dipole.len() {
+        return Err(PyRuntimeError::new_err("h2order dipole shape mismatch"));
+    }
+    let dipole = Array2::from_shape_vec((output.rows, output.cols), output.dipole)
+        .map_err(|_| PyRuntimeError::new_err("invalid h2order dipole shape"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("coordinate", PyArray1::from_vec_bound(py, output.coordinate))?;
+    dict.set_item("order", PyArray1::from_vec_bound(py, output.order))?;
+    dict.set_item("dipole", dipole.into_pyarray_bound(py))?;
+    dict.set_item("counts", PyArray1::from_vec_bound(py, output.counts))?;
+    dict.set_item("axis", axis_name(output.axis))?;
+    dict.set_item("bounds", PyArray1::from_vec_bound(py, output.bounds.to_vec()))?;
+    dict.set_item("slice_width", output.slice_width)?;
+    dict.set_item("n_frames", output.n_frames)?;
+    dict.set_item("used_box", output.used_box)?;
+    dict.set_item("length_scale", output.length_scale)?;
+    dict.set_item("dipole_unit", output.dipole_unit)?;
+    Ok(dict.into_py(py))
+}
+
+fn helix_to_py(py: Python<'_>, output: traj_engine::HelixOutput) -> PyResult<PyObject> {
+    let scalar_shape = (output.frames, output.residues);
+    let fragment_mask = Array2::from_shape_vec(scalar_shape, output.fragment_mask)
+        .map_err(|_| PyRuntimeError::new_err("invalid helix fragment mask shape"))?;
+    let residue_rmsd = Array2::from_shape_vec(scalar_shape, output.residue_rmsd)
+        .map_err(|_| PyRuntimeError::new_err("invalid helix residue rmsd shape"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("labels", output.labels)?;
+    dict.set_item("time", PyArray1::from_vec_bound(py, output.time))?;
+    dict.set_item(
+        "fragment_start",
+        PyArray1::from_vec_bound(py, output.fragment_start),
+    )?;
+    dict.set_item(
+        "fragment_end",
+        PyArray1::from_vec_bound(py, output.fragment_end),
+    )?;
+    dict.set_item("radius", PyArray1::from_vec_bound(py, output.radius))?;
+    dict.set_item("twist", PyArray1::from_vec_bound(py, output.twist))?;
+    dict.set_item("rise", PyArray1::from_vec_bound(py, output.rise))?;
+    dict.set_item("length", PyArray1::from_vec_bound(py, output.length))?;
+    dict.set_item("dipole", PyArray1::from_vec_bound(py, output.dipole))?;
+    dict.set_item("rmsd", PyArray1::from_vec_bound(py, output.rmsd))?;
+    dict.set_item("ca_phi", PyArray1::from_vec_bound(py, output.ca_phi))?;
+    dict.set_item("phi", PyArray1::from_vec_bound(py, output.phi))?;
+    dict.set_item("psi", PyArray1::from_vec_bound(py, output.psi))?;
+    dict.set_item("hb3", PyArray1::from_vec_bound(py, output.hb3))?;
+    dict.set_item("hb4", PyArray1::from_vec_bound(py, output.hb4))?;
+    dict.set_item("hb5", PyArray1::from_vec_bound(py, output.hb5))?;
+    dict.set_item(
+        "ellipticity",
+        PyArray1::from_vec_bound(py, output.ellipticity),
+    )?;
+    dict.set_item("fragment_mask", fragment_mask.into_pyarray_bound(py))?;
+    dict.set_item("residue_rmsd", residue_rmsd.into_pyarray_bound(py))?;
+    dict.set_item(
+        "helicity_fraction",
+        PyArray1::from_vec_bound(py, output.helicity_fraction),
+    )?;
+    dict.set_item("jca_ha", PyArray1::from_vec_bound(py, output.jca_ha))?;
+    dict.set_item("frames", output.frames)?;
+    dict.set_item("residues", output.residues)?;
+    dict.set_item("fit", output.fit)?;
+    dict.set_item("check_each_frame", output.check_each_frame)?;
+    dict.set_item("length_scale", output.length_scale)?;
+    dict.set_item("used_box", output.used_box)?;
+    Ok(dict.into_py(py))
+}
+
+fn helixorient_to_py(py: Python<'_>, output: traj_engine::HelixOrientOutput) -> PyResult<PyObject> {
+    let vec_shape = (output.frames, output.residues, 3);
+    let scalar_shape = (output.frames, output.residues);
+    let axis = Array3::from_shape_vec(vec_shape, output.axis)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient axis shape"))?;
+    let center = Array3::from_shape_vec(vec_shape, output.center)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient center shape"))?;
+    let residue_vector = Array3::from_shape_vec(vec_shape, output.residue_vector)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient residue vector shape"))?;
+    let normal = Array3::from_shape_vec(vec_shape, output.normal)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient normal shape"))?;
+    let rise = Array2::from_shape_vec(scalar_shape, output.rise)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient rise shape"))?;
+    let radius = Array2::from_shape_vec(scalar_shape, output.radius)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient radius shape"))?;
+    let twist = Array2::from_shape_vec(scalar_shape, output.twist)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient twist shape"))?;
+    let bending = Array2::from_shape_vec(scalar_shape, output.bending)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient bending shape"))?;
+    let tilt = Array2::from_shape_vec(scalar_shape, output.tilt)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient tilt shape"))?;
+    let rotation = Array2::from_shape_vec(scalar_shape, output.rotation)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient rotation shape"))?;
+    let theta1 = Array2::from_shape_vec(scalar_shape, output.theta1)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient theta1 shape"))?;
+    let theta2 = Array2::from_shape_vec(scalar_shape, output.theta2)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient theta2 shape"))?;
+    let theta3 = Array2::from_shape_vec(scalar_shape, output.theta3)
+        .map_err(|_| PyRuntimeError::new_err("invalid helixorient theta3 shape"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("labels", output.labels)?;
+    dict.set_item("time", PyArray1::from_vec_bound(py, output.time))?;
+    dict.set_item("axis", axis.into_pyarray_bound(py))?;
+    dict.set_item("center", center.into_pyarray_bound(py))?;
+    dict.set_item("residue_vector", residue_vector.into_pyarray_bound(py))?;
+    dict.set_item("normal", normal.into_pyarray_bound(py))?;
+    dict.set_item("rise", rise.into_pyarray_bound(py))?;
+    dict.set_item("radius", radius.into_pyarray_bound(py))?;
+    dict.set_item("twist", twist.into_pyarray_bound(py))?;
+    dict.set_item("bending", bending.into_pyarray_bound(py))?;
+    dict.set_item("tilt", tilt.into_pyarray_bound(py))?;
+    dict.set_item("rotation", rotation.into_pyarray_bound(py))?;
+    dict.set_item("theta1", theta1.into_pyarray_bound(py))?;
+    dict.set_item("theta2", theta2.into_pyarray_bound(py))?;
+    dict.set_item("theta3", theta3.into_pyarray_bound(py))?;
+    dict.set_item("frames", output.frames)?;
+    dict.set_item("residues", output.residues)?;
+    dict.set_item("use_sidechain", output.use_sidechain)?;
+    dict.set_item("incremental", output.incremental)?;
+    dict.set_item("used_box", output.used_box)?;
+    dict.set_item("length_scale", output.length_scale)?;
+    Ok(dict.into_py(py))
+}
+
+fn bundle_to_py(py: Python<'_>, output: traj_engine::BundleOutput) -> PyResult<PyObject> {
+    let vec_shape = (output.frames, output.axes, 3);
+    let scalar_shape = (output.frames, output.axes);
+    let reference_axis = Array2::from_shape_vec((output.frames, 3), output.reference_axis)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle reference-axis shape"))?;
+    let top = Array3::from_shape_vec(vec_shape, output.top)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle top shape"))?;
+    let bottom = Array3::from_shape_vec(vec_shape, output.bottom)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle bottom shape"))?;
+    let mid = Array3::from_shape_vec(vec_shape, output.mid)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle mid shape"))?;
+    let direction = Array3::from_shape_vec(vec_shape, output.direction)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle direction shape"))?;
+    let length = Array2::from_shape_vec(scalar_shape, output.length)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle length shape"))?;
+    let distance = Array2::from_shape_vec(scalar_shape, output.distance)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle distance shape"))?;
+    let z_shift = Array2::from_shape_vec(scalar_shape, output.z_shift)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle z-shift shape"))?;
+    let tilt = Array2::from_shape_vec(scalar_shape, output.tilt)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle tilt shape"))?;
+    let radial_tilt = Array2::from_shape_vec(scalar_shape, output.radial_tilt)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle radial-tilt shape"))?;
+    let lateral_tilt = Array2::from_shape_vec(scalar_shape, output.lateral_tilt)
+        .map_err(|_| PyRuntimeError::new_err("invalid bundle lateral-tilt shape"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("labels", output.labels)?;
+    dict.set_item("time", PyArray1::from_vec_bound(py, output.time))?;
+    dict.set_item("reference_axis", reference_axis.into_pyarray_bound(py))?;
+    dict.set_item("top", top.into_pyarray_bound(py))?;
+    dict.set_item("bottom", bottom.into_pyarray_bound(py))?;
+    dict.set_item("mid", mid.into_pyarray_bound(py))?;
+    dict.set_item("direction", direction.into_pyarray_bound(py))?;
+    dict.set_item("length", length.into_pyarray_bound(py))?;
+    dict.set_item("distance", distance.into_pyarray_bound(py))?;
+    dict.set_item("z_shift", z_shift.into_pyarray_bound(py))?;
+    dict.set_item("tilt", tilt.into_pyarray_bound(py))?;
+    dict.set_item("radial_tilt", radial_tilt.into_pyarray_bound(py))?;
+    dict.set_item("lateral_tilt", lateral_tilt.into_pyarray_bound(py))?;
+    if output.has_kink {
+        let kink = Array3::from_shape_vec(vec_shape, output.kink)
+            .map_err(|_| PyRuntimeError::new_err("invalid bundle kink shape"))?;
+        let kink_angle = Array2::from_shape_vec(scalar_shape, output.kink_angle)
+            .map_err(|_| PyRuntimeError::new_err("invalid bundle kink-angle shape"))?;
+        let kink_radial = Array2::from_shape_vec(scalar_shape, output.kink_radial)
+            .map_err(|_| PyRuntimeError::new_err("invalid bundle kink-radial shape"))?;
+        let kink_lateral = Array2::from_shape_vec(scalar_shape, output.kink_lateral)
+            .map_err(|_| PyRuntimeError::new_err("invalid bundle kink-lateral shape"))?;
+        dict.set_item("kink", kink.into_pyarray_bound(py))?;
+        dict.set_item("kink_angle", kink_angle.into_pyarray_bound(py))?;
+        dict.set_item("kink_radial", kink_radial.into_pyarray_bound(py))?;
+        dict.set_item("kink_lateral", kink_lateral.into_pyarray_bound(py))?;
+    } else {
+        dict.set_item("kink", py.None())?;
+        dict.set_item("kink_angle", py.None())?;
+        dict.set_item("kink_radial", py.None())?;
+        dict.set_item("kink_lateral", py.None())?;
+    }
+    dict.set_item("frames", output.frames)?;
+    dict.set_item("axes", output.axes)?;
+    dict.set_item("has_kink", output.has_kink)?;
+    dict.set_item("use_z_reference", output.use_z_reference)?;
+    dict.set_item("mass_weighted", output.mass_weighted)?;
+    dict.set_item("used_box", output.used_box)?;
+    dict.set_item("length_scale", output.length_scale)?;
+    Ok(dict.into_py(py))
+}
+
+fn mdmat_to_py(py: Python<'_>, output: traj_engine::MdmatOutput) -> PyResult<PyObject> {
+    let mean_matrix = Array2::from_shape_vec((output.residues, output.residues), output.mean_matrix)
+        .map_err(|_| PyRuntimeError::new_err("invalid mdmat mean-matrix shape"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("labels", output.labels)?;
+    dict.set_item("mean_matrix", mean_matrix.into_pyarray_bound(py))?;
+    if output.frame_matrices.is_empty() {
+        dict.set_item("time", py.None())?;
+        dict.set_item("frame_matrices", py.None())?;
+    } else {
+        let frame_shape = (output.frames, output.residues, output.residues);
+        let frame_matrices = Array3::from_shape_vec(frame_shape, output.frame_matrices)
+            .map_err(|_| PyRuntimeError::new_err("invalid mdmat frame-matrix shape"))?;
+        dict.set_item("time", PyArray1::from_vec_bound(py, output.time))?;
+        dict.set_item("frame_matrices", frame_matrices.into_pyarray_bound(py))?;
+    }
+    dict.set_item("frames", output.frames)?;
+    dict.set_item("residues", output.residues)?;
+    dict.set_item("truncate", output.truncate)?;
+    dict.set_item("used_box", output.used_box)?;
+    dict.set_item("length_scale", output.length_scale)?;
+    if output.distinct_contact_atoms.is_empty() {
+        dict.set_item("distinct_contact_atoms", py.None())?;
+        dict.set_item("mean_contact_atoms", py.None())?;
+        dict.set_item("contact_ratio", py.None())?;
+        dict.set_item("residue_atom_counts", py.None())?;
+        dict.set_item("mean_contact_atoms_per_residue_atom", py.None())?;
+    } else {
+        dict.set_item(
+            "distinct_contact_atoms",
+            PyArray1::from_vec_bound(py, output.distinct_contact_atoms),
+        )?;
+        dict.set_item(
+            "mean_contact_atoms",
+            PyArray1::from_vec_bound(py, output.mean_contact_atoms),
+        )?;
+        dict.set_item(
+            "contact_ratio",
+            PyArray1::from_vec_bound(py, output.contact_ratio),
+        )?;
+        dict.set_item(
+            "residue_atom_counts",
+            PyArray1::from_vec_bound(py, output.residue_atom_counts),
+        )?;
+        dict.set_item(
+            "mean_contact_atoms_per_residue_atom",
+            PyArray1::from_vec_bound(py, output.mean_contact_atoms_per_residue_atom),
+        )?;
+    }
+    Ok(dict.into_py(py))
+}
+
+fn hydorder_to_py(py: Python<'_>, output: traj_engine::HydOrderOutput) -> PyResult<PyObject> {
+    let grid_shape = (output.dims[0], output.dims[1], output.dims[2]);
+    let sg_grid = Array3::from_shape_vec(grid_shape, output.sg_grid)
+        .map_err(|_| PyRuntimeError::new_err("invalid hydorder sg grid shape"))?;
+    let sk_grid = Array3::from_shape_vec(grid_shape, output.sk_grid)
+        .map_err(|_| PyRuntimeError::new_err("invalid hydorder sk grid shape"))?;
+    let counts = Array3::from_shape_vec(grid_shape, output.counts)
+        .map_err(|_| PyRuntimeError::new_err("invalid hydorder count grid shape"))?;
+    let bounds = Array2::from_shape_vec((3, 2), output.bounds.to_vec())
+        .map_err(|_| PyRuntimeError::new_err("invalid hydorder bounds shape"))?;
+    let interface_shape = (
+        output.interface_blocks,
+        output.interface_rows,
+        output.interface_cols,
+    );
+    let interface_lower = Array3::from_shape_vec(interface_shape, output.interface_lower)
+        .map_err(|_| PyRuntimeError::new_err("invalid hydorder lower interface shape"))?;
+    let interface_upper = Array3::from_shape_vec(interface_shape, output.interface_upper)
+        .map_err(|_| PyRuntimeError::new_err("invalid hydorder upper interface shape"))?;
+    let mut x = Vec::with_capacity(output.dims[0]);
+    let mut y = Vec::with_capacity(output.dims[1]);
+    let mut z = Vec::with_capacity(output.dims[2]);
+    for i in 0..output.dims[0] {
+        x.push(output.bounds[0] + (i as f32 + 0.5) * output.bin_width);
+    }
+    for i in 0..output.dims[1] {
+        y.push(output.bounds[2] + (i as f32 + 0.5) * output.bin_width);
+    }
+    for i in 0..output.dims[2] {
+        z.push(output.bounds[4] + (i as f32 + 0.5) * output.bin_width);
+    }
+    let dict = PyDict::new_bound(py);
+    dict.set_item("sg_mean", output.sg_mean)?;
+    dict.set_item("sk_mean", output.sk_mean)?;
+    dict.set_item("sg_grid", sg_grid.into_pyarray_bound(py))?;
+    dict.set_item("sk_grid", sk_grid.into_pyarray_bound(py))?;
+    dict.set_item("counts", counts.into_pyarray_bound(py))?;
+    dict.set_item("x", PyArray1::from_vec_bound(py, x))?;
+    dict.set_item("y", PyArray1::from_vec_bound(py, y))?;
+    dict.set_item("z", PyArray1::from_vec_bound(py, z))?;
+    dict.set_item("dims", output.dims.to_vec())?;
+    dict.set_item("bounds", bounds.into_pyarray_bound(py))?;
+    dict.set_item("bin_width", output.bin_width)?;
+    dict.set_item("axis", axis_name(output.axis))?;
+    dict.set_item(
+        "plane_axes",
+        vec![
+            axis_name(output.plane_axes[0]).to_string(),
+            axis_name(output.plane_axes[1]).to_string(),
+        ],
+    )?;
+    dict.set_item("n_frames", output.n_frames)?;
+    dict.set_item("used_box", output.used_box)?;
+    dict.set_item("length_scale", output.length_scale)?;
+    dict.set_item("interface_lower", interface_lower.into_pyarray_bound(py))?;
+    dict.set_item("interface_upper", interface_upper.into_pyarray_bound(py))?;
+    dict.set_item("interface_blocks", output.interface_blocks)?;
+    dict.set_item("interface_threshold", output.interface_threshold)?;
+    dict.set_item("block_size", output.block_size)?;
+    Ok(dict.into_py(py))
+}
+
+fn sorient_to_py(py: Python<'_>, output: traj_engine::SOrientOutput) -> PyResult<PyObject> {
+    let dict = PyDict::new_bound(py);
+    dict.set_item("cos_theta1", PyArray1::from_vec_bound(py, output.cos_theta1))?;
+    dict.set_item(
+        "cos_theta1_distribution",
+        PyArray1::from_vec_bound(py, output.cos_theta1_distribution),
+    )?;
+    dict.set_item("abs_cos_theta2", PyArray1::from_vec_bound(py, output.abs_cos_theta2))?;
+    dict.set_item(
+        "abs_cos_theta2_distribution",
+        PyArray1::from_vec_bound(py, output.abs_cos_theta2_distribution),
+    )?;
+    dict.set_item("r", PyArray1::from_vec_bound(py, output.r))?;
+    dict.set_item(
+        "mean_cos_theta1",
+        PyArray1::from_vec_bound(py, output.mean_cos_theta1),
+    )?;
+    dict.set_item(
+        "mean_p2_theta2",
+        PyArray1::from_vec_bound(py, output.mean_p2_theta2),
+    )?;
+    dict.set_item("cumulative_r", PyArray1::from_vec_bound(py, output.cumulative_r))?;
+    dict.set_item(
+        "cumulative_cos_theta1",
+        PyArray1::from_vec_bound(py, output.cumulative_cos_theta1),
+    )?;
+    dict.set_item(
+        "cumulative_p2_theta2",
+        PyArray1::from_vec_bound(py, output.cumulative_p2_theta2),
+    )?;
+    dict.set_item(
+        "count_density",
+        PyArray1::from_vec_bound(py, output.count_density),
+    )?;
+    dict.set_item("counts", PyArray1::from_vec_bound(py, output.counts))?;
+    dict.set_item("window_count", output.window_count)?;
+    dict.set_item("average_shell_size", output.average_shell_size)?;
+    dict.set_item("window_mean_cos_theta1", output.window_mean_cos_theta1)?;
+    dict.set_item("window_mean_p2_theta2", output.window_mean_p2_theta2)?;
+    dict.set_item("r_window", PyArray1::from_vec_bound(py, output.r_window.to_vec()))?;
+    dict.set_item("cbin", output.cbin)?;
+    dict.set_item("rbin", output.rbin)?;
+    dict.set_item("r_profile_max", output.r_profile_max)?;
+    dict.set_item("use_vector23", output.use_vector23)?;
+    dict.set_item("use_com", output.use_com)?;
+    dict.set_item("n_frames", output.n_frames)?;
+    dict.set_item("n_reference_positions", output.n_reference_positions)?;
+    dict.set_item("used_box", output.used_box)?;
+    dict.set_item("length_scale", output.length_scale)?;
+    Ok(dict.into_py(py))
+}
+
+fn spol_to_py(py: Python<'_>, output: traj_engine::SpolOutput) -> PyResult<PyObject> {
+    let dict = PyDict::new_bound(py);
+    dict.set_item("r", PyArray1::from_vec_bound(py, output.r))?;
+    dict.set_item(
+        "cumulative_count",
+        PyArray1::from_vec_bound(py, output.cumulative_count),
+    )?;
+    dict.set_item(
+        "shell_count",
+        PyArray1::from_vec_bound(py, output.shell_count),
+    )?;
+    dict.set_item(
+        "shell_count_per_frame",
+        PyArray1::from_vec_bound(py, output.shell_count_per_frame),
+    )?;
+    dict.set_item("average_shell_size", output.average_shell_size)?;
+    dict.set_item("average_dipole", output.average_dipole)?;
+    dict.set_item("dipole_std", output.dipole_std)?;
+    dict.set_item("average_radial_dipole", output.average_radial_dipole)?;
+    dict.set_item(
+        "average_radial_polarization",
+        output.average_radial_polarization,
+    )?;
+    dict.set_item("window_count", output.window_count)?;
+    dict.set_item("r_window", PyArray1::from_vec_bound(py, output.r_window.to_vec()))?;
+    dict.set_item("bin_width", output.bin_width)?;
+    dict.set_item("r_hist_max", output.r_hist_max)?;
+    dict.set_item("use_com", output.use_com)?;
+    dict.set_item("reference_atom", output.reference_atom)?;
+    dict.set_item("refdip", output.refdip)?;
+    dict.set_item("n_frames", output.n_frames)?;
+    dict.set_item("used_box", output.used_box)?;
+    dict.set_item("length_scale", output.length_scale)?;
+    dict.set_item("dipole_unit", output.dipole_unit)?;
+    Ok(dict.into_py(py))
+}
+
+fn current_to_py(py: Python<'_>, output: traj_engine::CurrentOutput) -> PyResult<PyObject> {
+    if output.conductivity_rows.saturating_mul(output.conductivity_cols) != output.conductivity.len()
+    {
+        return Err(PyRuntimeError::new_err("current conductivity shape mismatch"));
+    }
+    let conductivity =
+        Array2::from_shape_vec((output.conductivity_rows, output.conductivity_cols), output.conductivity)
+            .map_err(|_| PyRuntimeError::new_err("invalid current conductivity shape"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item(
+        "conductivity_time",
+        PyArray1::from_vec_bound(py, output.conductivity_time),
+    )?;
+    dict.set_item("conductivity", conductivity.into_pyarray_bound(py))?;
+    dict.set_item("time", PyArray1::from_vec_bound(py, output.frame_time))?;
+    dict.set_item("md_sq", PyArray1::from_vec_bound(py, output.md_sq))?;
+    dict.set_item("mj_sq", PyArray1::from_vec_bound(py, output.mj_sq))?;
+    dict.set_item("md_mj", PyArray1::from_vec_bound(py, output.md_mj))?;
+    dict.set_item("dielectric_rot", output.dielectric_rot)?;
+    dict.set_item("dielectric_total", output.dielectric_total)?;
+    dict.set_item("mu_avg", output.mu_avg)?;
+    dict.set_item("conductivity_static", output.conductivity_static)?;
+    Ok(dict.into_py(py))
+}
+
+fn potential_to_py(py: Python<'_>, output: traj_engine::PotentialOutput) -> PyResult<PyObject> {
+    let dict = PyDict::new_bound(py);
+    dict.set_item("coordinate", PyArray1::from_vec_bound(py, output.coordinate))?;
+    dict.set_item(
+        "charge_density",
+        PyArray1::from_vec_bound(py, output.charge_density),
+    )?;
+    dict.set_item("field", PyArray1::from_vec_bound(py, output.field))?;
+    dict.set_item("potential", PyArray1::from_vec_bound(py, output.potential))?;
+    dict.set_item("axis", axis_name(output.axis))?;
+    dict.set_item("bounds", PyArray1::from_vec_bound(py, output.bounds.to_vec()))?;
+    dict.set_item("slice_width", output.slice_width)?;
+    dict.set_item("n_frames", output.n_frames)?;
+    dict.set_item("used_box", output.used_box)?;
+    dict.set_item("centered", output.centered)?;
+    dict.set_item("symmetrized", output.symmetrized)?;
+    dict.set_item("corrected", output.corrected)?;
+    dict.set_item("length_scale", output.length_scale)?;
+    dict.set_item("discard_start", output.discard_start)?;
+    dict.set_item("discard_end", output.discard_end)?;
+    Ok(dict.into_py(py))
+}
+
 fn structure_factor_to_py(
     py: Python<'_>,
     output: traj_engine::StructureFactorOutput,
@@ -1488,6 +2100,209 @@ fn structure_factor_to_py(
     Ok((r, g, q, s).into_py(py))
 }
 
+fn validate_vanhove_integral_radius(radius: Option<f64>) -> PyResult<Option<f32>> {
+    match radius {
+        Some(value) if !value.is_finite() || value < 0.0 => {
+            Err(PyValueError::new_err("integral_radius must be finite and >= 0"))
+        }
+        Some(value) => Ok(Some(value as f32)),
+        None => Ok(None),
+    }
+}
+
+fn validate_vanhove_curve_step(step: Option<i64>) -> PyResult<Option<usize>> {
+    match step {
+        Some(value) if value <= 0 => Err(PyValueError::new_err("curve_step must be positive")),
+        Some(value) => Ok(Some(value as usize)),
+        None => Ok(None),
+    }
+}
+
+fn vanhove_integral_profile(
+    matrix: &[f32],
+    rows: usize,
+    cols: usize,
+    r_bin: f32,
+    radius: f32,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; rows];
+    if rows == 0 || cols == 0 {
+        return out;
+    }
+    let max_bin = ((radius / r_bin).floor() as usize)
+        .saturating_add(1)
+        .min(cols);
+    if max_bin == 0 {
+        return out;
+    }
+    for row in 0..rows {
+        let row_slice = &matrix[row * cols..(row + 1) * cols];
+        let mut sum = 0.0f32;
+        for (bin, &value) in row_slice[..max_bin].iter().enumerate() {
+            let weight = if bin == 0 { 0.5 } else { 1.0 };
+            sum += value * weight;
+        }
+        out[row] = sum * r_bin;
+    }
+    out
+}
+
+fn vanhove_curve_indices(
+    rows: usize,
+    curve_lags: Option<&[i64]>,
+    curve_step: Option<usize>,
+) -> Vec<usize> {
+    if let Some(lags) = curve_lags {
+        let mut indices = Vec::with_capacity(lags.len());
+        for &value in lags {
+            let idx = if value < 0 {
+                rows as i64 + value
+            } else {
+                value
+            };
+            if idx >= 0 {
+                let idx = idx as usize;
+                if idx < rows {
+                    indices.push(idx);
+                }
+            }
+        }
+        return indices;
+    }
+    if let Some(step) = curve_step {
+        return (0..rows).step_by(step).collect();
+    }
+    Vec::new()
+}
+
+fn vanhove_curve_matrix(
+    matrix: &[f32],
+    rows: usize,
+    cols: usize,
+    indices: &[usize],
+) -> Vec<f32> {
+    let mut out = Vec::with_capacity(indices.len().saturating_mul(cols));
+    for &row in indices {
+        if row < rows {
+            out.extend_from_slice(&matrix[row * cols..(row + 1) * cols]);
+        }
+    }
+    out
+}
+
+fn vanhove_to_py(
+    py: Python<'_>,
+    output: traj_engine::VanHoveOutput,
+    integral_radius: Option<f64>,
+    curve_lags: Option<Vec<i64>>,
+    curve_step: Option<i64>,
+) -> PyResult<PyObject> {
+    let traj_engine::VanHoveOutput {
+        time,
+        time_sqrt,
+        r,
+        matrix,
+        rows,
+        cols,
+        counts,
+        r_bin,
+        r_max,
+    } = output;
+    if time.len() != rows || time_sqrt.len() != rows {
+        return Err(PyRuntimeError::new_err("invalid vanhove time axis shape"));
+    }
+    if r.len() != cols || matrix.len() != rows.saturating_mul(cols) {
+        return Err(PyRuntimeError::new_err("invalid vanhove matrix shape"));
+    }
+    let integral_radius = validate_vanhove_integral_radius(integral_radius)?;
+    let curve_step = validate_vanhove_curve_step(curve_step)?;
+    let integral = integral_radius.map(|radius| vanhove_integral_profile(&matrix, rows, cols, r_bin, radius));
+    let curve_indices = if curve_lags.is_some() || curve_step.is_some() {
+        Some(vanhove_curve_indices(rows, curve_lags.as_deref(), curve_step))
+    } else {
+        None
+    };
+    let curve_time = curve_indices
+        .as_ref()
+        .map(|indices| indices.iter().map(|&idx| time[idx]).collect::<Vec<f32>>());
+    let curve_matrix = curve_indices.as_ref().map(|indices| {
+        Array2::from_shape_vec((indices.len(), cols), vanhove_curve_matrix(&matrix, rows, cols, indices))
+            .map_err(|_| PyRuntimeError::new_err("invalid vanhove curve matrix shape"))
+    }).transpose()?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("time", PyArray1::from_vec_bound(py, time))?;
+    dict.set_item("time_sqrt", PyArray1::from_vec_bound(py, time_sqrt))?;
+    dict.set_item("r", PyArray1::from_vec_bound(py, r))?;
+    let matrix = Array2::from_shape_vec((rows, cols), matrix)
+        .map_err(|_| PyRuntimeError::new_err("invalid vanhove matrix shape"))?;
+    dict.set_item("matrix", matrix.into_pyarray_bound(py))?;
+    dict.set_item("counts", PyArray1::from_vec_bound(py, counts))?;
+    dict.set_item("r_bin", r_bin)?;
+    dict.set_item("r_max", r_max)?;
+    if let (Some(radius), Some(integral)) = (integral_radius, integral) {
+        dict.set_item("integral_radius", radius)?;
+        dict.set_item("integral", PyArray1::from_vec_bound(py, integral))?;
+    }
+    if let (Some(indices), Some(curve_time), Some(curve_matrix)) =
+        (curve_indices, curve_time, curve_matrix)
+    {
+        let curve_indices: Vec<i64> = indices.iter().map(|&idx| idx as i64).collect();
+        dict.set_item("curve_indices", PyArray1::from_vec_bound(py, curve_indices))?;
+        dict.set_item("curve_time", PyArray1::from_vec_bound(py, curve_time))?;
+        dict.set_item("curve_matrix", curve_matrix.into_pyarray_bound(py))?;
+    }
+    Ok(dict.into_py(py))
+}
+
+#[cfg(test)]
+mod vanhove_py_tests {
+    use super::*;
+
+    #[test]
+    fn vanhove_integral_matches_python_contract() {
+        let matrix = vec![
+            1.0f32, 0.0, 0.0, //
+            0.0, 1.0, 0.0, //
+            0.0, 0.25, 0.5,
+        ];
+        let integral = vanhove_integral_profile(&matrix, 3, 3, 1.0, 1.0);
+        assert_eq!(integral, vec![0.5, 1.0, 0.25]);
+    }
+
+    #[test]
+    fn vanhove_curve_selection_matches_python_contract() {
+        assert_eq!(
+            vanhove_curve_indices(3, Some(&[1, -1, 8, -9]), None),
+            vec![1, 2]
+        );
+        assert_eq!(vanhove_curve_indices(5, None, Some(2)), vec![0, 2, 4]);
+    }
+}
+
+#[cfg(test)]
+mod rama_py_tests {
+    use super::*;
+
+    #[test]
+    fn rama_split_matches_python_contract() {
+        let data = vec![f32::NAN, 10.0, -29.0, 1.0, 45.0, f32::NAN];
+        let (phi, psi, n_res) = split_rama_phi_psi(&data, 1, 6).unwrap();
+        assert_eq!(n_res, 3);
+        assert!(phi[0].is_nan());
+        assert_eq!(phi[1], -29.0);
+        assert_eq!(phi[2], 45.0);
+        assert_eq!(psi[0], 10.0);
+        assert_eq!(psi[1], 1.0);
+        assert!(psi[2].is_nan());
+    }
+
+    #[test]
+    fn rama_split_rejects_odd_columns() {
+        let err = split_rama_phi_psi(&[0.0, 1.0, 2.0], 1, 3).unwrap_err();
+        assert!(err.to_string().contains("even column count"));
+    }
+}
+
 fn grid_to_py(py: Python<'_>, output: traj_engine::GridOutput) -> PyResult<PyObject> {
     let dict = PyDict::new_bound(py);
     dict.set_item("dims", vec![output.dims[0], output.dims[1], output.dims[2]])?;
@@ -1497,6 +2312,46 @@ fn grid_to_py(py: Python<'_>, output: traj_engine::GridOutput) -> PyResult<PyObj
     dict.set_item("last", PyArray1::from_vec_bound(py, output.last))?;
     dict.set_item("min", PyArray1::from_vec_bound(py, output.min))?;
     dict.set_item("max", PyArray1::from_vec_bound(py, output.max))?;
+    Ok(dict.into_py(py))
+}
+
+fn density_map_to_py(py: Python<'_>, output: traj_engine::DensityMapOutput) -> PyResult<PyObject> {
+    if output.rows.saturating_mul(output.cols) != output.matrix.len() {
+        return Err(PyRuntimeError::new_err("density map shape mismatch"));
+    }
+    let matrix = Array2::from_shape_vec((output.rows, output.cols), output.matrix)
+        .map_err(|_| PyRuntimeError::new_err("invalid density map shape"))?;
+    let bounds = Array2::from_shape_vec(
+        (2, 2),
+        vec![
+            output.bounds[0],
+            output.bounds[1],
+            output.bounds[2],
+            output.bounds[3],
+        ],
+    )
+    .map_err(|_| PyRuntimeError::new_err("invalid density map bounds"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("axis1", PyArray1::from_vec_bound(py, output.axis1))?;
+    dict.set_item("axis2", PyArray1::from_vec_bound(py, output.axis2))?;
+    dict.set_item("matrix", matrix.into_pyarray_bound(py))?;
+    dict.set_item(
+        "plane_axes",
+        vec![
+            axis_name(output.plane_axes[0]).to_string(),
+            axis_name(output.plane_axes[1]).to_string(),
+        ],
+    )?;
+    dict.set_item("average_axis", axis_name(output.average_axis))?;
+    dict.set_item("unit", output.unit)?;
+    dict.set_item("n_frames", output.n_frames)?;
+    dict.set_item("bounds", bounds.into_pyarray_bound(py))?;
+    dict.set_item(
+        "bin_width",
+        PyArray1::from_vec_bound(py, output.bin_width.to_vec()),
+    )?;
+    dict.set_item("used_box", output.used_box)?;
+    dict.set_item("length_scale", output.length_scale)?;
     Ok(dict.into_py(py))
 }
 
@@ -1623,6 +2478,36 @@ fn parse_reference(value: &str) -> PyResult<ReferenceMode> {
     }
 }
 
+fn axis_name(axis: usize) -> &'static str {
+    match axis {
+        0 => "x",
+        1 => "y",
+        _ => "z",
+    }
+}
+
+fn parse_axis(value: &str) -> PyResult<usize> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "x" => Ok(0),
+        "y" => Ok(1),
+        "z" => Ok(2),
+        _ => Err(PyValueError::new_err(
+            "axis must be one of x, y, or z",
+        )),
+    }
+}
+
+fn parse_density_map_unit(value: &str) -> PyResult<DensityMapUnit> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "nm-3" | "number_density" | "number" => Ok(DensityMapUnit::NumberDensity),
+        "nm-2" | "area_density" | "column_density" => Ok(DensityMapUnit::AreaDensity),
+        "count" => Ok(DensityMapUnit::Count),
+        _ => Err(PyValueError::new_err(
+            "densmap unit must be one of nm-3, nm-2, count",
+        )),
+    }
+}
+
 fn parse_pbc(value: &str) -> PyResult<PbcMode> {
     match value {
         "orthorhombic" => Ok(PbcMode::Orthorhombic),
@@ -1649,8 +2534,9 @@ fn parse_matrix_mode(value: &str) -> PyResult<MatrixMode> {
         "dist" => Ok(MatrixMode::Distance),
         "covar" => Ok(MatrixMode::Covariance),
         "mwcovar" => Ok(MatrixMode::MwCovariance),
+        "correl" => Ok(MatrixMode::Correlation),
         _ => Err(PyRuntimeError::new_err(
-            "mode must be 'dist', 'covar', or 'mwcovar'",
+            "mode must be 'dist', 'covar', 'mwcovar', or 'correl'",
         )),
     }
 }

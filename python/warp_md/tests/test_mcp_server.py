@@ -150,3 +150,17 @@ def test_run_analysis_passes_fail_fast_override(monkeypatch):
     assert result["status"] == "ok"
     assert captured["request"]["fail_fast"] is False
     assert captured["kwargs"]["fail_fast"] is False
+
+
+def test_get_analysis_schema_uses_contract_metadata():
+    server = _DummyServer()
+    mcp_server.mcp = server
+    mcp_server.register_tools()
+
+    get_analysis_schema = server.tools["get_analysis_schema"]
+    payload = get_analysis_schema("bondi-ffv")
+
+    assert payload["name"] == "bondi_ffv"
+    assert "bondi_scale" in payload["fields"]
+    assert "description" in payload
+    assert "out" in payload["optional"]

@@ -1,16 +1,8 @@
 //! NDJSON streaming events for warp-pack agent integration.
-//!
-//! Emits progress events to stderr for agent consumption.
-//!
-//! Event types:
-//!   - pack_started: Initial configuration
-//!   - phase_started: New packing phase (placement, movebad, gencan, relax)
-//!   - molecule_placed: Individual molecule placement progress
-//!   - gencan_iteration: Per-iteration optimization progress
-//!   - phase_complete: Phase finished with timing
-//!   - pack_complete: Final result envelope
 
-use std::time::Duration;
+use serde_json::json;
+pub(crate) use warp_structure::ndjson::duration_ms;
+use warp_structure::ndjson::NdjsonEmitter;
 
 #[derive(Debug, Clone)]
 pub struct PackStartedEvent {
@@ -95,76 +87,51 @@ pub struct PackProfile {
     pub relax_ms: u64,
 }
 
-/// Streaming emitter for NDJSON events.
-///
-/// Emits events to stderr when enabled. This allows agents to monitor
-/// progress without interfering with stdout output (which may contain
-/// the final PDB/coordinates).
 #[derive(Debug, Clone, Copy)]
 pub struct StreamEmitter {
-    enabled: bool,
+    inner: NdjsonEmitter,
 }
 
 impl StreamEmitter {
-    /// Create a new emitter.
-    ///
-    /// Pass `true` to enable NDJSON streaming to stderr.
     pub fn new(enabled: bool) -> Self {
-        Self { enabled }
-    }
-
-    /// Create a disabled emitter (no output).
-    pub fn disabled() -> Self {
-        Self { enabled: false }
-    }
-
-    /// Create an enabled emitter.
-    pub fn enabled() -> Self {
-        Self { enabled: true }
-    }
-
-    /// Check if streaming is enabled.
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    fn emit_json(&self, json: &str) {
-        if self.enabled {
-            eprintln!("{}", json);
+        Self {
+            inner: NdjsonEmitter::new(enabled),
         }
     }
 
+    pub fn disabled() -> Self {
+        Self {
+            inner: NdjsonEmitter::disabled(),
+        }
+    }
+
+    pub fn enabled() -> Self {
+        Self {
+            inner: NdjsonEmitter::enabled(),
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.inner.is_enabled()
+    }
+
     pub fn emit_pack_started(&self, event: &PackStartedEvent) {
-        let json = format!(
-            r#"{{"event":"pack_started","total_molecules":{},"box_size":[{},{},{}],"box_origin":[{},{},{}],"output_path":{}}}"#,
-            event.total_molecules,
-            event.box_size[0],
-            event.box_size[1],
-            event.box_size[2],
-            event.box_origin[0],
-            event.box_origin[1],
-            event.box_origin[2],
-            serde_json::to_string(&event.output_path).unwrap_or("null".to_string())
-        );
-        self.emit_json(&json);
+        self.inner.emit(&json!({
+            "event": "pack_started",
+            "total_molecules": event.total_molecules,
+            "box_size": event.box_size,
+            "box_origin": event.box_origin,
+            "output_path": event.output_path,
+        }));
     }
 
     pub fn emit_phase_started(&self, event: &PhaseStartedEvent) {
-        let total = event
-            .total_molecules
-            .map(|n| n.to_string())
-            .unwrap_or("null".to_string());
-        let maxit = event
-            .max_iterations
-            .map(|n| n.to_string())
-            .unwrap_or("null".to_string());
-        let json = format!(
-            r#"{{"event":"phase_started","phase":"{}","total_molecules":{},"max_iterations":{}}}"#,
-            event.phase.as_str(),
-            total,
-            maxit
-        );
-        self.emit_json(&json);
+        self.inner.emit(&json!({
+            "event": "phase_started",
+            "phase": event.phase.as_str(),
+            "total_molecules": event.total_molecules,
+            "max_iterations": event.max_iterations,
+        }));
     }
 
     pub fn emit_molecule_placed(&self, event: &MoleculePlacedEvent) {
@@ -173,17 +140,14 @@ impl StreamEmitter {
         } else {
             0.0
         };
-        let molecule_name =
-            serde_json::to_string(&event.molecule_name).unwrap_or("\"\"".to_string());
-        let json = format!(
-            r#"{{"event":"molecule_placed","molecule_index":{},"total_molecules":{},"molecule_name":{},"successful":{},"progress_pct":{:.1}}}"#,
-            event.molecule_index,
-            event.total_molecules,
-            molecule_name,
-            event.successful,
-            progress_pct
-        );
-        self.emit_json(&json);
+        self.inner.emit(&json!({
+            "event": "molecule_placed",
+            "molecule_index": event.molecule_index,
+            "total_molecules": event.total_molecules,
+            "molecule_name": event.molecule_name,
+            "successful": event.successful,
+            "progress_pct": progress_pct,
+        }));
     }
 
     pub fn emit_gencan_iteration(&self, event: &GencanIterationEvent) {
@@ -198,78 +162,57 @@ impl StreamEmitter {
         } else {
             0
         };
-        let json = format!(
-            r#"{{"event":"gencan_iteration","iteration":{},"max_iterations":{},"obj_value":{:.6e},"obj_overlap":{:.6e},"obj_constraint":{:.6e},"pg_sup":{:.6e},"pg_norm":{:.6e},"elapsed_ms":{},"progress_pct":{:.1},"eta_ms":{}}}"#,
-            event.iteration,
-            event.max_iterations,
-            event.obj_value,
-            event.obj_overlap,
-            event.obj_constraint,
-            event.pg_sup,
-            event.pg_norm,
-            event.elapsed_ms,
-            progress_pct,
-            eta_ms
-        );
-        self.emit_json(&json);
+        self.inner.emit(&json!({
+            "event": "gencan_iteration",
+            "iteration": event.iteration,
+            "max_iterations": event.max_iterations,
+            "obj_value": event.obj_value,
+            "obj_overlap": event.obj_overlap,
+            "obj_constraint": event.obj_constraint,
+            "pg_sup": event.pg_sup,
+            "pg_norm": event.pg_norm,
+            "elapsed_ms": event.elapsed_ms,
+            "progress_pct": progress_pct,
+            "eta_ms": eta_ms,
+        }));
     }
 
     pub fn emit_phase_complete(&self, event: &PhaseCompleteEvent) {
-        let iters = event
-            .iterations
-            .map(|n| n.to_string())
-            .unwrap_or("null".to_string());
-        let obj = event
-            .final_obj_value
-            .map(|v| format!("{:.6e}", v))
-            .unwrap_or("null".to_string());
-        let json = format!(
-            r#"{{"event":"phase_complete","phase":"{}","elapsed_ms":{},"iterations":{},"final_obj_value":{}}}"#,
-            event.phase.as_str(),
-            event.elapsed_ms,
-            iters,
-            obj
-        );
-        self.emit_json(&json);
+        self.inner.emit(&json!({
+            "event": "phase_complete",
+            "phase": event.phase.as_str(),
+            "elapsed_ms": event.elapsed_ms,
+            "iterations": event.iterations,
+            "final_obj_value": event.final_obj_value,
+        }));
     }
 
     pub fn emit_pack_complete(&self, event: &PackCompleteEvent) {
-        let output = serde_json::to_string(&event.output_path).unwrap_or("null".to_string());
-        let json = format!(
-            r#"{{"event":"pack_complete","total_atoms":{},"total_molecules":{},"final_box_size":[{},{},{}],"output_path":{},"elapsed_ms":{},"profile_ms":{{"templates":{},"place_core":{},"movebad":{},"gencan":{},"relax":{}}}}}"#,
-            event.total_atoms,
-            event.total_molecules,
-            event.final_box_size[0],
-            event.final_box_size[1],
-            event.final_box_size[2],
-            output,
-            event.elapsed_ms,
-            event.profile.templates_ms,
-            event.profile.place_core_ms,
-            event.profile.movebad_ms,
-            event.profile.gencan_ms,
-            event.profile.relax_ms,
-        );
-        self.emit_json(&json);
+        self.inner.emit(&json!({
+            "event": "pack_complete",
+            "total_atoms": event.total_atoms,
+            "total_molecules": event.total_molecules,
+            "final_box_size": event.final_box_size,
+            "output_path": event.output_path,
+            "elapsed_ms": event.elapsed_ms,
+            "profile_ms": {
+                "templates": event.profile.templates_ms,
+                "place_core": event.profile.place_core_ms,
+                "movebad": event.profile.movebad_ms,
+                "gencan": event.profile.gencan_ms,
+                "relax": event.profile.relax_ms,
+            },
+        }));
     }
 
-    /// Emit an error event.
     pub fn emit_error(&self, code: &str, message: &str, context: Option<&str>) {
-        let code = serde_json::to_string(code).unwrap_or("\"unknown\"".to_string());
-        let message = serde_json::to_string(message).unwrap_or("\"Unknown error\"".to_string());
-        let ctx = context
-            .map(|s| serde_json::to_string(s).unwrap_or_default())
-            .unwrap_or("null".to_string());
-        let json = format!(
-            r#"{{"event":"error","code":{},"message":{},"context":{}}}"#,
-            code, message, ctx
-        );
-        self.emit_json(&json);
+        self.inner.emit(&json!({
+            "event": "error",
+            "code": code,
+            "message": message,
+            "context": context,
+        }));
     }
-}
-
-pub(crate) fn duration_ms(d: Duration) -> u64 {
-    d.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -308,7 +251,6 @@ mod tests {
     fn test_disabled_emitter() {
         let emitter = StreamEmitter::disabled();
         assert!(!emitter.is_enabled());
-        // Should not panic
         emitter.emit_pack_started(&PackStartedEvent {
             total_molecules: 100,
             box_size: [50.0, 50.0, 50.0],

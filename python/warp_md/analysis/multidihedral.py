@@ -9,7 +9,7 @@ from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from .geometry import _dihedral_from_points
+from ._runtime import load_native_symbol, native_inputs
 
 
 MaskLike = Union[str, Sequence[str], np.ndarray]
@@ -145,18 +145,6 @@ def _build_defs(system, dihedral_types: Optional[str], resrange: Optional[List[i
     return list(uniq.values())
 
 
-def _compute_dihedral_series(coords: np.ndarray, atoms: Tuple[int, int, int, int], range360: bool) -> np.ndarray:
-    a, b, c, d = atoms
-    p0 = coords[:, a, :]
-    p1 = coords[:, b, :]
-    p2 = coords[:, c, :]
-    p3 = coords[:, d, :]
-    vals = _dihedral_from_points(p0, p1, p2, p3)
-    if range360:
-        vals = (vals + 360.0) % 360.0
-    return vals
-
-
 def multidihedral(
     traj,
     system,
@@ -169,46 +157,56 @@ def multidihedral(
     chunk_frames: Optional[int] = None,
 ):
     """Compute multiple dihedrals (phi/psi/omega/chi1)."""
-    _ = mass
     res_list = _parse_resrange(resrange)
     defs = _build_defs(system, dihedral_types, res_list)
     if not defs:
         return {} if dtype == "dict" else np.empty((0, 0), dtype=np.float32)
-
-    coords = None
-    # read coordinates once (avoid exhausting trajectory)
-    from .rmsd import _read_all as _read_all_coords
-    coords, _ = _read_all_coords(traj, chunk_frames)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
-    if coords.size == 0:
-        return {} if dtype == "dict" else np.empty((0, 0), dtype=np.float32)
-
-    if frame_indices is not None:
-        n_frames = coords.shape[0]
-        select = []
-        for i in frame_indices:
-            j = int(i)
-            if j < 0:
-                j = n_frames + j
-            if 0 <= j < n_frames:
-                select.append(j)
-        coords = coords[select]
-
-    masks = []
+    plan_cls = load_native_symbol("MultiDihedralPlan")
+    if plan_cls is None:
+        raise RuntimeError("MultiDihedralPlan binding unavailable")
+    native_traj, native_system = native_inputs(traj, system, chunk_frames)
+    if native_traj is None or native_system is None:
+        raise RuntimeError("failed to prepare native multidihedral inputs")
+    groups = []
     labels = []
     for d in defs:
-        a, b, c, d_idx = d.atoms
         labels.append(d.label)
-
-    n_frames = coords.shape[0]
-    values = np.zeros((len(defs), n_frames), dtype=np.float64)
-    for i, d in enumerate(defs):
-        values[i] = _compute_dihedral_series(coords, d.atoms, range360)
-    # values shape (n_defs, n_frames)
+        a, b, c, d_idx = d.atoms
+        groups.append(
+            (
+                native_system.select_indices([int(a)]),
+                native_system.select_indices([int(b)]),
+                native_system.select_indices([int(c)]),
+                native_system.select_indices([int(d_idx)]),
+            )
+        )
+    try:
+        plan = plan_cls(
+            groups,
+            mass_weighted=mass,
+            pbc="none",
+            degrees=True,
+            range360=range360,
+        )
+        values = np.asarray(
+            plan.run(
+                native_traj,
+                native_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=None if frame_indices is None else [int(i) for i in frame_indices],
+            ),
+            dtype=np.float32,
+        )
+    except Exception as exc:
+        raise RuntimeError("native MultiDihedralPlan execution failed") from exc
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+    elif values.ndim == 2 and values.shape[1] == len(labels):
+        values = values.T
     if dtype == "dict":
-        return {label: values[i].astype(np.float32) for i, label in enumerate(labels)}
-    return values.astype(np.float32)
+        return {label: values[i].astype(np.float32, copy=False) for i, label in enumerate(labels)}
+    return values.astype(np.float32, copy=False)
 
 
 __all__ = ["multidihedral"]

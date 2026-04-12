@@ -96,6 +96,19 @@ def test_version_flag() -> None:
     assert "warp-md" in result.stdout
 
 
+def test_top_level_help_lists_build() -> None:
+    result = _run("--help")
+    assert result.returncode == 0
+    assert "build" in result.stdout
+
+
+def test_build_help() -> None:
+    result = _run("build", "--help")
+    assert result.returncode == 0
+    assert "warp-build" in result.stdout
+    assert "schema" in result.stdout
+
+
 def test_example() -> None:
     result = _run("example")
     assert result.returncode == 0

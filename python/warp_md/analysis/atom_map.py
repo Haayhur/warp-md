@@ -9,7 +9,7 @@ from typing import Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ._chunk_io import read_chunk_fields
-from .rmsd import _kabsch_rmsd, _read_all, _selection_indices
+from ._runtime import kabsch_rmsd, read_all_frames, selection_indices
 
 RefLike = Union[int, np.ndarray, object]
 
@@ -26,14 +26,14 @@ def atom_map(
 
     Returns (mask_string, rmsd_array if rmsfit else empty array).
     """
-    coords, _box = _read_all(traj, chunk_frames)
+    coords, _box, _time = read_all_frames(traj, chunk_frames, include_box=True)
     if coords is None:
         raise ValueError("trajectory has no frames")
     if coords.size == 0:
         return "", np.empty((0,), dtype=np.float32)
 
     ref_coords = _resolve_ref(ref, coords)
-    idx = _selection_indices(system, mask)
+    idx = selection_indices(system, mask)
     if idx.size == 0:
         raise ValueError("selection resolved to empty set")
 
@@ -54,7 +54,7 @@ def atom_map(
     ref_mapped = ref_sel[mapping]
     for f in range(coords.shape[0]):
         cur = coords[f][idx][mapping]
-        out[f] = _kabsch_rmsd(cur, ref_mapped)
+        out[f] = kabsch_rmsd(cur, ref_mapped)
     return mask_str, out.astype(np.float32)
 
 

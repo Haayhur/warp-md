@@ -8,6 +8,10 @@ fn default_topology_graph_version() -> String {
     TOPOLOGY_GRAPH_VERSION.to_string()
 }
 
+fn default_relax_overlap_metric() -> String {
+    "vdw_overlap_pairs_excluding_1_2_and_1_3".to_string()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TerminiRequest {
     pub head: String,
@@ -256,6 +260,13 @@ pub struct RelaxMetadata {
     pub steps_executed: usize,
     pub initial_max_clash: f32,
     pub final_max_clash: f32,
+    #[serde(default)]
+    pub initial_overlap_pairs: usize,
+    #[serde(default)]
+    pub final_overlap_pairs: usize,
+    #[serde(default = "default_relax_overlap_metric")]
+    #[schemars(default = "default_relax_overlap_metric")]
+    pub overlap_metric: String,
     pub rms_displacement: f32,
     #[serde(default)]
     pub raw_coordinates: Option<String>,
