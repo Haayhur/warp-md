@@ -76,6 +76,7 @@ jobs:
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
           args: >-
             --release
+            --out target/wheels
             --interpreter /opt/python/cp38-cp38/bin/python
             --interpreter /opt/python/cp39-cp39/bin/python
             --interpreter /opt/python/cp310-cp310/bin/python
@@ -92,7 +93,7 @@ jobs:
           python -m pytest python/warp_md/tests/test_pack.py
 
       - name: Build CPU sdist
-        run: maturin sdist
+        run: maturin sdist --out target/wheels
 
       - name: Upload CPU Linux wheels
         uses: actions/upload-artifact@v4
@@ -166,7 +167,7 @@ jobs:
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         shell: bash
-        run: python -m maturin build --release --interpreter python
+        run: python -m maturin build --release --interpreter python --out target/wheels
 
       - name: Smoke test installed Windows wheel
         shell: bash
@@ -267,6 +268,7 @@ jobs:
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
           args: >-
             --release --features cuda
+            --out target/wheels
             --interpreter /opt/python/cp38-cp38/bin/python
             --interpreter /opt/python/cp39-cp39/bin/python
             --interpreter /opt/python/cp310-cp310/bin/python
