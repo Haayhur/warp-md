@@ -89,16 +89,23 @@ jobs:
         run: |
           WHEEL=$(python - <<'PY'
           import glob
-          import sys
+          from pathlib import Path
+          from packaging.tags import sys_tags
+          from packaging.utils import parse_wheel_filename
 
-          tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
-          wheels = sorted(glob.glob(f"target/wheels/warp_md-*-{tag}-*.whl"))
-          if not wheels:
-              print("available wheels:", *sorted(glob.glob("target/wheels/*.whl")), sep="\n  ")
-              raise SystemExit(f"no wheel matching interpreter tag {tag}")
-          if len(wheels) != 1:
-              print("matching wheels:", *wheels, sep="\n  ")
-          print(wheels[0])
+          available = sorted(glob.glob("target/wheels/warp_md-*.whl"))
+          compatible = set(sys_tags())
+          matches = []
+          for wheel in available:
+              _, _, _, tags = parse_wheel_filename(Path(wheel).name)
+              if tags & compatible:
+                  matches.append(wheel)
+          if not matches:
+              print("available wheels:", *available, sep="\n  ")
+              raise SystemExit("no compatible CPU wheel found for this interpreter")
+          if len(matches) != 1:
+              print("compatible wheels:", *matches, sep="\n  ")
+          print(matches[0])
           PY
           )
           python -m pip install "$WHEEL"
@@ -186,16 +193,23 @@ jobs:
         run: |
           WHEEL=$(python - <<'PY'
           import glob
-          import sys
+          from pathlib import Path
+          from packaging.tags import sys_tags
+          from packaging.utils import parse_wheel_filename
 
-          tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
-          wheels = sorted(glob.glob(f"target/wheels/warp_md-*-{tag}-*-win_amd64.whl"))
-          if not wheels:
-              print("available wheels:", *sorted(glob.glob("target/wheels/*.whl")), sep="\n  ")
-              raise SystemExit(f"no Windows wheel matching interpreter tag {tag}")
-          if len(wheels) != 1:
-              print("matching wheels:", *wheels, sep="\n  ")
-          print(wheels[0])
+          available = sorted(glob.glob("target/wheels/warp_md-*-win_amd64.whl"))
+          compatible = set(sys_tags())
+          matches = []
+          for wheel in available:
+              _, _, _, tags = parse_wheel_filename(Path(wheel).name)
+              if tags & compatible:
+                  matches.append(wheel)
+          if not matches:
+              print("available wheels:", *available, sep="\n  ")
+              raise SystemExit("no compatible Windows wheel found for this interpreter")
+          if len(matches) != 1:
+              print("compatible wheels:", *matches, sep="\n  ")
+          print(matches[0])
           PY
           )
           python -m pip install --force-reinstall "$WHEEL"
@@ -341,16 +355,23 @@ jobs:
           python -m pip install pytest
           WHEEL=$(python - <<'PY'
           import glob
-          import sys
+          from pathlib import Path
+          from packaging.tags import sys_tags
+          from packaging.utils import parse_wheel_filename
 
-          tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
-          wheels = sorted(glob.glob(f"target/wheels/warp_md_cuda-*-{tag}-*.whl"))
-          if not wheels:
-              print("available wheels:", *sorted(glob.glob("target/wheels/*.whl")), sep="\n  ")
-              raise SystemExit(f"no CUDA wheel matching interpreter tag {tag}")
-          if len(wheels) != 1:
-              print("matching wheels:", *wheels, sep="\n  ")
-          print(wheels[0])
+          available = sorted(glob.glob("target/wheels/warp_md_cuda-*.whl"))
+          compatible = set(sys_tags())
+          matches = []
+          for wheel in available:
+              _, _, _, tags = parse_wheel_filename(Path(wheel).name)
+              if tags & compatible:
+                  matches.append(wheel)
+          if not matches:
+              print("available wheels:", *available, sep="\n  ")
+              raise SystemExit("no compatible CUDA wheel found for this interpreter")
+          if len(matches) != 1:
+              print("compatible wheels:", *matches, sep="\n  ")
+          print(matches[0])
           PY
           )
           python -m pip install "$WHEEL"
