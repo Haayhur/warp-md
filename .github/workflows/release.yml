@@ -92,9 +92,12 @@ jobs:
           import sys
 
           tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
-          wheels = sorted(glob.glob(f"target/wheels/warp_md-*-{tag}-{tag}-*.whl"))
+          wheels = sorted(glob.glob(f"target/wheels/warp_md-*-{tag}-*.whl"))
           if not wheels:
-              raise SystemExit(f"no wheel for {tag}")
+              print("available wheels:", *sorted(glob.glob("target/wheels/*.whl")), sep="\n  ")
+              raise SystemExit(f"no wheel matching interpreter tag {tag}")
+          if len(wheels) != 1:
+              print("matching wheels:", *wheels, sep="\n  ")
           print(wheels[0])
           PY
           )
@@ -186,9 +189,12 @@ jobs:
           import sys
 
           tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
-          wheels = sorted(glob.glob(f"target/wheels/warp_md-*-{tag}-{tag}-win_amd64.whl"))
+          wheels = sorted(glob.glob(f"target/wheels/warp_md-*-{tag}-*-win_amd64.whl"))
           if not wheels:
-              raise SystemExit(f"no Windows wheel for {tag}")
+              print("available wheels:", *sorted(glob.glob("target/wheels/*.whl")), sep="\n  ")
+              raise SystemExit(f"no Windows wheel matching interpreter tag {tag}")
+          if len(wheels) != 1:
+              print("matching wheels:", *wheels, sep="\n  ")
           print(wheels[0])
           PY
           )
@@ -338,9 +344,12 @@ jobs:
           import sys
 
           tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
-          wheels = sorted(glob.glob(f"target/wheels/warp_md_cuda-*-{tag}-{tag}-*.whl"))
+          wheels = sorted(glob.glob(f"target/wheels/warp_md_cuda-*-{tag}-*.whl"))
           if not wheels:
-              raise SystemExit(f"no wheel for {tag}")
+              print("available wheels:", *sorted(glob.glob("target/wheels/*.whl")), sep="\n  ")
+              raise SystemExit(f"no CUDA wheel matching interpreter tag {tag}")
+          if len(wheels) != 1:
+              print("matching wheels:", *wheels, sep="\n  ")
           print(wheels[0])
           PY
           )
