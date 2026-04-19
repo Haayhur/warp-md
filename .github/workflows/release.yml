@@ -88,8 +88,18 @@ jobs:
 
       - name: Install CPU wheel and run pack export tests
         run: |
-          ls -1 target/wheels
-          python -m pip install target/wheels/warp_md-*.whl
+          WHEEL=$(python - <<'PY'
+          import glob
+          import sys
+
+          tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+          wheels = sorted(glob.glob(f"target/wheels/warp_md-*-{tag}-{tag}-*.whl"))
+          if not wheels:
+              raise SystemExit(f"no wheel for {tag}")
+          print(wheels[0])
+          PY
+          )
+          python -m pip install "$WHEEL"
           python -m pytest python/warp_md/tests/test_pack.py
 
       - name: Build CPU sdist
