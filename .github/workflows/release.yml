@@ -166,7 +166,7 @@ jobs:
       - name: Build CPU wheel (Windows)
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        shell: pwsh
+        shell: bash
         run: python -m maturin build --release --interpreter python --out target/wheels
 
       - name: Smoke test installed Windows wheel
