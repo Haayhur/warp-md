@@ -161,43 +161,39 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          python -m pip install maturin==1.5.1
+          python -m pip install maturin==1.13.1
 
       - name: Build CPU wheel (Windows)
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         shell: pwsh
         run: |
-          python -m maturin build --release --interpreter python
-
-      - name: Normalize Windows wheel output
-        shell: pwsh
-        run: |
-          $repoRoot = $env:GITHUB_WORKSPACE
-          $wheelDir = Join-Path $repoRoot 'target\wheels'
-          New-Item -ItemType Directory -Force -Path $wheelDir | Out-Null
-          $wheels = Get-ChildItem -Path $repoRoot -Recurse -Filter 'warp_md-*.whl' -File
-          if (-not $wheels) {
-            throw "No Windows wheel produced anywhere under $repoRoot"
-          }
-          foreach ($wheel in $wheels) {
-            if ($wheel.DirectoryName -ne $wheelDir) {
-              Copy-Item -LiteralPath $wheel.FullName -Destination $wheelDir -Force
-            }
-          }
-          Get-ChildItem -Path $wheelDir
+          $ErrorActionPreference = 'Stop'
+          $pythonExe = (Get-Command python).Source
+          python -m maturin build `
+            --release `
+            --out target/wheels `
+            --interpreter "$pythonExe" `
+            -v
+          Write-Host "Wheels produced:"
+          Get-ChildItem -Path target/wheels -Filter '*.whl' -File | Format-Table Name, Length, LastWriteTime
 
       - name: Smoke test installed Windows wheel
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $wheelDir = Join-Path $env:GITHUB_WORKSPACE 'target\wheels'
           if (-not (Test-Path $wheelDir)) {
             throw "Wheel output directory missing: $wheelDir"
           }
-          Get-ChildItem -Path $wheelDir
-          $wheel = Get-ChildItem -Path $wheelDir -Filter 'warp_md-*.whl' | Select-Object -First 1
-          if (-not $wheel) {
+          $wheels = Get-ChildItem -Path $wheelDir -Filter '*.whl' -File
+          if (-not $wheels) {
             throw "No Windows wheel found in $wheelDir"
+          }
+          $wheel = $wheels | Where-Object { $_.Name -like 'warp_md-*.whl' } | Select-Object -First 1
+          if (-not $wheel) {
+            $names = ($wheels | ForEach-Object Name) -join ', '
+            throw "Wheel(s) were produced, but none matched warp_md-*.whl. Produced: $names"
           }
           python -m pip install --force-reinstall $wheel.FullName
           python -c "import warp_md; print(warp_md.__file__)"
