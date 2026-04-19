@@ -1,4 +1,4 @@
-use std::ffi::CString;
+use std::ffi::{CString, c_ulong};
 use std::path::{Path, PathBuf};
 
 use ::xdrfile::c_abi::xdr_seek;
@@ -56,10 +56,10 @@ impl TrrReader {
             return Err(map_trr_code(natom_code, XdrErrorTask::Read));
         }
 
-        let mut nframes = 0u32;
+        let mut nframes: c_ulong = 0;
         let frame_code = unsafe { xdrfile_trr::read_trr_nframes(c_path.as_ptr(), &mut nframes) };
         let n_frames = if frame_code == xdr_cabi::exdrOK {
-            Some(nframes as usize)
+            usize::try_from(nframes).ok()
         } else {
             None
         };
