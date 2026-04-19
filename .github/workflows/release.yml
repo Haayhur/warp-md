@@ -166,14 +166,25 @@ jobs:
       - name: Build CPU wheel (Windows)
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-        shell: bash
-        run: python -m maturin build --release --interpreter python --out target/wheels
+        shell: pwsh
+        run: |
+          $wheelDir = Join-Path $env:GITHUB_WORKSPACE 'target\wheels'
+          New-Item -ItemType Directory -Force -Path $wheelDir | Out-Null
+          python -m maturin build --release --interpreter python --out $wheelDir
 
       - name: Smoke test installed Windows wheel
-        shell: bash
+        shell: pwsh
         run: |
-          ls -1 target/wheels
-          python -m pip install --force-reinstall target/wheels/warp_md-*.whl
+          $wheelDir = Join-Path $env:GITHUB_WORKSPACE 'target\wheels'
+          if (-not (Test-Path $wheelDir)) {
+            throw "Wheel output directory missing: $wheelDir"
+          }
+          Get-ChildItem -Path $wheelDir
+          $wheel = Get-ChildItem -Path $wheelDir -Filter 'warp_md-*.whl' | Select-Object -First 1
+          if (-not $wheel) {
+            throw "No Windows wheel found in $wheelDir"
+          }
+          python -m pip install --force-reinstall $wheel.FullName
           python -c "import warp_md; print(warp_md.__file__)"
 
       - name: Upload CPU Windows wheel
