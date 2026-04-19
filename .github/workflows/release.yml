@@ -168,9 +168,24 @@ jobs:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         shell: pwsh
         run: |
-          $wheelDir = Join-Path $env:GITHUB_WORKSPACE 'target\wheels'
+          python -m maturin build --release --interpreter python
+
+      - name: Normalize Windows wheel output
+        shell: pwsh
+        run: |
+          $repoRoot = $env:GITHUB_WORKSPACE
+          $wheelDir = Join-Path $repoRoot 'target\wheels'
           New-Item -ItemType Directory -Force -Path $wheelDir | Out-Null
-          python -m maturin build --release --interpreter python --out $wheelDir
+          $wheels = Get-ChildItem -Path $repoRoot -Recurse -Filter 'warp_md-*.whl' -File
+          if (-not $wheels) {
+            throw "No Windows wheel produced anywhere under $repoRoot"
+          }
+          foreach ($wheel in $wheels) {
+            if ($wheel.DirectoryName -ne $wheelDir) {
+              Copy-Item -LiteralPath $wheel.FullName -Destination $wheelDir -Force
+            }
+          }
+          Get-ChildItem -Path $wheelDir
 
       - name: Smoke test installed Windows wheel
         shell: pwsh
