@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
 
 from . import contract as _contract
+from ._json_types import JsonObject, JsonValue
 from .contract_constants import AGENT_REQUEST_SCHEMA_VERSION, AGENT_RESULT_SCHEMA_VERSION
 
 # Structured error codes for agent consumption
@@ -118,7 +119,93 @@ def classify_error(exc: Exception, context: str = "") -> str:
     return "E_INTERNAL"
 
 
-def _coerce_io_spec(value: Any, label: str) -> Optional[Dict[str, Any]]:
+def _native_agent_schema(target: str) -> Optional[JsonObject]:
+    native = _contract._native()
+    if native is None or not hasattr(native, "warp_md_agent_schema"):
+        return None
+    payload = native.warp_md_agent_schema(target)
+    return payload if isinstance(payload, dict) else None
+
+
+def _path_to_loc(path: str) -> tuple[object, ...]:
+    if not path or path == "root":
+        return ("root",)
+    loc: list[object] = []
+    token = ""
+    idx = 0
+    while idx < len(path):
+        ch = path[idx]
+        if ch == ".":
+            if token:
+                loc.append(token)
+                token = ""
+            idx += 1
+            continue
+        if ch == "[":
+            if token:
+                loc.append(token)
+                token = ""
+            end = path.find("]", idx)
+            if end < 0:
+                break
+            item = path[idx + 1 : end]
+            loc.append(int(item) if item.isdigit() else item)
+            idx = end + 1
+            continue
+        token += ch
+        idx += 1
+    if token:
+        loc.append(token)
+    return tuple(loc) or ("root",)
+
+
+def _raise_native_validation_error(
+    title: str,
+    errors: list[dict[str, Any]],
+    payload: Dict[str, Any],
+) -> None:
+    line_errors = [
+        {
+            "type": "value_error",
+            "loc": _path_to_loc(str(item.get("path", "root"))),
+            "input": payload,
+            "ctx": {"error": ValueError(str(item.get("message", "validation error")))},
+        }
+        for item in errors
+    ] or [
+        {
+            "type": "value_error",
+            "loc": ("root",),
+            "input": payload,
+            "ctx": {"error": ValueError("validation error")},
+        }
+    ]
+    raise ValidationError.from_exception_data(title, line_errors)
+
+
+def _consume_native_validation_payload(
+    result: Any,
+    title: str,
+    payload: JsonObject,
+    normalized_key: str,
+) -> Optional[JsonObject]:
+    if not isinstance(result, dict):
+        return None
+    if "valid" not in result:
+        return result
+    if not result.get("valid", False):
+        _raise_native_validation_error(
+            title,
+            [item for item in result.get("errors", []) if isinstance(item, dict)],
+            payload,
+        )
+    normalized = result.get(normalized_key)
+    if isinstance(normalized, dict):
+        return normalized
+    return None
+
+
+def _coerce_io_spec(value: Any, label: str) -> Optional[JsonObject]:
     if value is None:
         return None
     if isinstance(value, str):
@@ -129,7 +216,7 @@ def _coerce_io_spec(value: Any, label: str) -> Optional[Dict[str, Any]]:
     if isinstance(value, dict):
         if not value:
             raise ValueError(f"{label} spec cannot be empty")
-        return dict(value)
+        return {str(key): value for key, value in value.items()}
     raise TypeError(f"{label} must be a path string or object")
 
 
@@ -201,22 +288,22 @@ class RunRequest(BaseModel):
 
     @field_validator("system", mode="before")
     @classmethod
-    def _coerce_system(cls, value: Any) -> Optional[Dict[str, Any]]:
+    def _coerce_system(cls, value: Any) -> Optional[JsonObject]:
         return _coerce_io_spec(value, "system")
 
     @field_validator("topology", mode="before")
     @classmethod
-    def _coerce_topology(cls, value: Any) -> Optional[Dict[str, Any]]:
+    def _coerce_topology(cls, value: Any) -> Optional[JsonObject]:
         return _coerce_io_spec(value, "topology")
 
     @field_validator("trajectory", mode="before")
     @classmethod
-    def _coerce_trajectory(cls, value: Any) -> Optional[Dict[str, Any]]:
+    def _coerce_trajectory(cls, value: Any) -> Optional[JsonObject]:
         return _coerce_io_spec(value, "trajectory")
 
     @field_validator("traj", mode="before")
     @classmethod
-    def _coerce_traj(cls, value: Any) -> Optional[Dict[str, Any]]:
+    def _coerce_traj(cls, value: Any) -> Optional[JsonObject]:
         return _coerce_io_spec(value, "traj")
 
     @model_validator(mode="after")
@@ -232,31 +319,47 @@ class RunRequest(BaseModel):
         return self
 
     @property
-    def system_spec(self) -> Dict[str, Any]:
+    def system_spec(self) -> JsonObject:
         return dict(self.system or self.topology or {})
 
     @property
-    def trajectory_spec(self) -> Dict[str, Any]:
+    def trajectory_spec(self) -> JsonObject:
         return dict(self.trajectory or self.traj or {})
 
 
 def validate_run_request(payload: Dict[str, Any]) -> RunRequest:
+    native = _contract._native()
+    if native is not None and hasattr(native, "warp_md_agent_validate_request"):
+        normalized = _consume_native_validation_payload(
+            native.warp_md_agent_validate_request(json.dumps(payload), False),
+            "RunRequest",
+            payload,
+            "normalized_request",
+        )
+        if isinstance(normalized, dict):
+            return RunRequest.model_validate(normalized)
     return RunRequest.model_validate(payload)
 
 
 def run_request_json_schema() -> Dict[str, Any]:
+    native_schema = _native_agent_schema("request")
+    if native_schema is not None:
+        return native_schema
     return RunRequest.model_json_schema()
 
 
 class ArtifactMetadata(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     path: str
     format: str
     bytes: int = Field(ge=0)
     sha256: str = Field(min_length=64, max_length=64)
     kind: Optional[str] = None  # timeseries, histogram, grid, profile, table, artifact
     fields: Optional[List[str]] = None  # Named arrays/columns
+    description: Optional[str] = None  # Human-readable artifact meaning from the contract
     units: Optional[Dict[str, str]] = None  # Units for each field
-    preview_stats: Optional[Dict[str, Any]] = None  # n_frames, n_bins, min, max, etc.
+    preview_stats: Optional[Dict[str, object]] = None  # n_frames, n_bins, min, max, etc.
 
 
 class RunResultEntry(BaseModel):
@@ -268,15 +371,28 @@ class RunResultEntry(BaseModel):
     artifact: Optional[ArtifactMetadata] = None
 
 
+class RunErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+    field: str
+    message: str
+    context: Optional[Dict[str, object]] = None
+
+
 class RunErrorPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     code: ErrorCode
     message: str
-    context: Dict[str, Any]
-    details: Optional[Any] = None
+    context: Dict[str, object] = Field(default_factory=dict)
+    details: Optional[object | list[RunErrorDetail]] = None
     traceback: Optional[str] = None
 
 
 class RunSuccessEnvelope(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     schema_version: str = AGENT_RESULT_SCHEMA_VERSION
     status: Literal["ok", "dry_run"]
     exit_code: Literal[0]
@@ -293,6 +409,8 @@ class RunSuccessEnvelope(BaseModel):
 
 
 class RunErrorEnvelope(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     schema_version: str = AGENT_RESULT_SCHEMA_VERSION
     status: Literal["error"]
     exit_code: int = Field(ge=1)
@@ -313,6 +431,8 @@ RunEnvelope = Union[RunSuccessEnvelope, RunErrorEnvelope]
 
 
 class RunStartedEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     event: Literal["run_started"]
     run_id: Optional[str] = None
     config_path: str
@@ -325,6 +445,8 @@ class RunStartedEvent(BaseModel):
 
 
 class AnalysisStartedEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     event: Literal["analysis_started"]
     index: int = Field(ge=0)
     analysis: str
@@ -336,6 +458,8 @@ class AnalysisStartedEvent(BaseModel):
 
 
 class AnalysisCompletedEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     event: Literal["analysis_completed"]
     index: int = Field(ge=0)
     analysis: str
@@ -349,6 +473,8 @@ class AnalysisCompletedEvent(BaseModel):
 
 
 class AnalysisFailedEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     event: Literal["analysis_failed"]
     index: Optional[int] = Field(default=None, ge=0)
     analysis: Optional[str] = None
@@ -360,11 +486,15 @@ class AnalysisFailedEvent(BaseModel):
 
 
 class RunCompletedEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     event: Literal["run_completed"]
     final_envelope: RunSuccessEnvelope
 
 
 class RunFailedEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     event: Literal["run_failed"]
     final_envelope: RunErrorEnvelope
 
@@ -381,15 +511,55 @@ RunEvent = Union[
 
 
 def run_result_json_schema() -> Dict[str, Any]:
+    native_schema = _native_agent_schema("result")
+    if native_schema is not None:
+        return native_schema
     adapter = TypeAdapter(RunEnvelope)
     adapter.rebuild(force=True)
     return adapter.json_schema()
 
 
 def run_event_json_schema() -> Dict[str, Any]:
+    native_schema = _native_agent_schema("event")
+    if native_schema is not None:
+        return native_schema
     adapter = TypeAdapter(RunEvent)
     adapter.rebuild(force=True)
     return adapter.json_schema()
+
+
+def validate_run_result_payload(payload: JsonObject) -> JsonObject:
+    native = _contract._native()
+    if native is not None and hasattr(native, "warp_md_agent_validate_result"):
+        validated = _consume_native_validation_payload(
+            native.warp_md_agent_validate_result(json.dumps(payload)),
+            "RunEnvelope",
+            payload,
+            "normalized_result",
+        )
+        if isinstance(validated, dict):
+            return validated
+    adapter = TypeAdapter(RunEnvelope)
+    adapter.rebuild(force=True)
+    validated = adapter.validate_python(payload)
+    return validated.model_dump(mode="python", exclude_none=True)
+
+
+def validate_run_event_payload(payload: JsonObject) -> JsonObject:
+    native = _contract._native()
+    if native is not None and hasattr(native, "warp_md_agent_validate_event"):
+        validated = _consume_native_validation_payload(
+            native.warp_md_agent_validate_event(json.dumps(payload)),
+            "RunEvent",
+            payload,
+            "normalized_event",
+        )
+        if isinstance(validated, dict):
+            return validated
+    adapter = TypeAdapter(RunEvent)
+    adapter.rebuild(force=True)
+    validated = adapter.validate_python(payload)
+    return validated.model_dump(mode="python", exclude_none=True)
 
 
 def render_agent_schema(target: str = "request", fmt: str = "json") -> str:

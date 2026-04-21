@@ -12,7 +12,7 @@ use crate::geom::{center_of_geometry, Quaternion, Vec3};
 use crate::io::{read_molecule, write_output};
 use crate::pack::{AtomRecord, PackOutput};
 use crate::pbc::PbcBox;
-use crate::spatial_hash::{SpatialHash, SpatialHashParamsExt, SpatialHashV2};
+use crate::spatial_hash::{SpatialHashParamsExt, SpatialHashV2};
 
 pub(crate) struct MoleculeTemplate {
     pub(crate) atoms: Vec<AtomRecord>,

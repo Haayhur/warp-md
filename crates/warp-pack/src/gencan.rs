@@ -677,7 +677,6 @@ fn build_mol_info(
         mol_info.push(MolInfo {
             atom_indices,
             local_positions,
-            radius: entry.template.radius,
             selected,
             movable: !spec.fixed && active,
             rotatable: spec.rotate && active,

@@ -3,7 +3,7 @@
 //! Ported from clauswilke/PeptideBuilder (Python, MIT license).
 //! Bond lengths in Ångström, angles in degrees.
 
-use crate::residue::{AmberVariant, ResName};
+use crate::types::{AmberVariant, ResName};
 
 /// Backbone + side-chain internal coordinates for one residue type.
 #[derive(Debug, Clone)]

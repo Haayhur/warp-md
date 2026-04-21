@@ -1199,8 +1199,10 @@ version = "0.1.5"
 dependencies = [
  "numpy",
  "pyo3",
+ "schemars",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha2",
  "traj-core",
  "traj-engine",

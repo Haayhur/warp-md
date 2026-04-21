@@ -22,7 +22,7 @@ use crate::pbc::PbcBox;
 use crate::placement::PlacementRecord;
 use crate::relax::relax_overlaps;
 use crate::restart::{read_restart, write_restart, RestartEntry};
-use crate::spatial_hash::{SpatialHash, SpatialHashParamsExt, SpatialHashV2};
+use crate::spatial_hash::{SpatialHashParamsExt, SpatialHashV2};
 use crate::streaming::{PackingPhase, StreamEmitter};
 
 #[derive(Default)]

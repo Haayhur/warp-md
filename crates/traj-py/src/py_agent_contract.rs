@@ -1,3 +1,5 @@
+use schemars::schema_for;
+
 const WARP_MD_AGENT_SCHEMA_VERSION: &str = "warp-md.agent.v1";
 const WARP_MD_RUN_REQUEST_TOP_LEVEL_FIELDS: &[&str] = &[
     "version",
@@ -122,6 +124,482 @@ fn warp_md_contract_for_name(name: &str) -> Option<WarpMdAnalysisContract> {
         .iter()
         .find(|contract| contract.name == canonical)
         .cloned()
+}
+
+fn default_run_request_version() -> String {
+    WARP_MD_AGENT_SCHEMA_VERSION.to_string()
+}
+
+fn default_stream_mode() -> StreamMode {
+    StreamMode::None
+}
+
+fn default_output_dir() -> String {
+    ".".to_string()
+}
+
+fn default_device_auto() -> String {
+    "auto".to_string()
+}
+
+fn default_true_bool() -> bool {
+    true
+}
+
+fn default_checkpoint_interval_frames() -> std::num::NonZeroU64 {
+    std::num::NonZeroU64::new(1000).expect("non-zero checkpoint interval")
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum IoSpec {
+    Path(String),
+    Spec(std::collections::BTreeMap<String, serde_json::Value>),
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum StreamMode {
+    None,
+    Ndjson,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CheckpointConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_checkpoint_interval_frames")]
+    #[schemars(default = "default_checkpoint_interval_frames")]
+    interval_frames: std::num::NonZeroU64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct AnalysisRequest {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    out: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chunk_frames: Option<std::num::NonZeroU64>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RunRequest {
+    #[serde(default = "default_run_request_version")]
+    #[schemars(default = "default_run_request_version")]
+    version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system: Option<IoSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    topology: Option<IoSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trajectory: Option<IoSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    traj: Option<IoSpec>,
+    #[serde(default = "default_device_auto")]
+    #[schemars(default = "default_device_auto")]
+    device: String,
+    #[serde(default = "default_stream_mode")]
+    #[schemars(default = "default_stream_mode")]
+    stream: StreamMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chunk_frames: Option<std::num::NonZeroU64>,
+    #[serde(default = "default_output_dir")]
+    #[schemars(default = "default_output_dir")]
+    output_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<CheckpointConfig>,
+    #[serde(default = "default_true_bool")]
+    #[schemars(default = "default_true_bool")]
+    fail_fast: bool,
+    analyses: Vec<AnalysisRequest>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct ArtifactMetadata {
+    path: String,
+    format: String,
+    bytes: u64,
+    sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fields: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    units: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preview_stats: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RunResultStatus {
+    Ok,
+    DryRun,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct RunResultEntry {
+    analysis: String,
+    out: String,
+    status: RunResultStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    artifact: Option<ArtifactMetadata>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct RunErrorDetail {
+    #[serde(rename = "type")]
+    detail_type: String,
+    field: String,
+    message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum ErrorCode {
+    EConfigLoad,
+    EConfigValidation,
+    EConfigVersion,
+    EConfigMissingField,
+    EAnalysisUnknown,
+    EAnalysisSpec,
+    ESelectionEmpty,
+    ESelectionInvalid,
+    ESystemLoad,
+    ETrajectoryLoad,
+    ETrajectoryEof,
+    ERuntimeExec,
+    EOutputDir,
+    EOutputWrite,
+    EDeviceUnavailable,
+    EAtlasFetch,
+    EInternal,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct RunErrorPayload {
+    code: ErrorCode,
+    message: String,
+    #[serde(default)]
+    context: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    traceback: Option<String>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum SuccessStatus {
+    Ok,
+    DryRun,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ErrorStatus {
+    Error,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct RunSuccessEnvelope {
+    schema_version: String,
+    status: SuccessStatus,
+    exit_code: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trajectory: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    analysis_count: u64,
+    started_at: String,
+    finished_at: String,
+    elapsed_ms: u64,
+    #[serde(default)]
+    warnings: Vec<String>,
+    #[serde(default)]
+    results: Vec<RunResultEntry>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct RunErrorEnvelope {
+    schema_version: String,
+    status: ErrorStatus,
+    exit_code: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trajectory: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    analysis_count: u64,
+    started_at: String,
+    finished_at: String,
+    elapsed_ms: u64,
+    #[serde(default)]
+    warnings: Vec<String>,
+    #[serde(default)]
+    results: Vec<RunResultEntry>,
+    error: RunErrorPayload,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum RunEnvelope {
+    Success(RunSuccessEnvelope),
+    Error(RunErrorEnvelope),
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RunStartedEventKind {
+    RunStarted,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum AnalysisStartedEventKind {
+    AnalysisStarted,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum CheckpointEventKind {
+    Checkpoint,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum AnalysisCompletedEventKind {
+    AnalysisCompleted,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum AnalysisFailedEventKind {
+    AnalysisFailed,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RunCompletedEventKind {
+    RunCompleted,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RunFailedEventKind {
+    RunFailed,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct RunStartedEvent {
+    event: RunStartedEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
+    config_path: String,
+    dry_run: bool,
+    analysis_count: u64,
+    completed: u64,
+    total: u64,
+    progress_pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eta_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct AnalysisStartedEvent {
+    event: AnalysisStartedEventKind,
+    index: u64,
+    analysis: String,
+    out: String,
+    completed: u64,
+    total: u64,
+    progress_pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eta_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct CheckpointEvent {
+    event: CheckpointEventKind,
+    analysis_index: u64,
+    analysis_name: String,
+    frames_processed: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frames_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    progress_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eta_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct AnalysisCompletedEvent {
+    event: AnalysisCompletedEventKind,
+    index: u64,
+    analysis: String,
+    status: RunResultStatus,
+    out: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timing_ms: Option<u64>,
+    completed: u64,
+    total: u64,
+    progress_pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eta_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct AnalysisFailedEvent {
+    event: AnalysisFailedEventKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    analysis: Option<String>,
+    error: RunErrorPayload,
+    completed: u64,
+    total: u64,
+    progress_pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eta_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct RunCompletedEvent {
+    event: RunCompletedEventKind,
+    final_envelope: RunSuccessEnvelope,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct RunFailedEvent {
+    event: RunFailedEventKind,
+    final_envelope: RunErrorEnvelope,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum RunEventSchema {
+    RunStarted(RunStartedEvent),
+    AnalysisStarted(AnalysisStartedEvent),
+    Checkpoint(CheckpointEvent),
+    AnalysisCompleted(AnalysisCompletedEvent),
+    AnalysisFailed(AnalysisFailedEvent),
+    RunCompleted(RunCompletedEvent),
+    RunFailed(RunFailedEvent),
+}
+
+fn warp_md_schema_value<T: schemars::JsonSchema>() -> Result<serde_json::Value, String> {
+    serde_json::to_value(&schema_for!(T)).map_err(|e| e.to_string())
+}
+
+fn warp_md_schema_rewrite(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(definitions) = map.remove("definitions") {
+                map.insert("$defs".into(), definitions);
+            }
+            for (key, child) in map.iter_mut() {
+                if key == "$ref" {
+                    if let Some(reference) = child.as_str() {
+                        if let Some(suffix) = reference.strip_prefix("#/definitions/") {
+                            *child = serde_json::Value::String(format!("#/$defs/{suffix}"));
+                        }
+                    }
+                    continue;
+                }
+                warp_md_schema_rewrite(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                warp_md_schema_rewrite(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn warp_md_request_schema_value() -> Result<serde_json::Value, String> {
+    let mut value = warp_md_schema_value::<RunRequest>()?;
+    warp_md_schema_rewrite(&mut value);
+
+    let analysis_names: Vec<serde_json::Value> = warp_md_agent_contract_catalog_ref()
+        .analyses
+        .iter()
+        .map(|contract| serde_json::Value::String(contract.name.clone()))
+        .collect();
+
+    if let Some(analysis_name_schema) = value
+        .get_mut("$defs")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|defs| defs.get_mut("AnalysisRequest"))
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|schema| schema.get_mut("properties"))
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|props| props.get_mut("name"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        analysis_name_schema.insert("enum".into(), serde_json::Value::Array(analysis_names));
+    }
+
+    if let Some(run_request_schema) = value.as_object_mut() {
+        if let Some(properties) = run_request_schema
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            if let Some(analyses_schema) = properties
+                .get_mut("analyses")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                analyses_schema.insert("minItems".into(), serde_json::json!(1));
+            }
+        }
+    }
+
+    Ok(value)
+}
+
+fn warp_md_agent_schema_value(kind: &str) -> Result<serde_json::Value, String> {
+    let mut value = match kind.trim().to_ascii_lowercase().as_str() {
+        "request" => return warp_md_request_schema_value(),
+        "result" => warp_md_schema_value::<RunEnvelope>()?,
+        "event" => warp_md_schema_value::<RunEventSchema>()?,
+        other => {
+            return Err(format!(
+                "schema target must be 'request', 'result', or 'event', got '{other}'"
+            ))
+        }
+    };
+    warp_md_schema_rewrite(&mut value);
+    Ok(value)
 }
 
 fn warp_md_catalog_hash() -> String {
@@ -252,19 +730,88 @@ fn warp_md_validation_error(
     })
 }
 
+fn warp_md_validation_result_with_key(
+    errors: Vec<serde_json::Value>,
+    warnings: Vec<String>,
+    normalized_key: &str,
+    normalized_payload: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut result = serde_json::json!({
+        "schema_version": WARP_MD_AGENT_SCHEMA_VERSION,
+        "status": if errors.is_empty() { "ok" } else { "error" },
+        "valid": errors.is_empty(),
+        "errors": errors,
+        "warnings": warnings,
+    });
+    result
+        .as_object_mut()
+        .expect("validation result payload is always an object")
+        .insert(
+            normalized_key.into(),
+            normalized_payload.unwrap_or(serde_json::Value::Null),
+        );
+    result
+}
+
 fn warp_md_validation_result(
     errors: Vec<serde_json::Value>,
     warnings: Vec<String>,
     normalized_request: Option<serde_json::Value>,
 ) -> serde_json::Value {
-    serde_json::json!({
-        "schema_version": WARP_MD_AGENT_SCHEMA_VERSION,
-        "status": if errors.is_empty() { "ok" } else { "error" },
-        "valid": errors.is_empty(),
-        "normalized_request": normalized_request,
-        "errors": errors,
-        "warnings": warnings,
-    })
+    warp_md_validation_result_with_key(errors, warnings, "normalized_request", normalized_request)
+}
+
+fn warp_md_invalid_validation_result(
+    normalized_key: &str,
+    path: &str,
+    message: impl Into<String>,
+) -> serde_json::Value {
+    warp_md_validation_result_with_key(
+        vec![warp_md_validation_error(
+            "E_SCHEMA_VALIDATION",
+            path,
+            message,
+        )],
+        Vec::new(),
+        normalized_key,
+        None,
+    )
+}
+
+fn warp_md_parse_payload<T>(payload: &serde_json::Value) -> Result<T, serde_json::Value>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let payload_json = serde_json::to_string(payload)
+        .map_err(|err| warp_md_validation_error("E_SCHEMA_VALIDATION", "root", err.to_string()))?;
+    let mut deserializer = serde_json::Deserializer::from_str(&payload_json);
+    match serde_path_to_error::deserialize::<_, T>(&mut deserializer) {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            let path = err.path().to_string();
+            let path = if path.is_empty() {
+                "root"
+            } else {
+                path.as_str()
+            };
+            Err(warp_md_validation_error(
+                "E_SCHEMA_VALIDATION",
+                path,
+                err.inner().to_string(),
+            ))
+        }
+    }
+}
+
+fn warp_md_validate_serializable_payload<T>(
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value, serde_json::Value>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let typed = warp_md_parse_payload::<T>(payload)?;
+    serde_json::to_value(typed)
+        .map_err(|err| warp_md_validation_error("E_SCHEMA_VALIDATION", "root", err.to_string()))
 }
 
 fn warp_md_coerce_io_spec(
@@ -291,9 +838,66 @@ fn warp_md_coerce_io_spec(
     }
 }
 
-fn warp_md_validate_request_value(payload: serde_json::Value, strict: bool) -> serde_json::Value {
+fn warp_md_request_system_path(
+    root: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    ["system", "topology"]
+        .iter()
+        .find_map(|key| match root.get(*key) {
+            Some(serde_json::Value::String(path)) => {
+                let trimmed = path.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+            Some(serde_json::Value::Object(spec)) => spec
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string),
+            _ => None,
+        })
+}
+
+fn warp_md_append_selection_validation(
+    errors: &mut Vec<serde_json::Value>,
+    warnings: &mut Vec<String>,
+    path: &str,
+    field_type: &str,
+    field_value: &serde_json::Value,
+    system_path: Option<&str>,
+) {
+    let Some(expr) = field_value.as_str() else {
+        return;
+    };
+
+    let lint = warp_md_lint_selection_value(expr, field_type, system_path);
+    if lint["valid"].as_bool() != Some(true) {
+        let message = lint["error"].as_str().unwrap_or("Selection syntax error");
+        errors.push(warp_md_validation_error(
+            "E_SELECTION_INVALID",
+            path,
+            message,
+        ));
+        return;
+    }
+
+    if let Some(lint_warnings) = lint["warnings"].as_array() {
+        warnings.extend(
+            lint_warnings
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(|warning| format!("{path}: {warning}")),
+        );
+    }
+}
+
+fn warp_md_validate_request_value(
+    payload: serde_json::Value,
+    strict: bool,
+    check_selections: bool,
+) -> serde_json::Value {
     let mut errors: Vec<serde_json::Value> = Vec::new();
-    let warnings: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
 
     let Some(root) = payload.as_object() else {
         return warp_md_validation_result(
@@ -307,42 +911,26 @@ fn warp_md_validate_request_value(payload: serde_json::Value, strict: bool) -> s
         );
     };
 
-    let allowed_top_level: std::collections::BTreeSet<&str> = WARP_MD_RUN_REQUEST_TOP_LEVEL_FIELDS
-        .iter()
-        .copied()
-        .collect();
-    for key in root.keys() {
-        if !allowed_top_level.contains(key.as_str()) {
-            errors.push(warp_md_validation_error(
-                "E_SCHEMA_VALIDATION",
-                key,
-                "unknown top-level field",
-            ));
-        }
+    if let Err(error) = warp_md_parse_payload::<RunRequest>(&payload) {
+        return warp_md_validation_result(vec![error], warnings, None);
     }
 
     let version = match root.get("version") {
         None => serde_json::Value::String(WARP_MD_AGENT_SCHEMA_VERSION.into()),
-        Some(serde_json::Value::String(value)) if value == WARP_MD_AGENT_SCHEMA_VERSION => {
-            serde_json::Value::String(value.clone())
-        }
-        Some(serde_json::Value::String(value)) => {
+        Some(value) if value.as_str() == Some(WARP_MD_AGENT_SCHEMA_VERSION) => value.clone(),
+        Some(value) => {
+            let version = value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| WARP_MD_AGENT_SCHEMA_VERSION.to_string());
             errors.push(warp_md_validation_error(
                 "E_SCHEMA_VALIDATION",
                 "version",
                 format!(
-                    "unsupported run config version: {value}; expected {WARP_MD_AGENT_SCHEMA_VERSION}"
+                    "unsupported run config version: {version}; expected {WARP_MD_AGENT_SCHEMA_VERSION}"
                 ),
             ));
-            serde_json::Value::String(value.clone())
-        }
-        Some(_) => {
-            errors.push(warp_md_validation_error(
-                "E_SCHEMA_VALIDATION",
-                "version",
-                "version must be a string",
-            ));
-            serde_json::Value::Null
+            serde_json::Value::String(version)
         }
     };
 
@@ -519,35 +1107,6 @@ fn warp_md_validate_request_value(payload: serde_json::Value, strict: bool) -> s
             serde_json::Value::String(contract.name.clone()),
         );
 
-        if let Some(value) = item.get("out") {
-            if !value.is_string() && !value.is_null() {
-                errors.push(warp_md_validation_error(
-                    "E_SCHEMA_VALIDATION",
-                    &format!("{path_prefix}.out"),
-                    "out must be a string",
-                ));
-            }
-        }
-        if let Some(value) = item.get("device") {
-            if !value.is_string() && !value.is_null() {
-                errors.push(warp_md_validation_error(
-                    "E_SCHEMA_VALIDATION",
-                    &format!("{path_prefix}.device"),
-                    "device must be a string",
-                ));
-            }
-        }
-        if let Some(value) = item.get("chunk_frames") {
-            match value.as_u64() {
-                Some(v) if v >= 1 => {}
-                _ => errors.push(warp_md_validation_error(
-                    "E_SCHEMA_VALIDATION",
-                    &format!("{path_prefix}.chunk_frames"),
-                    "chunk_frames must be a positive integer",
-                )),
-            }
-        }
-
         for field_name in &contract.required_fields {
             match item.get(field_name) {
                 None | Some(serde_json::Value::Null) => errors.push(warp_md_validation_error(
@@ -646,6 +1205,43 @@ fn warp_md_validate_request_value(payload: serde_json::Value, strict: bool) -> s
         "analyses".into(),
         serde_json::Value::Array(normalized_analyses),
     );
+    if check_selections {
+        let system_path = warp_md_request_system_path(&normalized_root);
+        if let Some(analyses) = normalized_root
+            .get("analyses")
+            .and_then(serde_json::Value::as_array)
+        {
+            for (idx, analysis) in analyses.iter().enumerate() {
+                let Some(item) = analysis.as_object() else {
+                    continue;
+                };
+                let Some(analysis_name) = item.get("name").and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let Some(contract) = warp_md_contract_for_name(analysis_name) else {
+                    continue;
+                };
+                for (field_name, field_spec) in &contract.fields {
+                    let field_type = match field_spec.semantic_type.as_str() {
+                        "selection" | "mask" => field_spec.semantic_type.as_str(),
+                        _ => continue,
+                    };
+                    let Some(field_value) = item.get(field_name) else {
+                        continue;
+                    };
+                    warp_md_append_selection_validation(
+                        &mut errors,
+                        &mut warnings,
+                        &format!("analyses[{idx}].{field_name}"),
+                        field_type,
+                        field_value,
+                        system_path.as_deref(),
+                    );
+                }
+            }
+        }
+    }
     let normalized_request = if errors.is_empty() {
         Some(warp_md_normalize_request_value(
             serde_json::Value::Object(normalized_root),
@@ -1138,6 +1734,123 @@ fn warp_md_suggest_analyses_value(
     })
 }
 
+fn warp_md_validate_result_value(payload: serde_json::Value) -> serde_json::Value {
+    let Some(root) = payload.as_object() else {
+        return warp_md_invalid_validation_result(
+            "normalized_result",
+            "root",
+            "run result payload must be an object",
+        );
+    };
+
+    let normalized = match root.get("status") {
+        None => {
+            return warp_md_invalid_validation_result(
+                "normalized_result",
+                "status",
+                "run result payload missing required `status` field",
+            );
+        }
+        Some(serde_json::Value::String(status)) => match status.as_str() {
+            "ok" | "dry_run" => {
+                warp_md_validate_serializable_payload::<RunSuccessEnvelope>(&payload)
+            }
+            "error" => warp_md_validate_serializable_payload::<RunErrorEnvelope>(&payload),
+            _ => {
+                return warp_md_invalid_validation_result(
+                    "normalized_result",
+                    "status",
+                    format!(
+                        "unsupported run result status: {status}; expected one of ok, dry_run, error"
+                    ),
+                );
+            }
+        },
+        Some(_) => {
+            return warp_md_invalid_validation_result(
+                "normalized_result",
+                "status",
+                "run result `status` must be a string",
+            );
+        }
+    };
+
+    match normalized {
+        Ok(value) => warp_md_validation_result_with_key(
+            Vec::new(),
+            Vec::new(),
+            "normalized_result",
+            Some(value),
+        ),
+        Err(error) => {
+            warp_md_validation_result_with_key(vec![error], Vec::new(), "normalized_result", None)
+        }
+    }
+}
+
+fn warp_md_validate_event_value(payload: serde_json::Value) -> serde_json::Value {
+    let Some(root) = payload.as_object() else {
+        return warp_md_invalid_validation_result(
+            "normalized_event",
+            "root",
+            "run event payload must be an object",
+        );
+    };
+
+    let normalized = match root.get("event") {
+        None => {
+            return warp_md_invalid_validation_result(
+                "normalized_event",
+                "event",
+                "run event payload missing required `event` field",
+            );
+        }
+        Some(serde_json::Value::String(event)) => match event.as_str() {
+            "run_started" => warp_md_validate_serializable_payload::<RunStartedEvent>(&payload),
+            "analysis_started" => {
+                warp_md_validate_serializable_payload::<AnalysisStartedEvent>(&payload)
+            }
+            "checkpoint" => warp_md_validate_serializable_payload::<CheckpointEvent>(&payload),
+            "analysis_completed" => {
+                warp_md_validate_serializable_payload::<AnalysisCompletedEvent>(&payload)
+            }
+            "analysis_failed" => {
+                warp_md_validate_serializable_payload::<AnalysisFailedEvent>(&payload)
+            }
+            "run_completed" => warp_md_validate_serializable_payload::<RunCompletedEvent>(&payload),
+            "run_failed" => warp_md_validate_serializable_payload::<RunFailedEvent>(&payload),
+            _ => {
+                return warp_md_invalid_validation_result(
+                    "normalized_event",
+                    "event",
+                    format!(
+                        "unsupported run event: {event}; expected one of run_started, analysis_started, checkpoint, analysis_completed, analysis_failed, run_completed, run_failed"
+                    ),
+                );
+            }
+        },
+        Some(_) => {
+            return warp_md_invalid_validation_result(
+                "normalized_event",
+                "event",
+                "run event `event` must be a string",
+            );
+        }
+    };
+
+    match normalized {
+        Ok(value) => warp_md_validation_result_with_key(
+            Vec::new(),
+            Vec::new(),
+            "normalized_event",
+            Some(value),
+        ),
+        Err(error) => {
+            warp_md_validation_result_with_key(vec![error], Vec::new(), "normalized_event", None)
+        }
+    }
+}
+
 #[pyfunction]
 fn warp_md_agent_contract_catalog<'py>(py: Python<'py>) -> PyResult<PyObject> {
     let value = serde_json::to_value(warp_md_agent_contract_catalog_ref())
@@ -1229,15 +1942,40 @@ fn warp_md_agent_normalize_request<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (json, strict=false))]
+#[pyo3(signature = (json, strict=false, check_selections=false))]
 fn warp_md_agent_validate_request<'py>(
     py: Python<'py>,
     json: &str,
     strict: bool,
+    check_selections: bool,
 ) -> PyResult<PyObject> {
     let payload: serde_json::Value =
         serde_json::from_str(json).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-    let result = warp_md_validate_request_value(payload, strict);
+    let result = warp_md_validate_request_value(payload, strict, check_selections);
+    json_value_to_py(py, &result)
+}
+
+#[pyfunction]
+#[pyo3(signature = (kind="request"))]
+fn warp_md_agent_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
+    let value =
+        warp_md_agent_schema_value(kind).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn warp_md_agent_validate_result<'py>(py: Python<'py>, json: &str) -> PyResult<PyObject> {
+    let payload: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let result = warp_md_validate_result_value(payload);
+    json_value_to_py(py, &result)
+}
+
+#[pyfunction]
+fn warp_md_agent_validate_event<'py>(py: Python<'py>, json: &str) -> PyResult<PyObject> {
+    let payload: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let result = warp_md_validate_event_value(payload);
     json_value_to_py(py, &result)
 }
 
@@ -1272,6 +2010,9 @@ fn register_warp_md_agent_contract(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(warp_md_agent_generate_template, m)?)?;
     m.add_function(wrap_pyfunction!(warp_md_agent_normalize_request, m)?)?;
     m.add_function(wrap_pyfunction!(warp_md_agent_validate_request, m)?)?;
+    m.add_function(wrap_pyfunction!(warp_md_agent_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(warp_md_agent_validate_result, m)?)?;
+    m.add_function(wrap_pyfunction!(warp_md_agent_validate_event, m)?)?;
     m.add_function(wrap_pyfunction!(warp_md_agent_lint_selection, m)?)?;
     m.add_function(wrap_pyfunction!(warp_md_agent_suggest_analyses, m)?)?;
     Ok(())
@@ -1339,10 +2080,180 @@ mod tests {
                 }
             ]
         });
-        let result = warp_md_validate_request_value(payload, false);
+        let result = warp_md_validate_request_value(payload, false, false);
         assert_eq!(result["valid"], false);
         let errors = result["errors"].as_array().expect("errors");
         assert!(errors.iter().any(|error| error["code"] == "E_VALUE_RANGE"));
+    }
+
+    #[test]
+    fn request_schema_exposes_defs_and_analysis_enum() {
+        let schema = warp_md_agent_schema_value("request").expect("request schema");
+        assert!(schema.get("$defs").is_some());
+        assert_eq!(schema["title"], "RunRequest");
+        let analysis_name = &schema["$defs"]["AnalysisRequest"]["properties"]["name"]["enum"];
+        let values = analysis_name.as_array().expect("analysis enum");
+        assert!(values.iter().any(|value| value == "rg"));
+        assert!(values.iter().any(|value| value == "docking"));
+        assert_eq!(
+            schema["$defs"]["StreamMode"]["enum"],
+            serde_json::json!(["none", "ndjson"])
+        );
+    }
+
+    #[test]
+    fn request_validator_rejects_invalid_stream_mode() {
+        let payload = serde_json::json!({
+            "system": "top.pdb",
+            "trajectory": "traj.xtc",
+            "stream": "stdout",
+            "analyses": [{"name": "rg", "selection": "protein"}],
+        });
+        let result = warp_md_validate_request_value(payload, false, false);
+        assert_eq!(result["valid"], false);
+        let errors = result["errors"].as_array().expect("errors");
+        assert!(errors.iter().any(|error| error["path"] == "stream"));
+    }
+
+    #[test]
+    fn request_validator_rejects_zero_checkpoint_interval() {
+        let payload = serde_json::json!({
+            "system": "top.pdb",
+            "trajectory": "traj.xtc",
+            "checkpoint": {"enabled": true, "interval_frames": 0},
+            "analyses": [{"name": "rg", "selection": "protein"}],
+        });
+        let result = warp_md_validate_request_value(payload, false, false);
+        assert_eq!(result["valid"], false);
+        let errors = result["errors"].as_array().expect("errors");
+        assert!(errors
+            .iter()
+            .any(|error| error["path"] == "checkpoint.interval_frames"));
+    }
+
+    #[test]
+    fn request_validator_reports_invalid_selection_when_enabled() {
+        let payload = serde_json::json!({
+            "system": "top.pdb",
+            "trajectory": "traj.xtc",
+            "analyses": [{"name": "rg", "selection": "("}],
+        });
+        let result = warp_md_validate_request_value(payload, false, true);
+        assert_eq!(result["valid"], false);
+        let errors = result["errors"].as_array().expect("errors");
+        assert!(errors.iter().any(|error| {
+            error["code"] == "E_SELECTION_INVALID" && error["path"] == "analyses[0].selection"
+        }));
+    }
+
+    #[test]
+    fn request_validator_warns_when_topology_cannot_be_loaded() {
+        let payload = serde_json::json!({
+            "system": {"path": "missing-topology.pdb"},
+            "trajectory": "traj.xtc",
+            "analyses": [{"name": "rg", "selection": "protein"}],
+        });
+        let result = warp_md_validate_request_value(payload, false, true);
+        assert_eq!(result["valid"], true);
+        let warnings = result["warnings"].as_array().expect("warnings");
+        assert!(warnings.iter().any(|warning| {
+            warning.as_str().is_some_and(|message| {
+                message
+                    .starts_with("analyses[0].selection: Could not load topology for atom count:")
+            })
+        }));
+    }
+
+    #[test]
+    fn result_validator_preserves_contract_description() {
+        let payload = serde_json::json!({
+            "schema_version": WARP_MD_AGENT_SCHEMA_VERSION,
+            "status": "ok",
+            "exit_code": 0,
+            "output_dir": ".",
+            "system": {"path": "top.pdb"},
+            "trajectory": {"path": "traj.xtc"},
+            "analysis_count": 1,
+            "started_at": "2026-01-01T00:00:00Z",
+            "finished_at": "2026-01-01T00:00:01Z",
+            "elapsed_ms": 1000,
+            "warnings": [],
+            "results": [
+                {
+                    "analysis": "rg",
+                    "out": "rg.npz",
+                    "status": "ok",
+                    "kind": "array",
+                    "artifact": {
+                        "path": "rg.npz",
+                        "format": "npz",
+                        "bytes": 64,
+                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "kind": "timeseries",
+                        "fields": ["time_ps", "rg_nm"],
+                        "description": "Time series of radius of gyration values"
+                    }
+                }
+            ]
+        });
+        let value = warp_md_validate_result_value(payload);
+        assert_eq!(value["valid"], true);
+        assert_eq!(
+            value["normalized_result"]["results"][0]["artifact"]["description"],
+            "Time series of radius of gyration values"
+        );
+    }
+
+    #[test]
+    fn result_validator_reports_structured_status_errors() {
+        let payload = serde_json::json!({
+            "schema_version": WARP_MD_AGENT_SCHEMA_VERSION,
+            "status": "finished",
+            "exit_code": 0,
+            "analysis_count": 0,
+            "started_at": "2026-01-01T00:00:00Z",
+            "finished_at": "2026-01-01T00:00:01Z",
+            "elapsed_ms": 1000,
+            "warnings": [],
+            "results": []
+        });
+        let result = warp_md_validate_result_value(payload);
+        assert_eq!(result["valid"], false);
+        let errors = result["errors"].as_array().expect("errors");
+        assert!(errors.iter().any(|error| error["path"] == "status"));
+    }
+
+    #[test]
+    fn event_validator_accepts_run_completed_payload() {
+        let payload = serde_json::json!({
+            "event": "run_completed",
+            "final_envelope": {
+                "schema_version": WARP_MD_AGENT_SCHEMA_VERSION,
+                "status": "ok",
+                "exit_code": 0,
+                "output_dir": ".",
+                "system": {"path": "top.pdb"},
+                "trajectory": {"path": "traj.xtc"},
+                "analysis_count": 1,
+                "started_at": "2026-01-01T00:00:00Z",
+                "finished_at": "2026-01-01T00:00:01Z",
+                "elapsed_ms": 1000,
+                "warnings": [],
+                "results": []
+            }
+        });
+        let value = warp_md_validate_event_value(payload);
+        assert_eq!(value["valid"], true);
+        assert_eq!(value["normalized_event"]["event"], "run_completed");
+    }
+
+    #[test]
+    fn event_validator_reports_structured_event_errors() {
+        let payload = serde_json::json!({"event": "run_done"});
+        let result = warp_md_validate_event_value(payload);
+        assert_eq!(result["valid"], false);
+        let errors = result["errors"].as_array().expect("errors");
+        assert!(errors.iter().any(|error| error["path"] == "event"));
     }
 
     #[test]

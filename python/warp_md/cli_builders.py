@@ -27,6 +27,7 @@ from .cli_api import (
     WaterCountPlan,
     _select,
 )
+from .cli_analysis_registry import ANALYSIS_REGISTRY
 from .cli_utils import _as_tuple, _pick, _resolve_charges, _resolve_group_types
 
 
@@ -527,94 +528,20 @@ def _build_jcoupling(system: System, spec: Dict[str, Any]):
 
 
 def _build_gist(system: System, spec: Dict[str, Any]):
-    # Placeholder for gist until OpenMM object construction is supported in runner
+    # The agent runner does not yet construct the OpenMM objects GIST requires.
     raise NotImplementedError(
         "GIST analysis requires OpenMM system construction which is not yet supported in the agent runner."
     )
 
 
 PLAN_BUILDERS = {
-    "rg": _build_rg,
-    "rmsd": _build_rmsd,
-    "msd": _build_msd,
-    "rotacf": _build_rotacf,
-    "conductivity": _build_conductivity,
-    "dielectric": _build_dielectric,
-    "dipole_alignment": _build_dipole_alignment,
-    "ion_pair_correlation": _build_ion_pair,
-    "structure_factor": _build_structure_factor,
-    "water_count": _build_water_count,
-    "free_volume": _build_free_volume,
-    "bondi_ffv": _build_bondi_ffv,
-    "equipartition": _build_equipartition,
-    "hbond": _build_hbond,
-    "rdf": _build_rdf,
-    "end_to_end": _build_end_to_end,
-    "contour_length": _build_contour_length,
-    "chain_rg": _build_chain_rg,
-    "bond_length_distribution": _build_bond_length,
-    "bond_angle_distribution": _build_bond_angle,
-    "persistence_length": _build_persistence,
-    "docking": _build_docking,
-    # New analyses
-    "dssp": _build_dssp,
-    "diffusion": _build_diffusion,
-    "pca": _build_pca,
-    "rmsf": _build_rmsf,
-    "density": _build_density,
-    "native_contacts": _build_native_contacts,
-    # Additional analyses
-    "volmap": _build_volmap,
-    "surf": _build_surf,
-    "molsurf": _build_molsurf,
-    "watershell": _build_watershell,
-    "tordiff": _build_tordiff,
-    "projection": _build_projection,
-    # High priority analyses
-    "nmr": _build_nmr,
-    "jcoupling": _build_jcoupling,
-    "gist": _build_gist,
+    entry.plan_name: globals()[entry.build_fn]
+    for entry in ANALYSIS_REGISTRY
+    if entry.build_fn
 }
 
-
-CLI_TO_PLAN = {
-    "rg": "rg",
-    "rmsd": "rmsd",
-    "msd": "msd",
-    "rotacf": "rotacf",
-    "conductivity": "conductivity",
-    "dielectric": "dielectric",
-    "dipole-alignment": "dipole_alignment",
-    "ion-pair-correlation": "ion_pair_correlation",
-    "structure-factor": "structure_factor",
-    "water-count": "water_count",
-    "free-volume": "free_volume",
-    "bondi-ffv": "bondi_ffv",
-    "ffv": "bondi_ffv",
-    "equipartition": "equipartition",
-    "hbond": "hbond",
-    "rdf": "rdf",
-    "end-to-end": "end_to_end",
-    "contour-length": "contour_length",
-    "chain-rg": "chain_rg",
-    "bond-length-distribution": "bond_length_distribution",
-    "bond-angle-distribution": "bond_angle_distribution",
-    "persistence-length": "persistence_length",
-    "dssp": "dssp",
-    "diffusion": "diffusion",
-    "pca": "pca",
-    "rmsf": "rmsf",
-    "density": "density",
-    "native-contacts": "native_contacts",
-    # Additional analyses
-    "volmap": "volmap",
-    "surf": "surf",
-    "molsurf": "molsurf",
-    "watershell": "watershell",
-    "tordiff": "tordiff",
-    "projection": "projection",
-    # High priority analyses
-    "nmr": "nmr",
-    "jcoupling": "jcoupling",
-    "gist": "gist",
-}
+CLI_TO_PLAN: dict[str, str] = {}
+for entry in ANALYSIS_REGISTRY:
+    CLI_TO_PLAN[entry.cli_name] = entry.plan_name
+    for legacy_alias in entry.legacy_cli_aliases:
+        CLI_TO_PLAN[legacy_alias] = entry.plan_name

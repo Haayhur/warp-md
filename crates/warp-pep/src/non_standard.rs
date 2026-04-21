@@ -5,7 +5,7 @@
 //! PCA is a cyclized glutamic acid found at some N-termini.
 
 use crate::geometry::{geometry, Geo, SideChainAtom};
-use crate::residue::ResName;
+use crate::types::ResName;
 
 /// Non-standard residue identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

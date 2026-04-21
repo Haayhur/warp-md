@@ -19,4 +19,5 @@ pub mod non_standard;
 pub mod residue;
 pub mod selection;
 pub mod streaming;
+pub mod types;
 pub mod validation;

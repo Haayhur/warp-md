@@ -3,205 +3,193 @@ from pkgutil import extend_path
 # Allow local source package + installed extension module to coexist.
 __path__ = extend_path(__path__, __name__)
 
+_REQUIRED_BINDINGS = (
+    ("System", "PySystem"),
+    ("Selection", "PySelection"),
+    ("Trajectory", "PyTrajectory"),
+    ("TrajectoryWriter", "PyTrajectoryWriter"),
+    ("StructureWriter", "PyStructureWriter"),
+    ("FrameEditor", "PyFrameEditor"),
+    ("RgPlan", "PyRgPlan"),
+    ("RadgyrTensorPlan", "PyRadgyrTensorPlan"),
+    ("RmsdPlan", "PyRmsdPlan"),
+    ("SymmRmsdPlan", "PySymmRmsdPlan"),
+    ("DistanceRmsdPlan", "PyDistanceRmsdPlan"),
+    ("PairwiseRmsdPlan", "PyPairwiseRmsdPlan"),
+    ("TrajectoryClusterPlan", "PyTrajectoryClusterPlan"),
+    ("MatrixPlan", "PyMatrixPlan"),
+    ("PcaPlan", "PyPcaPlan"),
+    ("AnalyzeModesPlan", "PyAnalyzeModesPlan"),
+    ("ProjectionPlan", "PyProjectionPlan"),
+    ("RmsdPerResPlan", "PyRmsdPerResPlan"),
+    ("RmsfPlan", "PyRmsfPlan"),
+    ("BfactorsPlan", "PyBfactorsPlan"),
+    ("AtomicAdpPlan", "PyAtomicAdpPlan"),
+    ("AtomicFluctPlan", "PyAtomicFluctPlan"),
+    ("DistancePlan", "PyDistancePlan"),
+    ("LowestCurvePlan", "PyLowestCurvePlan"),
+    ("VectorPlan", "PyVectorPlan"),
+    ("GetVelocityPlan", "PyGetVelocityPlan"),
+    ("SetVelocityPlan", "PySetVelocityPlan"),
+    ("PairwiseDistancePlan", "PyPairwiseDistancePlan"),
+    ("PairDistPlan", "PyPairDistPlan"),
+    ("AnglePlan", "PyAnglePlan"),
+    ("DihedralPlan", "PyDihedralPlan"),
+    ("MultiDihedralPlan", "PyMultiDihedralPlan"),
+    ("PermuteDihedralsPlan", "PyPermuteDihedralsPlan"),
+    ("DihedralRmsPlan", "PyDihedralRmsPlan"),
+    ("PuckerPlan", "PyPuckerPlan"),
+    ("RotateDihedralPlan", "PyRotateDihedralPlan"),
+    ("SetDihedralPlan", "PySetDihedralPlan"),
+    ("CheckChiralityPlan", "PyCheckChiralityPlan"),
+    ("MindistPlan", "PyMindistPlan"),
+    ("HausdorffPlan", "PyHausdorffPlan"),
+    ("CheckStructurePlan", "PyCheckStructurePlan"),
+    ("AtomMapPlan", "PyAtomMapPlan"),
+    ("FixImageBondsPlan", "PyFixImageBondsPlan"),
+    ("RandomizeIonsPlan", "PyRandomizeIonsPlan"),
+    ("ClosestAtomPlan", "PyClosestAtomPlan"),
+    ("SearchNeighborsPlan", "PySearchNeighborsPlan"),
+    ("WatershellPlan", "PyWatershellPlan"),
+    ("ClosestPlan", "PyClosestPlan"),
+    ("NativeContactsPlan", "PyNativeContactsPlan"),
+    ("CenterTrajectoryPlan", "PyCenterTrajectoryPlan"),
+    ("TranslatePlan", "PyTranslatePlan"),
+    ("TransformPlan", "PyTransformPlan"),
+    ("RotatePlan", "PyRotatePlan"),
+    ("ScalePlan", "PyScalePlan"),
+    ("ImagePlan", "PyImagePlan"),
+    ("AutoImagePlan", "PyAutoImagePlan"),
+    ("ReplicateCellPlan", "PyReplicateCellPlan"),
+    ("XtalSymmPlan", "PyXtalSymmPlan"),
+    ("VolumePlan", "PyVolumePlan"),
+    ("StripPlan", "PyStripPlan"),
+    ("MeanStructurePlan", "PyMeanStructurePlan"),
+    ("AverageFramePlan", "PyAverageFramePlan"),
+    ("MakeStructurePlan", "PyMakeStructurePlan"),
+    ("CenterOfMassPlan", "PyCenterOfMassPlan"),
+    ("CenterOfGeometryPlan", "PyCenterOfGeometryPlan"),
+    ("DistanceToPointPlan", "PyDistanceToPointPlan"),
+    ("DistanceToReferencePlan", "PyDistanceToReferencePlan"),
+    ("PrincipalAxesPlan", "PyPrincipalAxesPlan"),
+    ("AlignPlan", "PyAlignPlan"),
+    ("SuperposePlan", "PySuperposePlan"),
+    ("RotationMatrixPlan", "PyRotationMatrixPlan"),
+    ("AlignPrincipalAxisPlan", "PyAlignPrincipalAxisPlan"),
+    ("MsdPlan", "PyMsdPlan"),
+    ("AtomicCorrPlan", "PyAtomicCorrPlan"),
+    ("VelocityAutoCorrPlan", "PyVelocityAutoCorrPlan"),
+    ("VanHovePlan", "PyVanHovePlan"),
+    ("RotAcfPlan", "PyRotAcfPlan"),
+    ("ConductivityPlan", "PyConductivityPlan"),
+    ("CurrentPlan", "PyCurrentPlan"),
+    ("DielectricPlan", "PyDielectricPlan"),
+    ("H2OrderPlan", "PyH2OrderPlan"),
+    ("HydOrderPlan", "PyHydOrderPlan"),
+    ("SOrientPlan", "PySOrientPlan"),
+    ("SpolPlan", "PySpolPlan"),
+    ("PotentialPlan", "PyPotentialPlan"),
+    ("DipoleAlignmentPlan", "PyDipoleAlignmentPlan"),
+    ("IonPairCorrelationPlan", "PyIonPairCorrelationPlan"),
+    ("SaltBridgePlan", "PySaltBridgePlan"),
+    ("StructureFactorPlan", "PyStructureFactorPlan"),
+    ("RamaPlan", "PyRamaPlan"),
+    ("WaterCountPlan", "PyWaterCountPlan"),
+    ("CountInVoxelPlan", "PyCountInVoxelPlan"),
+    ("DensityPlan", "PyDensityPlan"),
+    ("DensityMapPlan", "PyDensityMapPlan"),
+    ("VolmapPlan", "PyVolmapPlan"),
+    ("FreeVolumePlan", "PyFreeVolumePlan"),
+    ("BondiFfvPlan", "PyBondiFfvPlan"),
+    ("EquipartitionPlan", "PyEquipartitionPlan"),
+    ("XcorrPlan", "PyXcorrPlan"),
+    ("WaveletPlan", "PyWaveletPlan"),
+    ("SurfPlan", "PySurfPlan"),
+    ("MolSurfPlan", "PyMolSurfPlan"),
+    ("TorsionDiffusionPlan", "PyTorsionDiffusionPlan"),
+    ("ToroidalDiffusionPlan", "PyToroidalDiffusionPlan"),
+    ("MultiPuckerPlan", "PyMultiPuckerPlan"),
+    ("NmrIredPlan", "PyNmrIredPlan"),
+    ("HbondPlan", "PyHbondPlan"),
+    ("RdfPlan", "PyRdfPlan"),
+    ("EndToEndPlan", "PyEndToEndPlan"),
+    ("ContourLengthPlan", "PyContourLengthPlan"),
+    ("ChainRgPlan", "PyChainRgPlan"),
+    ("BondLengthDistributionPlan", "PyBondLengthDistributionPlan"),
+    ("BondAngleDistributionPlan", "PyBondAngleDistributionPlan"),
+    ("PersistenceLengthPlan", "PyPersistenceLengthPlan"),
+)
+
+_OPTIONAL_CLASS_BINDINGS = (
+    ("BundlePlan", "PyBundlePlan"),
+    ("HelixPlan", "PyHelixPlan"),
+    ("MdmatPlan", "PyMdmatPlan"),
+    ("HelixOrientPlan", "PyHelixOrientPlan"),
+    ("DockingPlan", "PyDockingPlan"),
+    ("GistGridPlan", "PyGistGridPlan"),
+    ("GistDirectPlan", "PyGistDirectPlan"),
+)
+
+_OPTIONAL_FUNCTION_BINDINGS = (
+    ("gist_apply_pme_scaling", "gist_apply_pme_scaling"),
+)
+
+
+def _binding_unavailable(name: str) -> str:
+    return f"{name} binding unavailable in this build. Rebuild bindings with `maturin develop`."
+
+
+def _make_missing_binding(name: str):
+    class _MissingBinding:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(_binding_unavailable(name))
+
+    _MissingBinding.__name__ = f"Missing{name}"
+    return _MissingBinding
+
+
+def _make_missing_function(name: str):
+    def _missing(*args, **kwargs):
+        raise RuntimeError(_binding_unavailable(name))
+
+    _missing.__name__ = name
+    return _missing
+
+
+def _register_missing_bindings(missing_type, missing_function) -> None:
+    for public_name, _native_name in _REQUIRED_BINDINGS:
+        globals()[public_name] = missing_type
+    for public_name, _native_name in _OPTIONAL_CLASS_BINDINGS:
+        globals()[public_name] = missing_type
+    for public_name, _native_name in _OPTIONAL_FUNCTION_BINDINGS:
+        globals()[public_name] = missing_function
+
+
 try:
     from . import traj_py as traj_py
-    from .traj_py import (
-        PySystem as System,
-        PySelection as Selection,
-        PyTrajectory as Trajectory,
-        PyTrajectoryWriter as TrajectoryWriter,
-        PyStructureWriter as StructureWriter,
-        PyFrameEditor as FrameEditor,
-        PyRgPlan as RgPlan,
-        PyRadgyrTensorPlan as RadgyrTensorPlan,
-        PyRmsdPlan as RmsdPlan,
-        PySymmRmsdPlan as SymmRmsdPlan,
-        PyDistanceRmsdPlan as DistanceRmsdPlan,
-        PyPairwiseRmsdPlan as PairwiseRmsdPlan,
-        PyTrajectoryClusterPlan as TrajectoryClusterPlan,
-        PyMatrixPlan as MatrixPlan,
-        PyPcaPlan as PcaPlan,
-        PyAnalyzeModesPlan as AnalyzeModesPlan,
-        PyProjectionPlan as ProjectionPlan,
-        PyRmsdPerResPlan as RmsdPerResPlan,
-        PyRmsfPlan as RmsfPlan,
-        PyBfactorsPlan as BfactorsPlan,
-        PyAtomicAdpPlan as AtomicAdpPlan,
-        PyAtomicFluctPlan as AtomicFluctPlan,
-        PyDistancePlan as DistancePlan,
-        PyLowestCurvePlan as LowestCurvePlan,
-        PyVectorPlan as VectorPlan,
-        PyGetVelocityPlan as GetVelocityPlan,
-        PySetVelocityPlan as SetVelocityPlan,
-        PyPairwiseDistancePlan as PairwiseDistancePlan,
-        PyPairDistPlan as PairDistPlan,
-        PyAnglePlan as AnglePlan,
-        PyDihedralPlan as DihedralPlan,
-        PyMultiDihedralPlan as MultiDihedralPlan,
-        PyPermuteDihedralsPlan as PermuteDihedralsPlan,
-        PyDihedralRmsPlan as DihedralRmsPlan,
-        PyPuckerPlan as PuckerPlan,
-        PyRotateDihedralPlan as RotateDihedralPlan,
-        PySetDihedralPlan as SetDihedralPlan,
-        PyCheckChiralityPlan as CheckChiralityPlan,
-        PyMindistPlan as MindistPlan,
-        PyHausdorffPlan as HausdorffPlan,
-        PyCheckStructurePlan as CheckStructurePlan,
-        PyAtomMapPlan as AtomMapPlan,
-        PyFixImageBondsPlan as FixImageBondsPlan,
-        PyRandomizeIonsPlan as RandomizeIonsPlan,
-        PyClosestAtomPlan as ClosestAtomPlan,
-        PySearchNeighborsPlan as SearchNeighborsPlan,
-        PyWatershellPlan as WatershellPlan,
-        PyClosestPlan as ClosestPlan,
-        PyNativeContactsPlan as NativeContactsPlan,
-        PyCenterTrajectoryPlan as CenterTrajectoryPlan,
-        PyTranslatePlan as TranslatePlan,
-        PyTransformPlan as TransformPlan,
-        PyRotatePlan as RotatePlan,
-        PyScalePlan as ScalePlan,
-        PyImagePlan as ImagePlan,
-        PyAutoImagePlan as AutoImagePlan,
-        PyReplicateCellPlan as ReplicateCellPlan,
-        PyXtalSymmPlan as XtalSymmPlan,
-        PyVolumePlan as VolumePlan,
-        PyStripPlan as StripPlan,
-        PyMeanStructurePlan as MeanStructurePlan,
-        PyAverageFramePlan as AverageFramePlan,
-        PyMakeStructurePlan as MakeStructurePlan,
-        PyCenterOfMassPlan as CenterOfMassPlan,
-        PyCenterOfGeometryPlan as CenterOfGeometryPlan,
-        PyDistanceToPointPlan as DistanceToPointPlan,
-        PyDistanceToReferencePlan as DistanceToReferencePlan,
-        PyPrincipalAxesPlan as PrincipalAxesPlan,
-        PyAlignPlan as AlignPlan,
-        PySuperposePlan as SuperposePlan,
-        PyRotationMatrixPlan as RotationMatrixPlan,
-        PyAlignPrincipalAxisPlan as AlignPrincipalAxisPlan,
-        PyMsdPlan as MsdPlan,
-        PyAtomicCorrPlan as AtomicCorrPlan,
-        PyVelocityAutoCorrPlan as VelocityAutoCorrPlan,
-        PyVanHovePlan as VanHovePlan,
-        PyRotAcfPlan as RotAcfPlan,
-        PyConductivityPlan as ConductivityPlan,
-        PyCurrentPlan as CurrentPlan,
-        PyDielectricPlan as DielectricPlan,
-        PyH2OrderPlan as H2OrderPlan,
-        PyHydOrderPlan as HydOrderPlan,
-        PySOrientPlan as SOrientPlan,
-        PySpolPlan as SpolPlan,
-        PyPotentialPlan as PotentialPlan,
-        PyDipoleAlignmentPlan as DipoleAlignmentPlan,
-        PyIonPairCorrelationPlan as IonPairCorrelationPlan,
-        PySaltBridgePlan as SaltBridgePlan,
-        PyStructureFactorPlan as StructureFactorPlan,
-        PyRamaPlan as RamaPlan,
-        PyWaterCountPlan as WaterCountPlan,
-        PyCountInVoxelPlan as CountInVoxelPlan,
-        PyDensityPlan as DensityPlan,
-        PyDensityMapPlan as DensityMapPlan,
-        PyVolmapPlan as VolmapPlan,
-        PyFreeVolumePlan as FreeVolumePlan,
-        PyBondiFfvPlan as BondiFfvPlan,
-        PyEquipartitionPlan as EquipartitionPlan,
-        PyXcorrPlan as XcorrPlan,
-        PyWaveletPlan as WaveletPlan,
-        PySurfPlan as SurfPlan,
-        PyMolSurfPlan as MolSurfPlan,
-        PyTorsionDiffusionPlan as TorsionDiffusionPlan,
-        PyToroidalDiffusionPlan as ToroidalDiffusionPlan,
-        PyMultiPuckerPlan as MultiPuckerPlan,
-        PyNmrIredPlan as NmrIredPlan,
-        PyHbondPlan as HbondPlan,
-        PyRdfPlan as RdfPlan,
-        PyEndToEndPlan as EndToEndPlan,
-        PyContourLengthPlan as ContourLengthPlan,
-        PyChainRgPlan as ChainRgPlan,
-        PyBondLengthDistributionPlan as BondLengthDistributionPlan,
-        PyBondAngleDistributionPlan as BondAngleDistributionPlan,
-        PyPersistenceLengthPlan as PersistenceLengthPlan,
-    )
-    try:
-        from .traj_py import PyBundlePlan as BundlePlan
-    except Exception:  # pragma: no cover - older extension builds
-        class _MissingBundlePlan:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError(
-                    "BundlePlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
-                )
 
-        BundlePlan = _MissingBundlePlan
-    try:
-        from .traj_py import PyHelixPlan as HelixPlan
-    except Exception:  # pragma: no cover - older extension builds
-        class _MissingHelixPlan:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError(
-                    "HelixPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
-                )
+    for public_name, native_name in _REQUIRED_BINDINGS:
+        binding = getattr(traj_py, native_name, None)
+        if binding is None:
+            raise ImportError(f"required binding unavailable: {native_name}")
+        globals()[public_name] = binding
 
-        HelixPlan = _MissingHelixPlan
-    try:
-        from .traj_py import PyMdmatPlan as MdmatPlan
-    except Exception:  # pragma: no cover - older extension builds
-        class _MissingMdmatPlan:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError(
-                    "MdmatPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
-                )
+    for public_name, native_name in _OPTIONAL_CLASS_BINDINGS:
+        binding = getattr(traj_py, native_name, None)
+        globals()[public_name] = (
+            binding if binding is not None else _make_missing_binding(public_name)
+        )
 
-        MdmatPlan = _MissingMdmatPlan
-    try:
-        from .traj_py import PyHelixOrientPlan as HelixOrientPlan
-    except Exception:  # pragma: no cover - older extension builds
-        class _MissingHelixOrientPlan:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError(
-                    "HelixOrientPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
-                )
+    for public_name, native_name in _OPTIONAL_FUNCTION_BINDINGS:
+        binding = getattr(traj_py, native_name, None)
+        globals()[public_name] = (
+            binding if binding is not None else _make_missing_function(public_name)
+        )
 
-        HelixOrientPlan = _MissingHelixOrientPlan
-    try:
-        from .traj_py import PyDockingPlan as DockingPlan
-    except Exception:  # pragma: no cover - older extension builds
-        class _MissingDockingPlan:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError(
-                    "DockingPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
-                )
-
-        DockingPlan = _MissingDockingPlan
-    try:
-        from .traj_py import PyGistGridPlan as GistGridPlan
-    except Exception:  # pragma: no cover - older extension builds
-        class _MissingGistGridPlan:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError(
-                    "GistGridPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
-                )
-
-        GistGridPlan = _MissingGistGridPlan
-    try:
-        from .traj_py import PyGistDirectPlan as GistDirectPlan
-    except Exception:  # pragma: no cover - older extension builds
-        class _MissingGistDirectPlan:
-            def __init__(self, *args, **kwargs):
-                raise RuntimeError(
-                    "GistDirectPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
-                )
-
-        GistDirectPlan = _MissingGistDirectPlan
-    try:
-        from .traj_py import gist_apply_pme_scaling as gist_apply_pme_scaling
-    except Exception:  # pragma: no cover - older extension builds
-        def gist_apply_pme_scaling(*args, **kwargs):
-            raise RuntimeError(
-                "gist_apply_pme_scaling binding unavailable in this build. Rebuild bindings with `maturin develop`."
-            )
     __rust_build_profile__ = getattr(traj_py, "__rust_build_profile__", "unknown")
     __rust_cuda_enabled__ = bool(getattr(traj_py, "__rust_cuda_enabled__", False))
     _IMPORT_ERROR = None
-except Exception as exc:  # pragma: no cover - allow CLI help without bindings
+except (ImportError, OSError) as exc:  # pragma: no cover - allow CLI help without bindings
     _IMPORT_ERROR = exc
     traj_py = None
     __rust_build_profile__ = "unavailable"
@@ -216,127 +204,7 @@ except Exception as exc:  # pragma: no cover - allow CLI help without bindings
         def __init__(self, *args, **kwargs):
             _missing(*args, **kwargs)
 
-    System = _Missing
-    Selection = _Missing
-    Trajectory = _Missing
-    TrajectoryWriter = _Missing
-    StructureWriter = _Missing
-    FrameEditor = _Missing
-    RgPlan = _Missing
-    RadgyrTensorPlan = _Missing
-    RmsdPlan = _Missing
-    SymmRmsdPlan = _Missing
-    DistanceRmsdPlan = _Missing
-    PairwiseRmsdPlan = _Missing
-    TrajectoryClusterPlan = _Missing
-    MatrixPlan = _Missing
-    PcaPlan = _Missing
-    AnalyzeModesPlan = _Missing
-    ProjectionPlan = _Missing
-    RmsdPerResPlan = _Missing
-    RmsfPlan = _Missing
-    BfactorsPlan = _Missing
-    AtomicAdpPlan = _Missing
-    AtomicFluctPlan = _Missing
-    DistancePlan = _Missing
-    LowestCurvePlan = _Missing
-    VectorPlan = _Missing
-    GetVelocityPlan = _Missing
-    SetVelocityPlan = _Missing
-    PairwiseDistancePlan = _Missing
-    PairDistPlan = _Missing
-    AnglePlan = _Missing
-    DihedralPlan = _Missing
-    MultiDihedralPlan = _Missing
-    PermuteDihedralsPlan = _Missing
-    DihedralRmsPlan = _Missing
-    PuckerPlan = _Missing
-    RotateDihedralPlan = _Missing
-    SetDihedralPlan = _Missing
-    CheckChiralityPlan = _Missing
-    MindistPlan = _Missing
-    HausdorffPlan = _Missing
-    CheckStructurePlan = _Missing
-    AtomMapPlan = _Missing
-    FixImageBondsPlan = _Missing
-    RandomizeIonsPlan = _Missing
-    ClosestAtomPlan = _Missing
-    SearchNeighborsPlan = _Missing
-    WatershellPlan = _Missing
-    ClosestPlan = _Missing
-    NativeContactsPlan = _Missing
-    CenterTrajectoryPlan = _Missing
-    TranslatePlan = _Missing
-    TransformPlan = _Missing
-    RotatePlan = _Missing
-    ScalePlan = _Missing
-    ImagePlan = _Missing
-    AutoImagePlan = _Missing
-    ReplicateCellPlan = _Missing
-    XtalSymmPlan = _Missing
-    VolumePlan = _Missing
-    StripPlan = _Missing
-    MeanStructurePlan = _Missing
-    AverageFramePlan = _Missing
-    MakeStructurePlan = _Missing
-    CenterOfMassPlan = _Missing
-    CenterOfGeometryPlan = _Missing
-    DistanceToPointPlan = _Missing
-    DistanceToReferencePlan = _Missing
-    PrincipalAxesPlan = _Missing
-    AlignPlan = _Missing
-    SuperposePlan = _Missing
-    RotationMatrixPlan = _Missing
-    AlignPrincipalAxisPlan = _Missing
-    MsdPlan = _Missing
-    AtomicCorrPlan = _Missing
-    VelocityAutoCorrPlan = _Missing
-    VanHovePlan = _Missing
-    RotAcfPlan = _Missing
-    ConductivityPlan = _Missing
-    CurrentPlan = _Missing
-    DielectricPlan = _Missing
-    H2OrderPlan = _Missing
-    BundlePlan = _Missing
-    HelixPlan = _Missing
-    MdmatPlan = _Missing
-    HelixOrientPlan = _Missing
-    HydOrderPlan = _Missing
-    SOrientPlan = _Missing
-    SpolPlan = _Missing
-    PotentialPlan = _Missing
-    DipoleAlignmentPlan = _Missing
-    IonPairCorrelationPlan = _Missing
-    SaltBridgePlan = _Missing
-    StructureFactorPlan = _Missing
-    RamaPlan = _Missing
-    DockingPlan = _Missing
-    GistGridPlan = _Missing
-    GistDirectPlan = _Missing
-    WaterCountPlan = _Missing
-    CountInVoxelPlan = _Missing
-    DensityPlan = _Missing
-    VolmapPlan = _Missing
-    FreeVolumePlan = _Missing
-    BondiFfvPlan = _Missing
-    EquipartitionPlan = _Missing
-    XcorrPlan = _Missing
-    WaveletPlan = _Missing
-    SurfPlan = _Missing
-    MolSurfPlan = _Missing
-    TorsionDiffusionPlan = _Missing
-    ToroidalDiffusionPlan = _Missing
-    MultiPuckerPlan = _Missing
-    NmrIredPlan = _Missing
-    HbondPlan = _Missing
-    RdfPlan = _Missing
-    EndToEndPlan = _Missing
-    ContourLengthPlan = _Missing
-    ChainRgPlan = _Missing
-    BondLengthDistributionPlan = _Missing
-    BondAngleDistributionPlan = _Missing
-    PersistenceLengthPlan = _Missing
-    gist_apply_pme_scaling = _missing
+    _register_missing_bindings(_Missing, _missing)
 from .builder import (
     charges_from_selections,
     charges_from_table,

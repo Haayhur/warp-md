@@ -7,6 +7,9 @@ from typing import Any, Dict
 
 import numpy as np
 
+from ._json_types import JsonObject, JsonValue
+from . import contract
+
 
 def _save_output(path: str, output: Any) -> str:
     out_path = Path(path)
@@ -43,14 +46,12 @@ def _artifact_metadata(
     path: str,
     *,
     analysis_name: str = None,
-    contract_outputs=None,
-) -> Dict[str, Any]:
+) -> JsonObject:
     """Generate artifact metadata with optional semantic information.
 
     Args:
         path: Path to the artifact file
         analysis_name: Name of the analysis that produced this artifact
-        contract_outputs: Optional list of ArtifactSpec from the contract
 
     Returns:
         Dictionary with artifact metadata
@@ -70,6 +71,14 @@ def _artifact_metadata(
     fmt = out_path.suffix.lower().lstrip(".")
     if not fmt:
         fmt = "npz"
+
+    contract_outputs = None
+    if analysis_name:
+        plan_contract = contract.ANALYSIS_METADATA.get(analysis_name)
+        if plan_contract is None:
+            plan_contract = contract.ANALYSIS_METADATA.get(analysis_name.replace("-", "_"))
+        if plan_contract is not None:
+            contract_outputs = plan_contract.outputs
 
     metadata = {
         "path": str(out_path),
@@ -118,7 +127,7 @@ def _to_npz_dict(output: Any) -> Dict[str, np.ndarray]:
     return {"data": np.asarray(output)}
 
 
-def _to_jsonable(output: Any) -> Any:
+def _to_jsonable(output: Any) -> JsonValue:
     if isinstance(output, np.ndarray):
         return output.tolist()
     if isinstance(output, dict):
@@ -130,7 +139,7 @@ def _to_jsonable(output: Any) -> Any:
     return output
 
 
-def _summary_from_output(output: Any, analysis: str, out_path: Path) -> Dict[str, Any]:
+def _summary_from_output(output: Any, analysis: str, out_path: Path) -> JsonObject:
     if isinstance(output, np.generic):
         output = output.item()
     summary: Dict[str, Any] = {

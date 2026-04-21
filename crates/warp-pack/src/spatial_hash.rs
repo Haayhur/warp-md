@@ -1,5 +1,5 @@
 pub use traj_core::spatial_hash::SpatialHash;
-pub use traj_core::spatial_hash_v2::{SpatialHashStats, SpatialHashV2};
+pub use traj_core::spatial_hash_v2::SpatialHashV2;
 
 use crate::atom_params::AtomParams;
 use crate::geom::Vec3;

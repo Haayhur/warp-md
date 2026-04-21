@@ -84,6 +84,64 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def _install_native_pack_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    resolve_chemistry,
+) -> None:
+    class Native:
+        @staticmethod
+        def pack_agent_schema(target: str):
+            return {"target": target}
+
+        @staticmethod
+        def pack_agent_example(mode: str):
+            return {"mode": mode}
+
+        @staticmethod
+        def pack_agent_capabilities():
+            return {}
+
+        @staticmethod
+        def pack_agent_validate(payload: str):
+            return 0, {"valid": True}
+
+        @staticmethod
+        def pack_agent_run(payload: str, stream_ndjson: bool):
+            return 0, {"status": "ok", "stream": stream_ndjson}
+
+        pack_resolve_chemistry = staticmethod(resolve_chemistry)
+
+    monkeypatch.setattr(pack_contract, "traj_py", Native())
+
+
+def test_pack_resolve_chemistry_returns_native_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    def resolve_chemistry(payload: str):
+        decoded = json.loads(payload)
+        assert decoded["environment"]["ions"]["salt"]["name"] == "nacl"
+        return {"resolved_salt": "nacl"}
+
+    _install_native_pack_stub(monkeypatch, resolve_chemistry)
+    monkeypatch.delenv("WARP_MD_PACK_DATA_DIR", raising=False)
+    monkeypatch.delenv("WARP_MD_ION_REGISTRY", raising=False)
+    monkeypatch.delenv("WARP_MD_SALT_REGISTRY", raising=False)
+
+    result = pack_contract.resolve_chemistry(
+        {"environment": {"ions": {"salt": {"name": "nacl"}}}}
+    )
+
+    assert result == {"resolved_salt": "nacl"}
+    assert os.environ["WARP_MD_PACK_DATA_DIR"]
+    assert os.environ["WARP_MD_ION_REGISTRY"].endswith("ions.json")
+    assert os.environ["WARP_MD_SALT_REGISTRY"].endswith("salts.json")
+
+
+def test_pack_resolve_chemistry_rejects_non_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_native_pack_stub(monkeypatch, lambda payload: ["not", "a", "dict"])
+
+    with pytest.raises(RuntimeError, match="chemistry resolver"):
+        pack_contract.resolve_chemistry({"environment": {"ions": {}}})
+
+
 def test_pack_schema_request() -> None:
     result = _run_cli("schema")
     assert result.returncode == 0

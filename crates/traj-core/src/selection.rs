@@ -5,7 +5,6 @@ use crate::selection_expression::{
     is_backbone_atom, is_protein_resname, is_sidechain_heavy_atom, parse_selection_expression,
     SelectionExpr, SelectionPredicate,
 };
-use crate::system::System;
 
 #[derive(Debug, Clone)]
 pub struct Selection {
@@ -13,7 +12,18 @@ pub struct Selection {
     pub indices: Arc<Vec<u32>>,
 }
 
-pub fn compile_selection(expr: &str, system: &mut System) -> TrajResult<Selection> {
+pub trait SelectionContext {
+    fn n_atoms(&self) -> usize;
+    fn atom_name_ids(&self) -> &[u32];
+    fn residue_name_ids(&self) -> &[u32];
+    fn residue_numbers(&self) -> &[i32];
+    fn chain_ids(&self) -> &[u32];
+    fn element_ids(&self) -> &[u32];
+    fn intern_upper(&mut self, value: &str) -> u32;
+    fn resolve(&self, id: u32) -> Option<&str>;
+}
+
+pub fn compile_selection(expr: &str, system: &mut dyn SelectionContext) -> TrajResult<Selection> {
     let ast = parse_selection_expression(expr)?;
     let mask = eval(&ast, system);
     let indices = mask
@@ -27,7 +37,7 @@ pub fn compile_selection(expr: &str, system: &mut System) -> TrajResult<Selectio
     })
 }
 
-fn eval(expr: &SelectionExpr, system: &mut System) -> Vec<bool> {
+fn eval(expr: &SelectionExpr, system: &mut dyn SelectionContext) -> Vec<bool> {
     match expr {
         SelectionExpr::All => vec![true; system.n_atoms()],
         SelectionExpr::Predicate(predicate) => eval_predicate(predicate, system),
@@ -53,16 +63,13 @@ fn eval(expr: &SelectionExpr, system: &mut System) -> Vec<bool> {
     }
 }
 
-fn eval_predicate(predicate: &SelectionPredicate, system: &mut System) -> Vec<bool> {
+fn eval_predicate(predicate: &SelectionPredicate, system: &mut dyn SelectionContext) -> Vec<bool> {
     let n_atoms = system.n_atoms();
     let mut mask = vec![false; n_atoms];
     match predicate {
         SelectionPredicate::Name(names) => {
-            let ids: Vec<u32> = names
-                .iter()
-                .map(|name| system.interner.intern_upper(name))
-                .collect();
-            for (idx, atom_name_id) in system.atoms.name_id.iter().enumerate() {
+            let ids: Vec<u32> = names.iter().map(|name| system.intern_upper(name)).collect();
+            for (idx, atom_name_id) in system.atom_name_ids().iter().enumerate() {
                 if ids.contains(atom_name_id) {
                     mask[idx] = true;
                 }
@@ -71,16 +78,16 @@ fn eval_predicate(predicate: &SelectionPredicate, system: &mut System) -> Vec<bo
         SelectionPredicate::Resname(names) => {
             let ids: Vec<u32> = names
                 .iter()
-                .map(|resname| system.interner.intern_upper(resname))
+                .map(|resname| system.intern_upper(resname))
                 .collect();
-            for (idx, resname_id) in system.atoms.resname_id.iter().enumerate() {
+            for (idx, resname_id) in system.residue_name_ids().iter().enumerate() {
                 if ids.contains(resname_id) {
                     mask[idx] = true;
                 }
             }
         }
         SelectionPredicate::Resid(ranges) => {
-            for (idx, resid) in system.atoms.resid.iter().enumerate() {
+            for (idx, resid) in system.residue_numbers().iter().enumerate() {
                 if ranges.iter().any(|range| range.contains(*resid)) {
                     mask[idx] = true;
                 }
@@ -89,9 +96,9 @@ fn eval_predicate(predicate: &SelectionPredicate, system: &mut System) -> Vec<bo
         SelectionPredicate::Chain(chains) => {
             let ids: Vec<u32> = chains
                 .iter()
-                .map(|chain| system.interner.intern_upper(chain))
+                .map(|chain| system.intern_upper(chain))
                 .collect();
-            for (idx, chain_id) in system.atoms.chain_id.iter().enumerate() {
+            for (idx, chain_id) in system.chain_ids().iter().enumerate() {
                 if ids.contains(chain_id) {
                     mask[idx] = true;
                 }
@@ -100,9 +107,9 @@ fn eval_predicate(predicate: &SelectionPredicate, system: &mut System) -> Vec<bo
         SelectionPredicate::Element(elements) => {
             let ids: Vec<u32> = elements
                 .iter()
-                .map(|element| system.interner.intern_upper(element))
+                .map(|element| system.intern_upper(element))
                 .collect();
-            for (idx, element_id) in system.atoms.element_id.iter().enumerate() {
+            for (idx, element_id) in system.element_ids().iter().enumerate() {
                 if ids.contains(element_id) {
                     mask[idx] = true;
                 }
@@ -110,10 +117,7 @@ fn eval_predicate(predicate: &SelectionPredicate, system: &mut System) -> Vec<bo
         }
         SelectionPredicate::Protein => {
             for idx in 0..n_atoms {
-                let resname = system
-                    .interner
-                    .resolve(system.atoms.resname_id[idx])
-                    .unwrap_or("");
+                let resname = system.resolve(system.residue_name_ids()[idx]).unwrap_or("");
                 if is_protein_resname(resname) {
                     mask[idx] = true;
                 }
@@ -121,14 +125,8 @@ fn eval_predicate(predicate: &SelectionPredicate, system: &mut System) -> Vec<bo
         }
         SelectionPredicate::Backbone => {
             for idx in 0..n_atoms {
-                let resname = system
-                    .interner
-                    .resolve(system.atoms.resname_id[idx])
-                    .unwrap_or("");
-                let atom_name = system
-                    .interner
-                    .resolve(system.atoms.name_id[idx])
-                    .unwrap_or("");
+                let resname = system.resolve(system.residue_name_ids()[idx]).unwrap_or("");
+                let atom_name = system.resolve(system.atom_name_ids()[idx]).unwrap_or("");
                 if is_protein_resname(resname) && is_backbone_atom(atom_name) {
                     mask[idx] = true;
                 }
@@ -136,14 +134,8 @@ fn eval_predicate(predicate: &SelectionPredicate, system: &mut System) -> Vec<bo
         }
         SelectionPredicate::SideChain => {
             for idx in 0..n_atoms {
-                let atom_name = system
-                    .interner
-                    .resolve(system.atoms.name_id[idx])
-                    .unwrap_or("");
-                let element = system
-                    .interner
-                    .resolve(system.atoms.element_id[idx])
-                    .unwrap_or("");
+                let atom_name = system.resolve(system.atom_name_ids()[idx]).unwrap_or("");
+                let element = system.resolve(system.element_ids()[idx]).unwrap_or("");
                 if is_sidechain_heavy_atom(atom_name, element) {
                     mask[idx] = true;
                 }

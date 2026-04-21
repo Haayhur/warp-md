@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::error::{TrajError, TrajResult};
 use crate::interner::StringInterner;
-use crate::selection::{compile_selection, Selection};
+use crate::selection::{compile_selection, Selection, SelectionContext};
 
 #[derive(Debug, Default, Clone)]
 pub struct AtomTable {
@@ -81,5 +81,39 @@ impl System {
             }
         }
         Ok(())
+    }
+}
+
+impl SelectionContext for System {
+    fn n_atoms(&self) -> usize {
+        self.n_atoms()
+    }
+
+    fn atom_name_ids(&self) -> &[u32] {
+        &self.atoms.name_id
+    }
+
+    fn residue_name_ids(&self) -> &[u32] {
+        &self.atoms.resname_id
+    }
+
+    fn residue_numbers(&self) -> &[i32] {
+        &self.atoms.resid
+    }
+
+    fn chain_ids(&self) -> &[u32] {
+        &self.atoms.chain_id
+    }
+
+    fn element_ids(&self) -> &[u32] {
+        &self.atoms.element_id
+    }
+
+    fn intern_upper(&mut self, value: &str) -> u32 {
+        self.interner.intern_upper(value)
+    }
+
+    fn resolve(&self, id: u32) -> Option<&str> {
+        self.interner.resolve(id)
     }
 }

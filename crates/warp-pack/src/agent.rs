@@ -23,6 +23,8 @@ use crate::geom::{center_of_geometry, Quaternion, Vec3};
 use crate::io::{read_molecule, write_output, MoleculeData};
 use crate::pack::run;
 
+pub mod shared_contract;
+
 pub const AGENT_SCHEMA_VERSION: &str = "warp-pack.agent.v1";
 const WARP_BUILD_MANIFEST_VERSION: &str = "warp-build.manifest.v1";
 
@@ -398,72 +400,10 @@ pub struct BuildRequest {
     pub outputs: OutputRequest,
 }
 
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-pub struct ErrorDetail {
-    pub code: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    pub message: String,
-    pub severity: String,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-pub struct ArtifactEnvelope {
-    pub coordinates: String,
-    pub manifest: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub md_package: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-pub struct RunSummary {
-    pub component_count: usize,
-    pub total_atoms: usize,
-    pub water_count: usize,
-    pub ion_counts: BTreeMap<String, usize>,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-pub struct RunSuccessEnvelope {
-    pub schema_version: String,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    pub output_dir: String,
-    pub artifacts: ArtifactEnvelope,
-    pub summary: RunSummary,
-    pub manifest_path: String,
-    pub warnings: Vec<ErrorDetail>,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-pub struct RunErrorEnvelope {
-    pub schema_version: String,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    pub exit_code: i32,
-    pub error: ErrorDetail,
-    pub errors: Vec<ErrorDetail>,
-    pub warnings: Vec<ErrorDetail>,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-pub struct ValidateSuccessEnvelope {
-    pub schema_version: String,
-    pub status: String,
-    pub valid: bool,
-    pub normalized_request: BuildRequest,
-    pub resolved_inputs: ResolvedInputsSummary,
-    pub warnings: Vec<ErrorDetail>,
-}
-
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-#[serde(untagged)]
-pub enum OneOrManyStrings {
-    One(String),
-    Many(Vec<String>),
-}
+pub use shared_contract::{
+    ArtifactEnvelope, ErrorDetail, OneOrManyStrings, RunErrorEnvelope, RunSuccessEnvelope,
+    RunSummary, ValidateSuccessEnvelope,
+};
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct NeutralizationPreconditions {
@@ -998,82 +938,12 @@ fn default_schema_version() -> String {
     AGENT_SCHEMA_VERSION.to_string()
 }
 
-fn error_severity() -> String {
-    "error".to_string()
-}
-
-fn warning_severity() -> String {
-    "warning".to_string()
-}
-
-fn json_pointer_token(token: &str) -> String {
-    token.replace('~', "~0").replace('/', "~1")
-}
-
-fn json_pointer(path: &str) -> Option<String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.starts_with('/') {
-        return Some(trimmed.to_string());
-    }
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    let mut chars = trimmed.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '.' => {
-                if !current.is_empty() {
-                    segments.push(std::mem::take(&mut current));
-                }
-            }
-            '[' => {
-                if !current.is_empty() {
-                    segments.push(std::mem::take(&mut current));
-                }
-                let mut index = String::new();
-                while let Some(next) = chars.next() {
-                    if next == ']' {
-                        break;
-                    }
-                    index.push(next);
-                }
-                if !index.is_empty() {
-                    segments.push(index);
-                }
-            }
-            _ => current.push(ch),
-        }
-    }
-    if !current.is_empty() {
-        segments.push(current);
-    }
-    if segments.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "/{}",
-            segments
-                .iter()
-                .map(|segment| json_pointer_token(segment))
-                .collect::<Vec<_>>()
-                .join("/")
-        ))
-    }
-}
-
 fn error_detail(
     code: impl Into<String>,
     path: impl Into<Option<String>>,
     message: impl Into<String>,
 ) -> ErrorDetail {
-    ErrorDetail {
-        code: code.into(),
-        path: path.into().and_then(|value| json_pointer(&value)),
-        message: message.into(),
-        severity: error_severity(),
-    }
+    shared_contract::to_error(code, path, message)
 }
 
 fn warning_detail(
@@ -1081,12 +951,7 @@ fn warning_detail(
     path: impl Into<Option<String>>,
     message: impl Into<String>,
 ) -> ErrorDetail {
-    ErrorDetail {
-        code: code.into(),
-        path: path.into().and_then(|value| json_pointer(&value)),
-        message: message.into(),
-        severity: warning_severity(),
-    }
+    shared_contract::to_warning(code, path, message)
 }
 
 fn component_warning_path(req: &BuildRequest, index: usize, suffix: &str) -> Option<String> {
@@ -1810,10 +1675,6 @@ fn named_salt_spec_with(salts: &SaltRegistry, name: &str) -> PackResult<Normaliz
         .ok_or_else(|| PackError::Invalid(format!("unsupported salt.name '{}'", name)))
 }
 
-fn named_salt_spec(name: &str) -> PackResult<NormalizedSaltSpec> {
-    named_salt_spec_with(salt_registry()?, name)
-}
-
 fn catalog_salt_spec_for_formula_with(
     salts: &SaltRegistry,
     formula: &str,
@@ -1824,22 +1685,10 @@ fn catalog_salt_spec_for_formula_with(
         .cloned()
 }
 
-fn catalog_salt_spec_for_formula(formula: &str) -> PackResult<Option<NormalizedSaltSpec>> {
-    Ok(catalog_salt_spec_for_formula_with(
-        salt_registry()?,
-        formula,
-    ))
-}
-
 fn ion_species_info_with(ions: &IonRegistry, species: &str) -> Option<IonSpeciesInfo> {
     ions.by_lookup
         .get(&normalize_ion_species_key(species))
         .cloned()
-}
-
-fn ion_species_info(species: &str) -> Option<IonSpeciesInfo> {
-    let registry = ion_registry().ok()?;
-    ion_species_info_with(registry, species)
 }
 
 fn ion_species_for_formula_symbol_with(ions: &IonRegistry, symbol: &str) -> PackResult<String> {
@@ -1853,10 +1702,6 @@ fn ion_species_for_formula_symbol_with(ions: &IonRegistry, symbol: &str) -> Pack
         .get(symbol)
         .cloned()
         .ok_or_else(|| PackError::Invalid(format!("unsupported salt.formula symbol '{}'", symbol)))
-}
-
-fn ion_species_for_formula_symbol(symbol: &str) -> PackResult<String> {
-    ion_species_for_formula_symbol_with(ion_registry()?, symbol)
 }
 
 fn validate_salt_species_map_with(
@@ -1892,10 +1737,6 @@ fn validate_salt_species_map_with(
         ));
     }
     Ok(())
-}
-
-fn validate_salt_species_map(species: &BTreeMap<String, usize>) -> PackResult<()> {
-    validate_salt_species_map_with(ion_registry()?, species)
 }
 
 fn parse_salt_formula_with(
@@ -1967,10 +1808,6 @@ fn parse_salt_formula_with(
     Ok(species)
 }
 
-fn parse_salt_formula(formula: &str) -> PackResult<BTreeMap<String, usize>> {
-    parse_salt_formula_with(ion_registry()?, salt_registry()?, formula)
-}
-
 fn canonical_salt_formula_with(
     ions: &IonRegistry,
     species: &BTreeMap<String, usize>,
@@ -1995,10 +1832,6 @@ fn canonical_salt_formula_with(
     positive.sort();
     negative.sort();
     Ok(positive.into_iter().chain(negative).collect::<String>())
-}
-
-fn canonical_salt_formula(species: &BTreeMap<String, usize>) -> PackResult<String> {
-    canonical_salt_formula_with(ion_registry()?, species)
 }
 
 fn looks_like_simple_formula_symbol(symbol: &str) -> bool {
@@ -2037,10 +1870,6 @@ fn salt_stoichiometry_with(
     counts.insert(cation.to_string(), lcm / cation_valence);
     counts.insert(anion.to_string(), lcm / anion_valence);
     Ok(counts)
-}
-
-fn salt_stoichiometry(cation: &str, anion: &str) -> PackResult<BTreeMap<String, usize>> {
-    salt_stoichiometry_with(ion_registry()?, cation, anion)
 }
 
 impl NeutralizeRequest {
@@ -2167,13 +1996,6 @@ impl IonRequest {
         }
     }
 
-    fn normalized_salt(&self) -> PackResult<Option<NormalizedSaltSpec>> {
-        self.normalized_salt_with(&ChemistryCatalog {
-            ions: ion_registry()?.clone(),
-            salts: salt_registry()?.clone(),
-        })
-    }
-
     fn counterion_for_charge_with(
         &self,
         chemistry: &ChemistryCatalog,
@@ -2216,16 +2038,6 @@ impl IonRequest {
             self.legacy_anion()
         })
     }
-
-    fn counterion_for_charge(&self, need_positive: bool) -> PackResult<String> {
-        self.counterion_for_charge_with(
-            &ChemistryCatalog {
-                ions: ion_registry()?.clone(),
-                salts: salt_registry()?.clone(),
-            },
-            need_positive,
-        )
-    }
 }
 
 fn gcd_usize(mut a: usize, mut b: usize) -> usize {
@@ -2247,16 +2059,6 @@ fn ion_template_path_with(ions: &IonRegistry, species: &str) -> String {
                 .to_string()
         });
     template
-}
-
-fn ion_template_path(species: &str) -> String {
-    match ion_registry() {
-        Ok(registry) => ion_template_path_with(registry, species),
-        Err(_) => pack_data_dir()
-            .join(format!("{}.pdb", normalize_ion_species_key(species)))
-            .to_string_lossy()
-            .to_string(),
-    }
 }
 
 fn parse_request_text(text: &str) -> Result<BuildRequest, ErrorDetail> {
@@ -3827,10 +3629,6 @@ fn total_ion_mass_amu_with(
     })
 }
 
-fn total_ion_mass_amu(ion_counts: &BTreeMap<String, usize>) -> PackResult<f64> {
-    total_ion_mass_amu_with(ion_registry()?, ion_counts)
-}
-
 fn estimate_solvent_count_for_density(
     box_size: [f32; 3],
     target_density_g_cm3: f32,
@@ -4052,8 +3850,8 @@ fn component_count(metadata: &TranslationMetadata) -> usize {
 
 fn topology_graph_inventory_summary(graph: &TopologyGraph) -> TopologyGraphInventorySummary {
     TopologyGraphInventorySummary {
-        schema_version: graph.schema_version.clone(),
-        build_mode: graph.build_plan.target_mode.clone(),
+        schema_version: graph.schema_version.to_string(),
+        build_mode: graph.build_plan.target_mode.to_string(),
         architecture: graph_architecture_label(graph).to_string(),
         motif_count: graph.motif_instances.len(),
         cycle_count: graph.cycle_basis.len(),
@@ -5221,6 +5019,7 @@ fn resolved_inputs(req: &BuildRequest) -> PackResult<ResolvedInputsSummary> {
                 .as_ref()
                 .map(|graph| graph.schema_version.clone())
         })
+        .map(|schema_version| schema_version.to_string())
         .collect::<BTreeSet<_>>();
     let build_manifest_versions = components
         .iter()

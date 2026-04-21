@@ -735,7 +735,6 @@ fn refresh_atom_metadata(atoms: &[AtomRecord], mols: &[MolInfo], buffer: &mut Ob
 pub(crate) struct MolInfo {
     pub(crate) atom_indices: Vec<usize>,
     pub(crate) local_positions: Vec<Vec3>,
-    pub(crate) radius: f32,
     pub(crate) selected: bool,
     pub(crate) movable: bool,
     pub(crate) rotatable: bool,
@@ -747,13 +746,6 @@ pub(crate) struct MolInfo {
 pub(crate) struct Bounds {
     pub(crate) lower: Vec<f32>,
     pub(crate) upper: Vec<f32>,
-}
-
-pub(crate) struct Objective {
-    pub(crate) value: f32,
-    pub(crate) max_overlap: f32,
-    pub(crate) max_constraint: f32,
-    pub(crate) grad_pos: Vec<Vec3>,
 }
 
 pub(crate) fn pack_variables(placements: &[PlacementRecord], mols: &[MolInfo]) -> Vec<f32> {
@@ -840,44 +832,6 @@ pub(crate) fn update_positions(
             atoms[atom_idx].position = pos;
         }
         offset += 6;
-    }
-}
-
-pub(crate) fn compute_objective(
-    atoms: &[AtomRecord],
-    positions: &[Vec3],
-    atom_params: &[AtomParams],
-    mols: &[MolInfo],
-    overlap_atoms: Option<&[usize]>,
-    pbc: Option<PbcBox>,
-    use_short_tol: bool,
-    include_overlap: bool,
-    short_dist: f32,
-    short_scale: f32,
-    fbins: f32,
-    radmax: f32,
-    buffer: &mut ObjectiveBuffer,
-) -> Objective {
-    let (value, max_overlap, max_constraint) = compute_objective_with_buffer(
-        atoms,
-        positions,
-        atom_params,
-        mols,
-        overlap_atoms,
-        pbc,
-        use_short_tol,
-        include_overlap,
-        short_dist,
-        short_scale,
-        fbins,
-        radmax,
-        buffer,
-    );
-    Objective {
-        value,
-        max_overlap,
-        max_constraint,
-        grad_pos: buffer.grad_pos.clone(),
     }
 }
 
@@ -1335,10 +1289,6 @@ pub(crate) fn compute_penalty(
     (value, max_overlap, max_constraint)
 }
 
-pub(crate) fn compute_gradient(objective: &Objective, x: &[f32], mols: &[MolInfo]) -> Vec<f32> {
-    compute_gradient_from_grad_pos(&objective.grad_pos, x, mols)
-}
-
 pub(crate) fn compute_gradient_from_grad_pos(
     grad_pos: &[Vec3],
     x: &[f32],
@@ -1411,17 +1361,6 @@ pub(crate) fn grad_norm(grad: &[f32]) -> f32 {
     sum.sqrt()
 }
 
-pub(crate) fn grad_sup_norm(grad: &[f32]) -> f32 {
-    let mut max_val = 0.0f32;
-    for g in grad {
-        let v = g.abs();
-        if v > max_val {
-            max_val = v;
-        }
-    }
-    max_val
-}
-
 pub(crate) fn project_step(x: &[f32], direction: &[f32], step: f32, bounds: &Bounds) -> Vec<f32> {
     let mut out = Vec::with_capacity(x.len());
     let n = x
@@ -1445,31 +1384,6 @@ pub(crate) fn project_step(x: &[f32], direction: &[f32], step: f32, bounds: &Bou
         out.extend_from_slice(&x[n..]);
     }
     out
-}
-
-pub(crate) fn projected_gradient(x: &[f32], grad: &[f32], bounds: &Bounds) -> Vec<f32> {
-    let mut pg = Vec::with_capacity(x.len());
-    let n = x
-        .len()
-        .min(grad.len())
-        .min(bounds.lower.len())
-        .min(bounds.upper.len());
-    for i in 0..n {
-        let mut v = x[i] - grad[i];
-        let lo = bounds.lower[i];
-        let hi = bounds.upper[i];
-        if v < lo {
-            v = lo;
-        }
-        if v > hi {
-            v = hi;
-        }
-        pg.push(x[i] - v);
-    }
-    if n < x.len() {
-        pg.resize(x.len(), 0.0);
-    }
-    pg
 }
 
 pub(crate) fn validate_molecule_counts(

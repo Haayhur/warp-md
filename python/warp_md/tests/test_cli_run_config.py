@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from warp_md import cli_run
+from warp_md import cli_run, contract
 
 
 class _DummyPlan:
@@ -63,6 +63,10 @@ def test_run_config_emits_json_envelope(monkeypatch, tmp_path, capsys) -> None:
     assert envelope["results"][0]["kind"] == "array"
     assert envelope["results"][0]["shape"] == [2]
     assert envelope["results"][0]["artifact"]["format"] == "npz"
+    assert (
+        envelope["results"][0]["artifact"]["description"]
+        == contract.get_plan_schema("rg")["outputs"][0]["description"]
+    )
     assert envelope["results"][0]["artifact"]["bytes"] > 0
     assert len(envelope["results"][0]["artifact"]["sha256"]) == 64
     assert Path(envelope["results"][0]["out"]).exists()

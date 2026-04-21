@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import traj_py
 from ._contract_catalog_snapshot import CATALOG as _FALLBACK_CONTRACT_CATALOG
+from ._json_types import JsonObject
 from .contract_constants import AGENT_REQUEST_SCHEMA_VERSION
 
 
@@ -128,6 +129,51 @@ class AnalysisContract:
 # native payload, with a generated snapshot fallback for no-bindings environments.
 
 
+class _CatalogFieldPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    type: str = "string"
+    semantic_type: SemanticType = "string"
+    description: str = ""
+    default: object = None
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+    unit: Optional[str] = None
+    choices: Optional[List[str]] = None
+
+
+class _CatalogArtifactPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    kind: ArtifactKind = "artifact"
+    format: str = ""
+    fields: List[str] = Field(default_factory=list)
+    description: str = ""
+
+
+class _CatalogAnalysisPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    aliases: List[str] = Field(default_factory=list)
+    description: str = ""
+    required_fields: List[str] = Field(default_factory=list)
+    optional_fields: List[str] = Field(default_factory=list)
+    fields: Dict[str, _CatalogFieldPayload] = Field(default_factory=dict)
+    outputs: List[_CatalogArtifactPayload] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    examples: List[Dict[str, object]] = Field(default_factory=list)
+
+
+class _ContractCatalogPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: str = AGENT_REQUEST_SCHEMA_VERSION
+    cli_to_analysis: Dict[str, str] = Field(default_factory=dict)
+    analysis_shared_fields: List[str] = Field(default_factory=list)
+    analyses: List[_CatalogAnalysisPayload] = Field(default_factory=list)
+
+
 def _native() -> Any:
     if traj_py is None:
         return None
@@ -146,81 +192,73 @@ def _native() -> Any:
     return traj_py
 
 
-def _field_spec_from_dict(payload: Dict[str, Any]) -> FieldSpec:
-    raw_choices = payload.get("choices")
+def _field_spec_from_payload(payload: _CatalogFieldPayload) -> FieldSpec:
     return FieldSpec(
-        type=str(payload.get("type", "string")),
-        semantic_type=str(payload.get("semantic_type", "string")),  # type: ignore[arg-type]
-        description=str(payload.get("description", "")),
-        default=payload.get("default"),
-        minimum=payload.get("minimum"),
-        maximum=payload.get("maximum"),
-        unit=payload.get("unit"),
-        choices=(
-            [str(choice) for choice in raw_choices]
-            if isinstance(raw_choices, (list, tuple))
-            else None
-        ),
+        type=payload.type,
+        semantic_type=payload.semantic_type,
+        description=payload.description,
+        default=payload.default,
+        minimum=payload.minimum,
+        maximum=payload.maximum,
+        unit=payload.unit,
+        choices=payload.choices,
     )
 
 
-def _artifact_spec_from_dict(payload: Dict[str, Any]) -> ArtifactSpec:
+def _field_spec_from_dict(payload: Dict[str, Any]) -> FieldSpec:
+    return _field_spec_from_payload(_CatalogFieldPayload.model_validate(payload))
+
+
+def _artifact_spec_from_payload(payload: _CatalogArtifactPayload) -> ArtifactSpec:
     return ArtifactSpec(
-        kind=str(payload.get("kind", "artifact")),  # type: ignore[arg-type]
-        format=str(payload.get("format", "")),
-        fields=list(payload.get("fields", [])),
-        description=str(payload.get("description", "")),
+        kind=payload.kind,
+        format=payload.format,
+        fields=payload.fields,
+        description=payload.description,
     )
 
 
-def _analysis_contract_from_dict(payload: Dict[str, Any]) -> AnalysisContract:
-    fields = payload.get("fields", {})
-    outputs = payload.get("outputs", [])
+def _analysis_contract_from_payload(payload: _CatalogAnalysisPayload) -> AnalysisContract:
     return AnalysisContract(
-        name=str(payload.get("name", "")),
-        aliases=list(payload.get("aliases", [])),
-        description=str(payload.get("description", "")),
-        required_fields=list(payload.get("required_fields", [])),
-        optional_fields=list(payload.get("optional_fields", [])),
+        name=payload.name,
+        aliases=payload.aliases,
+        description=payload.description,
+        required_fields=payload.required_fields,
+        optional_fields=payload.optional_fields,
         field_types={
-            str(name): _field_spec_from_dict(spec)
-            for name, spec in fields.items()
-            if isinstance(spec, dict)
+            name: _field_spec_from_payload(spec)
+            for name, spec in payload.fields.items()
         },
-        outputs=[
-            _artifact_spec_from_dict(spec)
-            for spec in outputs
-            if isinstance(spec, dict)
-        ],
-        tags=list(payload.get("tags", [])),
-        examples=[example for example in payload.get("examples", []) if isinstance(example, dict)],
+        outputs=[_artifact_spec_from_payload(spec) for spec in payload.outputs],
+        tags=payload.tags,
+        examples=payload.examples,
     )
 
 
-def _load_contract_catalog() -> Dict[str, Any]:
+def _parse_contract_catalog(payload: object) -> _ContractCatalogPayload:
+    return _ContractCatalogPayload.model_validate(payload)
+
+
+def _load_contract_catalog() -> _ContractCatalogPayload:
     native = _native()
     if native is not None:
         payload = native.warp_md_agent_contract_catalog()
         if isinstance(payload, dict) and payload.get("schema_version") == AGENT_REQUEST_SCHEMA_VERSION:
-            return payload
-    return _FALLBACK_CONTRACT_CATALOG
+            return _parse_contract_catalog(payload)
+    return _parse_contract_catalog(_FALLBACK_CONTRACT_CATALOG)
 
 
 _CONTRACT_CATALOG = _load_contract_catalog()
-CLI_TO_ANALYSIS: Dict[str, str] = {
-    str(key): str(value)
-    for key, value in (_CONTRACT_CATALOG.get("cli_to_analysis") or {}).items()
-}
+CLI_TO_ANALYSIS: Dict[str, str] = dict(_CONTRACT_CATALOG.cli_to_analysis)
 ANALYSIS_METADATA: Dict[str, AnalysisContract] = {
-    item["name"]: _analysis_contract_from_dict(item)
-    for item in _CONTRACT_CATALOG.get("analyses", [])
-    if isinstance(item, dict) and isinstance(item.get("name"), str)
+    item.name: _analysis_contract_from_payload(item)
+    for item in _CONTRACT_CATALOG.analyses
 }
 if not ANALYSIS_METADATA:
     raise RuntimeError("agent contract catalog is empty")
 
 _ANALYSIS_SHARED_FIELDS = frozenset(
-    str(field_name) for field_name in _CONTRACT_CATALOG.get("analysis_shared_fields", [])
+    str(field_name) for field_name in _CONTRACT_CATALOG.analysis_shared_fields
 )
 
 
@@ -306,7 +344,7 @@ class ValidationErrorDetail(BaseModel):
     code: str
     path: str
     message: str
-    context: Dict[str, Any] = Field(default_factory=dict)
+    context: Dict[str, object] = Field(default_factory=dict)
 
 
 class ValidationResult(BaseModel):
@@ -321,8 +359,61 @@ class ValidationResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def _request_system_path(payload: Dict[str, Any]) -> Optional[str]:
+    for field_name in ("system", "topology"):
+        value = payload.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            path = value.get("path")
+            if isinstance(path, str) and path.strip():
+                return path.strip()
+    return None
+
+
+def _apply_selection_validation(
+    normalized: Dict[str, Any],
+    errors: List[ValidationErrorDetail],
+    warnings: List[str],
+) -> None:
+    system_path = _request_system_path(normalized)
+    for idx, analysis in enumerate(normalized.get("analyses", [])):
+        if not isinstance(analysis, dict):
+            continue
+        analysis_name = analysis.get("name")
+        if not isinstance(analysis_name, str):
+            continue
+        try:
+            canonical = _resolve_analysis_name(analysis_name)
+        except ValueError:
+            continue
+        contract = ANALYSIS_METADATA.get(canonical)
+        if not contract:
+            continue
+        for field_name, field_spec in contract.field_types.items():
+            if field_spec.semantic_type not in ("selection", "mask"):
+                continue
+            field_value = analysis.get(field_name)
+            if not isinstance(field_value, str):
+                continue
+            path = f"analyses[{idx}].{field_name}"
+            lint = lint_selection(
+                field_value,
+                field_type=field_spec.semantic_type,
+                system_path=system_path,
+            )
+            if not lint.valid:
+                errors.append(ValidationErrorDetail(
+                    code="E_SELECTION_INVALID",
+                    path=path,
+                    message=lint.error or "Selection syntax error",
+                ))
+                continue
+            warnings.extend(f"{path}: {warning}" for warning in lint.warnings)
+
+
 def validate_request(
-    payload: Dict[str, Any],
+    payload: JsonObject,
     *,
     strict: bool = False,
     check_selections: bool = False,
@@ -340,15 +431,26 @@ def validate_request(
     native = _native()
     if native is not None:
         payload_json = json.dumps(payload)
-        result = native.warp_md_agent_validate_request(payload_json, strict)
-        if isinstance(result, dict):
-            return ValidationResult.model_validate(result)
+        try:
+            result = native.warp_md_agent_validate_request(
+                payload_json,
+                strict,
+                check_selections,
+            )
+        except TypeError:
+            if not check_selections:
+                result = native.warp_md_agent_validate_request(payload_json, strict)
+                if isinstance(result, dict):
+                    return ValidationResult.model_validate(result)
+        else:
+            if isinstance(result, dict):
+                return ValidationResult.model_validate(result)
 
     from .agent_schema import validate_run_request
 
     errors: List[ValidationErrorDetail] = []
     warnings: List[str] = []
-    normalized: Optional[Dict[str, Any]] = None
+    normalized: Optional[JsonObject] = None
 
     # Step 1: Pydantic schema validation
     try:
@@ -471,7 +573,8 @@ def validate_request(
                 ))
 
     # Step 3: Selection syntax validation (if requested)
-    # This would require loading the system - defer to lint-selection command
+    if check_selections and normalized is not None:
+        _apply_selection_validation(normalized, errors, warnings)
 
     return ValidationResult(
         status="ok" if not errors else "error",
@@ -483,10 +586,10 @@ def validate_request(
 
 
 def normalize_request(
-    payload: Dict[str, Any],
+    payload: JsonObject,
     *,
     strip_unknown: bool = False,
-) -> Dict[str, Any]:
+) -> JsonObject:
     """Canonicalize a request by resolving aliases and filling defaults.
 
     Args:
@@ -568,7 +671,7 @@ def generate_template(
     analysis_name: str,
     *,
     fill_defaults: bool = False,
-) -> Dict[str, Any]:
+) -> JsonObject:
     """Generate a request template for a single analysis.
 
     Args:
@@ -589,7 +692,7 @@ def generate_template(
     if not contract:
         raise ValueError(f"unknown analysis: {analysis_name}")
 
-    analysis_spec: Dict[str, Any] = {"name": canonical}
+    analysis_spec: JsonObject = {"name": canonical}
 
     # Add required fields with placeholder values
     for field in contract.required_fields:

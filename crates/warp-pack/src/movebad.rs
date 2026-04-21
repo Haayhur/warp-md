@@ -170,7 +170,6 @@ pub(crate) fn run_movebad_pass(
     );
     let (mol_fdist, mol_frest) =
         compute_mol_scores(total_mols, atoms, &atom_overlap, &atom_constraint);
-    let mut moved_any = false;
     for (spec_index, mol_ids) in per_spec.iter().enumerate() {
         if active_spec.is_some() && active_spec != Some(spec_index) {
             continue;
@@ -283,7 +282,6 @@ pub(crate) fn run_movebad_pass(
                     pbc,
                 )?;
             }
-            moved_any = true;
         }
     }
 
@@ -705,7 +703,7 @@ fn relocate_molecule_in_place(
     anchor_euler: Option<[f32; 3]>,
     bounds: Option<(Vec3, Vec3)>,
     check_overlap: bool,
-    cell_size: f32,
+    _cell_size: f32,
 ) -> PackResult<(PlacementRecord, bool)> {
     if target_atom_indices.len() != entry.template.atoms.len() {
         return Err(PackError::Placement(

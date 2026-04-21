@@ -94,12 +94,23 @@ def run_build_request(
     return int(exit_code), result
 
 
+def resolve_chemistry(payload: Dict[str, Any]) -> Dict[str, Any]:
+    native = _native()
+    if not hasattr(native, "pack_resolve_chemistry"):
+        raise RuntimeError("warp-md chemistry resolver bindings unavailable in this build")
+    result = native.pack_resolve_chemistry(json.dumps(payload))
+    if not isinstance(result, dict):
+        raise RuntimeError("native chemistry resolver must decode to a dict")
+    return result
+
+
 __all__ = [
     "PACK_AGENT_SCHEMA_VERSION",
     "PACK_AGENT_RESULT_VERSION",
     "render_pack_schema",
     "example_request",
     "pack_capabilities",
+    "resolve_chemistry",
     "validate_request_payload",
     "run_build_request",
 ]

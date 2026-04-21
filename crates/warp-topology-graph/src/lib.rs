@@ -4,13 +4,212 @@ use serde_json::Value;
 
 pub const TOPOLOGY_GRAPH_VERSION: &str = "warp-build.topology-graph.v5";
 
-fn default_topology_graph_version() -> String {
-    TOPOLOGY_GRAPH_VERSION.to_string()
+fn default_topology_graph_version() -> TopologyGraphSchemaVersion {
+    TopologyGraphSchemaVersion::from(TOPOLOGY_GRAPH_VERSION)
 }
 
-fn default_relax_overlap_metric() -> String {
-    "vdw_overlap_pairs_excluding_1_2_and_1_3".to_string()
+fn default_relax_overlap_metric() -> RelaxOverlapMetric {
+    RelaxOverlapMetric::from("vdw_overlap_pairs_excluding_1_2_and_1_3")
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct TopologyGraphSchemaVersion(String);
+
+impl Default for TopologyGraphSchemaVersion {
+    fn default() -> Self {
+        Self::from(TOPOLOGY_GRAPH_VERSION)
+    }
+}
+
+impl TopologyGraphSchemaVersion {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<&str> for TopologyGraphSchemaVersion {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<String> for TopologyGraphSchemaVersion {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Display for TopologyGraphSchemaVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+macro_rules! known_or_unknown_string_enum {
+    (
+        $outer:ident,
+        $inner:ident,
+        {
+            $(
+                $(#[$variant_attr:meta])*
+                $variant:ident => $value:literal
+            ),+ $(,)?
+        }
+    ) => {
+        #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+        #[serde(untagged)]
+        pub enum $outer {
+            Known($inner),
+            Unknown(String),
+        }
+
+        impl $outer {
+            fn classify(value: &str) -> Self {
+                match value {
+                    $($value => Self::Known($inner::$variant),)+
+                    other => Self::Unknown(other.to_string()),
+                }
+            }
+
+            pub fn as_str(&self) -> &str {
+                match self {
+                    Self::Known(mode) => mode.as_str(),
+                    Self::Unknown(mode) => mode.as_str(),
+                }
+            }
+        }
+
+        impl From<&str> for $outer {
+            fn from(value: &str) -> Self {
+                Self::classify(value)
+            }
+        }
+
+        impl From<String> for $outer {
+            fn from(value: String) -> Self {
+                Self::classify(&value)
+            }
+        }
+
+        impl std::fmt::Display for $outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+        #[serde(rename_all = "snake_case")]
+        pub enum $inner {
+            $(
+                $(#[$variant_attr])*
+                $variant,
+            )+
+        }
+
+        impl $inner {
+            fn as_str(&self) -> &str {
+                match self {
+                    $(Self::$variant => $value,)+
+                }
+            }
+        }
+    };
+}
+
+known_or_unknown_string_enum!(
+    TargetMode,
+    KnownTargetMode,
+    {
+        LinearHomopolymer => "linear_homopolymer",
+        LinearSequencePolymer => "linear_sequence_polymer",
+        BlockCopolymer => "block_copolymer",
+        RandomCopolymer => "random_copolymer",
+        StarPolymer => "star_polymer",
+        BranchedPolymer => "branched_polymer",
+        PolymerGraph => "polymer_graph",
+    }
+);
+
+known_or_unknown_string_enum!(
+    RealizationMode,
+    KnownRealizationMode,
+    {
+        Extended => "extended",
+        RandomWalk => "random_walk",
+        Aligned => "aligned",
+        Ensemble => "ensemble",
+    }
+);
+
+known_or_unknown_string_enum!(
+    TokenKind,
+    KnownTokenKind,
+    {
+        Unit => "unit",
+    }
+);
+
+known_or_unknown_string_enum!(
+    ConformerLayoutMode,
+    KnownConformerLayoutMode,
+    {
+        Auto => "auto",
+        TreeRadial => "tree_radial",
+        CyclePlanar => "cycle_planar",
+        Mixed => "mixed",
+    }
+);
+
+known_or_unknown_string_enum!(
+    ConformerTorsionMode,
+    KnownConformerTorsionMode,
+    {
+        Trans => "trans",
+        Cis => "cis",
+        GauchePlus => "gauche_plus",
+        GaucheMinus => "gauche_minus",
+        FixedDeg => "fixed_deg",
+        SampleWindow => "sample_window",
+    }
+);
+
+known_or_unknown_string_enum!(
+    ConformerRingMode,
+    KnownConformerRingMode,
+    {
+        Auto => "auto",
+        Planar => "planar",
+        Puckered => "puckered",
+    }
+);
+
+known_or_unknown_string_enum!(
+    AlignmentPathKind,
+    KnownAlignmentPathKind,
+    {
+        LongestResiduePath => "longest_residue_path",
+        TerminalPath => "terminal_path",
+    }
+);
+
+known_or_unknown_string_enum!(
+    RelaxMode,
+    KnownRelaxMode,
+    {
+        GraphSpring => "graph_spring",
+        TargetedSteric => "targeted_steric",
+    }
+);
+
+known_or_unknown_string_enum!(
+    RelaxOverlapMetric,
+    KnownRelaxOverlapMetric,
+    {
+        #[serde(rename = "vdw_overlap_pairs_excluding_1_2_and_1_3")]
+        VdwOverlapPairsExcluding12and13 => "vdw_overlap_pairs_excluding_1_2_and_1_3",
+    }
+);
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TerminiRequest {
@@ -79,7 +278,7 @@ pub struct Residue {
     #[serde(default)]
     pub sequence_token: Option<String>,
     #[serde(default)]
-    pub token_kind: Option<String>,
+    pub token_kind: Option<TokenKind>,
     #[serde(default)]
     pub source_token: Option<String>,
     #[serde(default)]
@@ -97,8 +296,8 @@ pub struct Residue {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BuildPlan {
-    pub target_mode: String,
-    pub realization_mode: String,
+    pub target_mode: TargetMode,
+    pub realization_mode: RealizationMode,
     pub resolved_sequence: Vec<String>,
     #[serde(default)]
     pub request_root_node_id: Option<String>,
@@ -236,26 +435,26 @@ pub struct AppliedCap {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ConformerEdge {
     pub edge_id: String,
-    pub layout_mode: String,
-    pub torsion_mode: String,
+    pub layout_mode: ConformerLayoutMode,
+    pub torsion_mode: ConformerTorsionMode,
     #[serde(default)]
     pub torsion_deg: Option<f32>,
     #[serde(default)]
     pub torsion_window_deg: Option<[f32; 2]>,
     #[serde(default)]
-    pub ring_mode: Option<String>,
+    pub ring_mode: Option<ConformerRingMode>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AlignmentPath {
-    pub kind: String,
+    pub kind: AlignmentPathKind,
     pub residue_ids: Vec<usize>,
     pub node_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RelaxMetadata {
-    pub mode: String,
+    pub mode: RelaxMode,
     pub steps_requested: usize,
     pub steps_executed: usize,
     pub initial_max_clash: f32,
@@ -266,7 +465,7 @@ pub struct RelaxMetadata {
     pub final_overlap_pairs: usize,
     #[serde(default = "default_relax_overlap_metric")]
     #[schemars(default = "default_relax_overlap_metric")]
-    pub overlap_metric: String,
+    pub overlap_metric: RelaxOverlapMetric,
     pub rms_displacement: f32,
     #[serde(default)]
     pub raw_coordinates: Option<String>,
@@ -280,7 +479,7 @@ pub struct TopologyGraph {
         rename = "schema_version"
     )]
     #[schemars(default = "default_topology_graph_version", rename = "schema_version")]
-    pub schema_version: String,
+    pub schema_version: TopologyGraphSchemaVersion,
     pub request_id: String,
     pub bundle_id: String,
     pub build_plan: BuildPlan,

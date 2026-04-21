@@ -7,6 +7,7 @@ use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use warp_pack::agent::shared_contract::{self, to_error, to_warning};
 use warp_pack::{PackError, PackResult};
 use warp_structure::io::{write_amber_inpcrd, write_minimal_prmtop, write_output, AmberTopology};
 use warp_structure::{center_of_geometry, AtomRecord, OutputSpec, PackOutput, Vec3};
@@ -450,14 +451,7 @@ pub struct BuildRequest {
     pub artifacts: ArtifactRequest,
 }
 
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-pub struct ErrorDetail {
-    pub code: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    pub message: String,
-    pub severity: String,
-}
+pub type ErrorDetail = shared_contract::ErrorDetail;
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct SuccessEnvelope {
@@ -958,97 +952,6 @@ fn internal_solver_relax_spec() -> RelaxSpec {
         steps: Some(64),
         step_scale: Some(0.25),
         clash_scale: Some(0.9),
-    }
-}
-
-fn error_severity() -> String {
-    "error".to_string()
-}
-
-fn warning_severity() -> String {
-    "warning".to_string()
-}
-
-fn json_pointer_token(token: &str) -> String {
-    token.replace('~', "~0").replace('/', "~1")
-}
-
-fn json_pointer(path: &str) -> Option<String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.starts_with('/') {
-        return Some(trimmed.to_string());
-    }
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    let mut chars = trimmed.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '.' => {
-                if !current.is_empty() {
-                    segments.push(std::mem::take(&mut current));
-                }
-            }
-            '[' => {
-                if !current.is_empty() {
-                    segments.push(std::mem::take(&mut current));
-                }
-                let mut index = String::new();
-                while let Some(next) = chars.next() {
-                    if next == ']' {
-                        break;
-                    }
-                    index.push(next);
-                }
-                if !index.is_empty() {
-                    segments.push(index);
-                }
-            }
-            _ => current.push(ch),
-        }
-    }
-    if !current.is_empty() {
-        segments.push(current);
-    }
-    if segments.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "/{}",
-            segments
-                .iter()
-                .map(|segment| json_pointer_token(segment))
-                .collect::<Vec<_>>()
-                .join("/")
-        ))
-    }
-}
-
-fn to_error(
-    code: &str,
-    path: impl Into<Option<String>>,
-    message: impl Into<String>,
-) -> ErrorDetail {
-    ErrorDetail {
-        code: code.to_string(),
-        path: path.into().and_then(|value| json_pointer(&value)),
-        message: message.into(),
-        severity: error_severity(),
-    }
-}
-
-fn to_warning(
-    code: &str,
-    path: impl Into<Option<String>>,
-    message: impl Into<String>,
-) -> ErrorDetail {
-    ErrorDetail {
-        code: code.to_string(),
-        path: path.into().and_then(|value| json_pointer(&value)),
-        message: message.into(),
-        severity: warning_severity(),
     }
 }
 
@@ -2294,23 +2197,6 @@ fn motif_supports_linear_ports(
     Ok(motif.exposed_ports.contains_key("head") && motif.exposed_ports.contains_key("tail"))
 }
 
-fn token_template_resname(bundle: &SourceBundle, token: &str) -> Result<String, ErrorDetail> {
-    if let Some(unit) = bundle.unit_library.get(token) {
-        return Ok(unit
-            .template_resname
-            .clone()
-            .unwrap_or_else(|| token.to_string()));
-    }
-    Err(to_error(
-        "E_UNKNOWN_TOKEN",
-        None,
-        format!(
-            "sequence token '{}' not present in source unit_library",
-            token
-        ),
-    ))
-}
-
 fn canonical_edge_id(
     left: &str,
     left_port: &str,
@@ -2319,32 +2205,6 @@ fn canonical_edge_id(
     ordinal: usize,
 ) -> String {
     format!("{left}:{left_port}->{right}:{right_port}#{ordinal}")
-}
-
-fn apply_conformer_override(
-    edge: &mut CompiledBuildEdge,
-    conformer_policy: Option<&ConformerPolicy>,
-    edge_override: Option<&EdgeConformerOverride>,
-) {
-    edge.layout_mode = conformer_policy
-        .map(|policy| policy.layout_mode.clone())
-        .unwrap_or_else(default_layout_mode);
-    edge.torsion_mode = edge_override
-        .map(|item| item.torsion_mode.clone())
-        .unwrap_or_else(|| {
-            conformer_policy
-                .map(|policy| policy.default_torsion.clone())
-                .unwrap_or_else(default_torsion_mode)
-        });
-    edge.torsion_deg = edge_override
-        .and_then(|item| item.torsion_deg)
-        .or_else(|| conformer_policy.and_then(|policy| policy.default_torsion_deg));
-    edge.torsion_window_deg = edge_override
-        .and_then(|item| item.torsion_window_deg)
-        .or_else(|| conformer_policy.and_then(|policy| policy.torsion_window_deg));
-    edge.ring_mode = edge_override
-        .and_then(|item| item.ring_mode.clone())
-        .or_else(|| conformer_policy.map(|policy| policy.ring_mode.clone()));
 }
 
 fn effective_policy<'a>(req: &'a BuildRequest) -> Option<&'a ConformerPolicy> {
@@ -3840,22 +3700,6 @@ fn apply_motif_port_caps(
     }
 
     Ok(plan)
-}
-
-fn template_resname_by_token(bundle: &SourceBundle) -> BTreeMap<String, String> {
-    bundle
-        .unit_library
-        .iter()
-        .map(|(token, entry)| {
-            (
-                token.clone(),
-                entry
-                    .template_resname
-                    .clone()
-                    .unwrap_or_else(|| token.clone()),
-            )
-        })
-        .collect()
 }
 
 fn selector_atom_name(selector: &JunctionSelector) -> PackResult<String> {
@@ -6783,8 +6627,11 @@ fn topology_graph_value(
                 request_node_id: compiled_plan
                     .and_then(|plan| plan.nodes.get(idx).map(|node| node.request_node_id.clone())),
                 sequence_token: sequence.get(idx).cloned(),
-                token_kind: compiled_plan
-                    .and_then(|plan| plan.nodes.get(idx).map(|node| node.token_kind.clone())),
+                token_kind: compiled_plan.and_then(|plan| {
+                    plan.nodes
+                        .get(idx)
+                        .map(|node| warp_topology_graph::TokenKind::from(node.token_kind.clone()))
+                }),
                 source_token: compiled_plan
                     .and_then(|plan| plan.nodes.get(idx).map(|node| node.source_token.clone())),
                 motif_instance_id: compiled_plan.and_then(|plan| {
@@ -6974,11 +6821,11 @@ fn topology_graph_value(
                     .iter()
                     .map(|edge| TopologyGraphConformerEdge {
                         edge_id: edge.edge_id.clone(),
-                        layout_mode: edge.layout_mode.clone(),
-                        torsion_mode: edge.torsion_mode.clone(),
+                        layout_mode: edge.layout_mode.clone().into(),
+                        torsion_mode: edge.torsion_mode.clone().into(),
                         torsion_deg: edge.torsion_deg,
                         torsion_window_deg: edge.torsion_window_deg,
-                        ring_mode: edge.ring_mode.clone(),
+                        ring_mode: edge.ring_mode.clone().map(|value| value.into()),
                     })
                     .collect::<Vec<_>>()
             })
@@ -8068,7 +7915,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             .or(primary_internal_cleanup_report.as_ref())
             .as_ref()
             .map(|report| TopologyGraphRelaxMetadata {
-                mode: report.mode.clone(),
+                mode: report.mode.clone().into(),
                 steps_requested: report.steps_requested,
                 steps_executed: report.steps_executed,
                 initial_max_clash: report.initial_max_clash,

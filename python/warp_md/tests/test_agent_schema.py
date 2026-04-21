@@ -6,12 +6,41 @@ from pydantic import ValidationError
 
 from warp_md.agent_schema import (
     AGENT_REQUEST_SCHEMA_VERSION,
+    ArtifactMetadata,
     run_event_json_schema,
     render_run_request_schema,
     run_request_json_schema,
+    validate_run_event_payload,
+    validate_run_result_payload,
     validate_run_request,
 )
 from warp_md import contract
+
+
+def _sample_run_success_envelope() -> dict[str, object]:
+    return {
+        "schema_version": AGENT_REQUEST_SCHEMA_VERSION,
+        "status": "ok",
+        "exit_code": 0,
+        "output_dir": ".",
+        "system": {"path": "topology.pdb"},
+        "trajectory": {"path": "traj.xtc"},
+        "analysis_count": 1,
+        "started_at": "2026-01-01T00:00:00Z",
+        "finished_at": "2026-01-01T00:00:01Z",
+        "elapsed_ms": 1000,
+        "warnings": [],
+        "results": [],
+    }
+
+
+def _write_selection_topology(path) -> None:
+    path.write_text(
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1       1.458   0.000   0.000  1.00  0.00           C\n"
+        "END\n",
+        encoding="utf-8",
+    )
 
 
 def test_validate_run_request_accepts_string_specs():
@@ -122,6 +151,20 @@ def test_event_schema_includes_progress_fields():
     assert "CheckpointEvent" in defs
 
 
+def test_validate_run_result_payload_rejects_invalid_status():
+    payload = _sample_run_success_envelope()
+    payload["status"] = "finished"
+    with pytest.raises(ValidationError) as exc_info:
+        validate_run_result_payload(payload)
+    assert "status" in str(exc_info.value)
+
+
+def test_validate_run_event_payload_rejects_invalid_event():
+    with pytest.raises(ValidationError) as exc_info:
+        validate_run_event_payload({"event": "run_done"})
+    assert "event" in str(exc_info.value)
+
+
 def test_render_schema_yaml():
     text = render_run_request_schema("yaml")
     assert "RunRequest" in text
@@ -147,10 +190,15 @@ def test_contract_validate_valid_request():
 def test_contract_validate_request_uses_native_when_available(monkeypatch):
     class Native:
         @staticmethod
-        def warp_md_agent_validate_request(payload_json: str, strict: bool):
+        def warp_md_agent_validate_request(
+            payload_json: str,
+            strict: bool,
+            check_selections: bool = False,
+        ):
             payload = json.loads(payload_json)
             assert payload["analyses"][0]["name"] == "rg"
             assert strict is True
+            assert check_selections is False
             return {
                 "schema_version": AGENT_REQUEST_SCHEMA_VERSION,
                 "status": "ok",
@@ -171,6 +219,39 @@ def test_contract_validate_request_uses_native_when_available(monkeypatch):
     )
     assert result.valid
     assert result.normalized_request == {"version": AGENT_REQUEST_SCHEMA_VERSION}
+
+
+def test_contract_validate_request_passes_check_selections_to_native(monkeypatch):
+    class Native:
+        @staticmethod
+        def warp_md_agent_validate_request(
+            payload_json: str,
+            strict: bool,
+            check_selections: bool = False,
+        ):
+            payload = json.loads(payload_json)
+            assert payload["analyses"][0]["name"] == "rg"
+            assert strict is False
+            assert check_selections is True
+            return {
+                "schema_version": AGENT_REQUEST_SCHEMA_VERSION,
+                "status": "ok",
+                "valid": True,
+                "normalized_request": {"version": AGENT_REQUEST_SCHEMA_VERSION},
+                "errors": [],
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(contract, "_native", lambda: Native())
+    result = contract.validate_request(
+        {
+            "system": "topology.pdb",
+            "trajectory": "traj.xtc",
+            "analyses": [{"name": "rg", "selection": "protein"}],
+        },
+        check_selections=True,
+    )
+    assert result.valid
 
 
 def test_contract_validate_missing_required_field():
@@ -225,6 +306,101 @@ def test_contract_validate_value_range_errors():
     # Contract validation catches range violations for known fields
     assert not result.valid
     assert any(e.code == "E_VALUE_RANGE" for e in result.errors)
+
+
+def test_contract_validate_rejects_invalid_stream_mode():
+    req = {
+        "system": "topology.pdb",
+        "trajectory": "traj.xtc",
+        "stream": "stdout",
+        "analyses": [{"name": "rg", "selection": "protein"}],
+    }
+    result = contract.validate_request(req)
+    assert not result.valid
+    assert any(e.path == "stream" for e in result.errors)
+
+
+def test_contract_validate_rejects_zero_checkpoint_interval():
+    req = {
+        "system": "topology.pdb",
+        "trajectory": "traj.xtc",
+        "checkpoint": {"enabled": True, "interval_frames": 0},
+        "analyses": [{"name": "rg", "selection": "protein"}],
+    }
+    result = contract.validate_request(req)
+    assert not result.valid
+    assert any(e.path == "checkpoint.interval_frames" for e in result.errors)
+
+
+def test_contract_validate_check_selections_disabled_keeps_current_behavior():
+    req = {
+        "system": "topology.pdb",
+        "trajectory": "traj.xtc",
+        "analyses": [{"name": "rg", "selection": "("}],
+    }
+    result = contract.validate_request(req, check_selections=False)
+    assert result.valid
+    assert not any(e.code == "E_SELECTION_INVALID" for e in result.errors)
+
+
+def test_contract_validate_check_selections_invalid_selection_error():
+    req = {
+        "system": "topology.pdb",
+        "trajectory": "traj.xtc",
+        "analyses": [{"name": "rg", "selection": "("}],
+    }
+    result = contract.validate_request(req, check_selections=True)
+    assert not result.valid
+    assert any(
+        e.code == "E_SELECTION_INVALID" and e.path == "analyses[0].selection"
+        for e in result.errors
+    )
+
+
+def test_contract_validate_check_selections_zero_match_warning(tmp_path):
+    topology = tmp_path / "topology.pdb"
+    _write_selection_topology(topology)
+    req = {
+        "system": {"path": str(topology)},
+        "trajectory": "traj.xtc",
+        "analyses": [{"name": "rg", "selection": "resname SOL"}],
+    }
+    result = contract.validate_request(req, check_selections=True)
+    assert result.valid
+    assert any(
+        warning == "analyses[0].selection: Selection matched zero atoms"
+        for warning in result.warnings
+    )
+
+
+def test_contract_validate_check_selections_topology_load_warning():
+    req = {
+        "system": {"path": "missing-topology.pdb"},
+        "trajectory": "traj.xtc",
+        "analyses": [{"name": "rg", "selection": "protein"}],
+    }
+    result = contract.validate_request(req, check_selections=True)
+    assert result.valid
+    assert any(
+        warning.startswith(
+            "analyses[0].selection: Could not load topology for atom count:"
+        )
+        for warning in result.warnings
+    )
+
+
+def test_contract_validate_check_selections_mask_field():
+    req = {
+        "system": "topology.pdb",
+        "trajectory": "traj.xtc",
+        "analyses": [{"name": "density", "mask": "("}],
+    }
+    result = contract.validate_request(req, check_selections=True)
+    assert not result.valid
+    assert any(
+        e.code == "E_SELECTION_INVALID" and e.path == "analyses[0].mask"
+        for e in result.errors
+    )
 
 
 def test_contract_validate_invalid_choice_errors():
@@ -453,8 +629,25 @@ def test_contract_artifact_metadata():
     output = schema["outputs"][0]
     assert "kind" in output
     assert "format" in output
+    assert "description" in output
     assert output["kind"] == "timeseries"
     assert output["format"] == "npz"
+    assert output["description"] == "Time series of radius of gyration values"
+
+
+def test_artifact_metadata_preserves_contract_description():
+    metadata = ArtifactMetadata.model_validate(
+        {
+            "path": "rg.npz",
+            "format": "npz",
+            "bytes": 16,
+            "sha256": "a" * 64,
+            "kind": "timeseries",
+            "fields": ["time_ps", "rg_nm"],
+            "description": "Time series of radius of gyration values",
+        }
+    ).model_dump(mode="python", exclude_none=True)
+    assert metadata["description"] == "Time series of radius of gyration values"
 
 
 def test_contract_tags():

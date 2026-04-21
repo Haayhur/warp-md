@@ -30,16 +30,14 @@ from pydantic import ValidationError
 
 from .agent_schema import (
     AGENT_RESULT_SCHEMA_VERSION,
-    CheckpointEvent,
     RunEnvelope,
     RunErrorEnvelope,
     RunRequest,
-    RunResultEntry,
     RunSuccessEnvelope,
     classify_error,
+    validate_run_result_payload,
     validate_run_request,
 )
-from . import contract
 from .cli_api import _load_system, _load_trajectory
 from .cli_builders import PLAN_BUILDERS
 from .cli_config import _default_out
@@ -57,6 +55,53 @@ def _resolve_plan_name(name: str) -> str:
     if alt in PLAN_BUILDERS:
         return alt
     raise ValueError(f"unknown analysis name: {name}")
+
+
+def _result_envelope_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "run_id": payload.get("run_id"),
+        "output_dir": payload.get("output_dir"),
+        "system": payload.get("system"),
+        "trajectory": payload.get("trajectory"),
+        "analysis_count": payload["analysis_count"],
+        "started_at": payload["started_at"],
+        "finished_at": payload["finished_at"],
+        "elapsed_ms": payload["elapsed_ms"],
+        "warnings": payload["warnings"],
+        "results": payload["results"],
+    }
+
+
+def _envelope_model(
+    model_cls: type[RunSuccessEnvelope] | type[RunErrorEnvelope],
+    **payload: Any,
+) -> RunSuccessEnvelope | RunErrorEnvelope:
+    validated = validate_run_result_payload(
+        {
+            "schema_version": AGENT_RESULT_SCHEMA_VERSION,
+            **payload,
+        }
+    )
+    return model_cls.model_validate(validated)
+
+
+def _success_envelope_model(**payload: Any) -> RunSuccessEnvelope:
+    return _envelope_model(
+        RunSuccessEnvelope,
+        status=payload["status"],
+        exit_code=0,
+        **_result_envelope_fields(payload),
+    )
+
+
+def _error_envelope_model(**payload: Any) -> RunErrorEnvelope:
+    return _envelope_model(
+        RunErrorEnvelope,
+        status="error",
+        exit_code=payload["exit_code"],
+        error=payload["error"],
+        **_result_envelope_fields(payload),
+    )
 
 
 def run_analyses(
@@ -111,9 +156,7 @@ def run_analyses(
     try:
         cfg = validate_run_request(cfg_raw)
     except ValidationError as exc:
-        return RunErrorEnvelope(
-            schema_version=AGENT_RESULT_SCHEMA_VERSION,
-            status="error",
+        return _error_envelope_model(
             exit_code=2,
             run_id=cfg_raw.get("run_id") if isinstance(cfg_raw, dict) else None,
             output_dir=output_dir,
@@ -144,9 +187,7 @@ def run_analyses(
     try:
         system = _load_system(system_spec)
     except Exception as exc:
-        return RunErrorEnvelope(
-            schema_version=AGENT_RESULT_SCHEMA_VERSION,
-            status="error",
+        return _error_envelope_model(
             exit_code=4,
             run_id=run_id,
             output_dir=out_dir,
@@ -157,7 +198,7 @@ def run_analyses(
             finished_at=_now_utc_iso(),
             elapsed_ms=int((time.perf_counter() - run_start) * 1000),
             warnings=warnings,
-            results=[RunResultEntry(**r) for r in results],
+            results=results,
             error={
                 "code": "E_SYSTEM_LOAD",
                 "message": str(exc),
@@ -178,9 +219,7 @@ def run_analyses(
             name = _resolve_plan_name(requested_name)
         except Exception as exc:
             if effective_fail_fast:
-                return RunErrorEnvelope(
-                    schema_version=AGENT_RESULT_SCHEMA_VERSION,
-                    status="error",
+                return _error_envelope_model(
                     exit_code=3,
                     run_id=run_id,
                     output_dir=out_dir,
@@ -191,7 +230,7 @@ def run_analyses(
                     finished_at=_now_utc_iso(),
                     elapsed_ms=int((time.perf_counter() - run_start) * 1000),
                     warnings=warnings,
-                    results=[RunResultEntry(**r) for r in results],
+                    results=results,
                     error={
                         "code": "E_ANALYSIS_UNKNOWN",
                         "message": str(exc),
@@ -207,9 +246,7 @@ def run_analyses(
             try:
                 traj = _load_trajectory(traj_spec, system)
             except Exception as exc:
-                return RunErrorEnvelope(
-                    schema_version=AGENT_RESULT_SCHEMA_VERSION,
-                    status="error",
+                return _error_envelope_model(
                     exit_code=4,
                     run_id=run_id,
                     output_dir=out_dir,
@@ -220,7 +257,7 @@ def run_analyses(
                     finished_at=_now_utc_iso(),
                     elapsed_ms=int((time.perf_counter() - run_start) * 1000),
                     warnings=warnings,
-                    results=[RunResultEntry(**r) for r in results],
+                    results=results,
                     error={
                         "code": "E_TRAJECTORY_LOAD",
                         "message": str(exc),
@@ -232,9 +269,7 @@ def run_analyses(
             plan = PLAN_BUILDERS[name](system, item)
         except Exception as exc:
             if effective_fail_fast:
-                return RunErrorEnvelope(
-                    schema_version=AGENT_RESULT_SCHEMA_VERSION,
-                    status="error",
+                return _error_envelope_model(
                     exit_code=3,
                     run_id=run_id,
                     output_dir=out_dir,
@@ -245,7 +280,7 @@ def run_analyses(
                     finished_at=_now_utc_iso(),
                     elapsed_ms=int((time.perf_counter() - run_start) * 1000),
                     warnings=warnings,
-                    results=[RunResultEntry(**r) for r in results],
+                    results=results,
                     error={
                         "code": "E_ANALYSIS_SPEC",
                         "message": str(exc),
@@ -264,9 +299,7 @@ def run_analyses(
             saved_path = _save_output(out_path, output)
         except Exception as exc:
             if effective_fail_fast:
-                return RunErrorEnvelope(
-                    schema_version=AGENT_RESULT_SCHEMA_VERSION,
-                    status="error",
+                return _error_envelope_model(
                     exit_code=4,
                     run_id=run_id,
                     output_dir=out_dir,
@@ -277,7 +310,7 @@ def run_analyses(
                     finished_at=_now_utc_iso(),
                     elapsed_ms=int((time.perf_counter() - run_start) * 1000),
                     warnings=warnings,
-                    results=[RunResultEntry(**r) for r in results],
+                    results=results,
                     error={
                         "code": "E_RUNTIME_EXEC",
                         "message": str(exc),
@@ -295,22 +328,14 @@ def run_analyses(
         entry["chunk_frames"] = chunk
         entry["timing_ms"] = int((time.perf_counter() - analysis_start) * 1000)
 
-        # Get contract outputs for semantic metadata
-        contract_outputs = None
-        plan_contract = contract.ANALYSIS_METADATA.get(name)
-        if plan_contract:
-            contract_outputs = plan_contract.outputs
-
-        entry["artifact"] = _artifact_metadata(saved_path, analysis_name=name, contract_outputs=contract_outputs)
+        entry["artifact"] = _artifact_metadata(saved_path, analysis_name=name)
         results.append(entry)
 
         if on_analysis_complete:
             on_analysis_complete(entry)
 
-    return RunSuccessEnvelope(
-        schema_version=AGENT_RESULT_SCHEMA_VERSION,
+    return _success_envelope_model(
         status="ok",
-        exit_code=0,
         run_id=run_id,
         output_dir=out_dir,
         system=system_spec,
@@ -320,7 +345,7 @@ def run_analyses(
         finished_at=_now_utc_iso(),
         elapsed_ms=int((time.perf_counter() - run_start) * 1000),
         warnings=warnings,
-        results=[RunResultEntry(**r) for r in results],
+        results=results,
     )
 
 

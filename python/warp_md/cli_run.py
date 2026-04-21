@@ -15,10 +15,14 @@ from pydantic import ValidationError
 
 from .agent_schema import (
     AGENT_RESULT_SCHEMA_VERSION,
+    RunErrorDetail,
     render_agent_schema,
+    validate_run_event_payload,
+    validate_run_result_payload,
     validate_run_request,
 )
 from . import contract
+from ._json_types import JsonObject, JsonValue
 from .cli_api import _load_system, _load_trajectory
 from .cli_args import REGISTRY, add_shared_args
 from .cli_builders import CLI_TO_PLAN, PLAN_BUILDERS
@@ -58,8 +62,8 @@ class RunContractError(Exception):
         code: str,
         message: str,
         *,
-        context: Optional[Dict[str, Any]] = None,
-        details: Optional[Any] = None,
+        context: Optional[JsonObject] = None,
+        details: Optional[JsonValue | list[RunErrorDetail]] = None,
     ) -> None:
         super().__init__(message)
         self.exit_code = exit_code
@@ -77,12 +81,16 @@ def _emit_event(stream_mode: str, event: str, **payload: Any) -> None:
         return
     record = {"event": event}
     record.update(payload)
-    print(json.dumps(record, default=str), file=sys.stderr, flush=True)
+    safe_record = _json_safe(record)
+    validated = validate_run_event_payload(safe_record if isinstance(safe_record, dict) else record)
+    print(json.dumps(validated, default=str), file=sys.stderr, flush=True)
 
 
-def _json_safe(value: Any) -> Any:
+def _json_safe(value: Any) -> JsonValue:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="python", exclude_none=True)
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
@@ -90,26 +98,27 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-def _normalize_validation_errors(errors: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-    normalized: list[Dict[str, Any]] = []
+def _normalize_validation_errors(errors: list[Dict[str, Any]]) -> list[RunErrorDetail]:
+    normalized: list[RunErrorDetail] = []
     for item in errors:
         loc = item.get("loc", ())
         if isinstance(loc, (list, tuple)):
             field = ".".join(str(part) for part in loc)
         else:
             field = str(loc)
-        entry: Dict[str, Any] = {
-            "type": item.get("type", "value_error"),
-            "field": field,
-            "message": item.get("msg", "validation error"),
-        }
-        if "ctx" in item:
-            entry["context"] = _json_safe(item.get("ctx"))
-        normalized.append(entry)
+        context = item.get("ctx")
+        normalized.append(
+            RunErrorDetail(
+                type=str(item.get("type", "value_error")),
+                field=field,
+                message=str(item.get("msg", "validation error")),
+                context=_json_safe(context) if isinstance(context, dict) else None,
+            )
+        )
     return normalized
 
 
-def _analysis_error_details(index: int, analysis: str, message: str) -> list[Dict[str, Any]]:
+def _analysis_error_details(index: int, analysis: str, message: str) -> list[RunErrorDetail]:
     # Parse builder-style errors such as "rdf.sel_a selection is required".
     field = f"analyses.{index}"
     match = re.match(r"(?P<prefix>[a-zA-Z0-9_]+)\.(?P<param>[a-zA-Z0-9_]+)\b", message)
@@ -119,10 +128,10 @@ def _analysis_error_details(index: int, analysis: str, message: str) -> list[Dic
         aliases = {analysis, analysis.replace("_", "-"), analysis.replace("-", "_")}
         if prefix in aliases:
             field = f"analyses.{index}.{param}"
-    return [{"type": "value_error", "field": field, "message": message}]
+    return [RunErrorDetail(type="value_error", field=field, message=message)]
 
 
-def _progress_snapshot(completed: int, total: int, elapsed_ms: int) -> Dict[str, Any]:
+def _progress_snapshot(completed: int, total: int, elapsed_ms: int) -> JsonObject:
     if total <= 0:
         return {
             "completed": completed,
@@ -149,16 +158,16 @@ def _build_success_envelope(
     status: str,
     run_id: Optional[str],
     output_dir: str,
-    system_spec: Dict[str, Any],
-    traj_spec: Dict[str, Any],
+    system_spec: JsonObject,
+    traj_spec: JsonObject,
     analysis_count: int,
     started_at: str,
     finished_at: str,
     elapsed_ms: int,
-    results: list[Dict[str, Any]],
+    results: list[JsonObject],
     warnings: list[str],
-) -> Dict[str, Any]:
-    return {
+) -> JsonObject:
+    envelope: JsonObject = {
         "schema_version": AGENT_RESULT_SCHEMA_VERSION,
         "status": status,
         "exit_code": _EXIT_OK,
@@ -171,8 +180,9 @@ def _build_success_envelope(
         "finished_at": finished_at,
         "elapsed_ms": elapsed_ms,
         "warnings": warnings,
-        "results": results,
+        "results": [_json_safe(result) for result in results],
     }
+    return validate_run_result_payload(envelope)
 
 
 def _build_error_envelope(
@@ -185,20 +195,21 @@ def _build_error_envelope(
     elapsed_ms: int,
     run_id: Optional[str],
     output_dir: Optional[str],
-    system_spec: Optional[Dict[str, Any]],
-    traj_spec: Optional[Dict[str, Any]],
+    system_spec: Optional[JsonObject],
+    traj_spec: Optional[JsonObject],
     analysis_count: int,
-    results: list[Dict[str, Any]],
+    results: list[JsonObject],
     warnings: list[str],
-    context: Optional[Dict[str, Any]] = None,
-    details: Optional[Any] = None,
+    context: Optional[JsonObject] = None,
+    details: Optional[JsonValue | list[RunErrorDetail]] = None,
     debug_errors: bool = False,
     exc: Optional[BaseException] = None,
-) -> Dict[str, Any]:
-    error: Dict[str, Any] = {
+) -> JsonObject:
+    safe_context = _json_safe(context or {})
+    error: JsonObject = {
         "code": code,
         "message": message,
-        "context": _json_safe(context or {}),
+        "context": safe_context if isinstance(safe_context, dict) else {},
     }
     if details is not None:
         error["details"] = _json_safe(details)
@@ -207,7 +218,7 @@ def _build_error_envelope(
             traceback.format_exception(type(exc), exc, exc.__traceback__)
         )
 
-    return {
+    envelope: JsonObject = {
         "schema_version": AGENT_RESULT_SCHEMA_VERSION,
         "status": "error",
         "exit_code": exit_code,
@@ -220,9 +231,10 @@ def _build_error_envelope(
         "finished_at": finished_at,
         "elapsed_ms": elapsed_ms,
         "warnings": warnings,
-        "results": results,
+        "results": [_json_safe(result) for result in results],
         "error": error,
     }
+    return validate_run_result_payload(envelope)
 
 
 def _resolve_plan_name(name: str) -> str:
@@ -242,13 +254,13 @@ def run_config(
 ) -> tuple[int, Dict[str, Any], str]:
     run_start = time.perf_counter()
     started_at = _now_utc_iso()
-    results: list[Dict[str, Any]] = []
+    results: list[JsonObject] = []
     warnings: list[str] = []
     stream_mode = stream or "none"
     run_id: Optional[str] = None
     output_dir: Optional[str] = None
-    system_spec: Optional[Dict[str, Any]] = None
-    traj_spec: Optional[Dict[str, Any]] = None
+    system_spec: Optional[JsonObject] = None
+    traj_spec: Optional[JsonObject] = None
     total_analyses = 0
     completed_analyses = 0
 
@@ -406,14 +418,14 @@ def run_config(
                     int((time.perf_counter() - run_start) * 1000),
                 ),
             )
-            entry: Dict[str, Any] = {
+            entry_payload: JsonObject = {
                 "analysis": name,
                 "out": out_path,
             }
 
             if dry_run:
-                entry["status"] = "dry_run"
-                results.append(entry)
+                entry_payload["status"] = "dry_run"
+                results.append(dict(entry_payload))
                 completed_analyses += 1
                 _emit_event(
                     stream_mode,
@@ -506,14 +518,14 @@ def run_config(
                 )
                 continue
 
-            entry.update(_summary_from_output(output, name, Path(saved_path)))
-            entry["status"] = "ok"
-            entry["device"] = device
-            entry["chunk_frames"] = chunk
-            entry["timing_ms"] = int((time.perf_counter() - analysis_start) * 1000)
-            entry["artifact"] = _artifact_metadata(saved_path)
-            entry["out"] = saved_path
-            results.append(entry)
+            entry_payload.update(_summary_from_output(output, name, Path(saved_path)))
+            entry_payload["status"] = "ok"
+            entry_payload["device"] = device
+            entry_payload["chunk_frames"] = chunk
+            entry_payload["timing_ms"] = int((time.perf_counter() - analysis_start) * 1000)
+            entry_payload["artifact"] = _artifact_metadata(saved_path, analysis_name=name)
+            entry_payload["out"] = saved_path
+            results.append(dict(entry_payload))
             completed_analyses += 1
             _emit_event(
                 stream_mode,
@@ -522,7 +534,7 @@ def run_config(
                 analysis=name,
                 status="ok",
                 out=saved_path,
-                timing_ms=entry["timing_ms"],
+                timing_ms=entry_payload["timing_ms"],
                 **_progress_snapshot(
                     completed_analyses,
                     total_analyses,
@@ -742,12 +754,12 @@ def build_plan_from_args(args: argparse.Namespace, system):
     return PLAN_BUILDERS[plan_name](system, spec)
 
 
-def _single_specs_from_args(args: argparse.Namespace) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    system_spec: Dict[str, Any] = {"path": args.topology}
+def _single_specs_from_args(args: argparse.Namespace) -> tuple[JsonObject, JsonObject]:
+    system_spec: JsonObject = {"path": args.topology}
     if getattr(args, "topology_format", None):
         system_spec["format"] = args.topology_format
 
-    traj_spec: Dict[str, Any] = {"path": args.traj}
+    traj_spec: JsonObject = {"path": args.traj}
     if getattr(args, "traj_format", None):
         traj_spec["format"] = args.traj_format
     if getattr(args, "traj_length_scale", None) is not None:
@@ -758,7 +770,7 @@ def _single_specs_from_args(args: argparse.Namespace) -> tuple[Dict[str, Any], D
 def run_single_analysis(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
     run_start = time.perf_counter()
     started_at = _now_utc_iso()
-    results: list[Dict[str, Any]] = []
+    results: list[JsonObject] = []
     warnings: list[str] = []
     run_id: Optional[str] = None
     output_dir: Optional[str] = None
@@ -817,21 +829,15 @@ def run_single_analysis(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
                 context={"analysis": plan_name, "index": 0},
             ) from exc
 
-        entry = _summary_from_output(output, plan_name, Path(saved_path))
-        entry["status"] = "ok"
-        entry["device"] = args.device
-        entry["chunk_frames"] = args.chunk_frames
-        entry["timing_ms"] = int((time.perf_counter() - analysis_start) * 1000)
+        entry_payload = _summary_from_output(output, plan_name, Path(saved_path))
+        entry_payload["status"] = "ok"
+        entry_payload["device"] = args.device
+        entry_payload["chunk_frames"] = args.chunk_frames
+        entry_payload["timing_ms"] = int((time.perf_counter() - analysis_start) * 1000)
 
-        # Get contract outputs for semantic metadata
-        contract_outputs = None
-        plan_contract = contract.ANALYSIS_METADATA.get(plan_name)
-        if plan_contract:
-            contract_outputs = plan_contract.outputs
-
-        entry["artifact"] = _artifact_metadata(saved_path, analysis_name=plan_name, contract_outputs=contract_outputs)
-        entry["out"] = saved_path
-        results.append(entry)
+        entry_payload["artifact"] = _artifact_metadata(saved_path, analysis_name=plan_name)
+        entry_payload["out"] = saved_path
+        results.append(dict(entry_payload))
         output_dir = str(Path(saved_path).parent)
     except RunContractError as exc:
         envelope = _build_error_envelope(

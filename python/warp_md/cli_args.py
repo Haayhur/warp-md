@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 
+from .cli_analysis_registry import ANALYSIS_REGISTRY
+
 
 def add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--topology", required=True, help="Topology file (.pdb or .gro)")
@@ -342,25 +344,7 @@ def setup_persistence_args(parser: argparse.ArgumentParser) -> None:
 
 
 REGISTRY = {
-    "rg": setup_rg_args,
-    "rmsd": setup_rmsd_args,
-    "msd": setup_msd_args,
-    "rotacf": setup_rotacf_args,
-    "conductivity": setup_conductivity_args,
-    "dielectric": setup_dielectric_args,
-    "dipole-alignment": setup_dipole_alignment_args,
-    "ion-pair-correlation": setup_ion_pair_args,
-    "structure-factor": setup_structure_factor_args,
-    "water-count": setup_water_count_args,
-    "free-volume": setup_free_volume_args,
-    "bondi-ffv": setup_bondi_ffv_args,
-    "equipartition": setup_equipartition_args,
-    "hbond": setup_hbond_args,
-    "rdf": setup_rdf_args,
-    "end-to-end": setup_end_to_end_args,
-    "contour-length": setup_contour_length_args,
-    "chain-rg": setup_chain_rg_args,
-    "bond-length-distribution": setup_bond_length_args,
-    "bond-angle-distribution": setup_bond_angle_args,
-    "persistence-length": setup_persistence_args,
+    entry.cli_name: globals()[entry.setup_fn]
+    for entry in ANALYSIS_REGISTRY
+    if entry.setup_fn is not None
 }

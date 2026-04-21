@@ -10,6 +10,7 @@ from .cli_parse import (
     _parse_int_list,
     _parse_int_tuple,
 )
+from .cli_analysis_registry import ANALYSIS_REGISTRY
 
 
 def _spec_rg(args, system: System) -> Dict[str, Any]:
@@ -324,25 +325,7 @@ def _spec_persistence(args, system: System) -> Dict[str, Any]:
 
 
 SPEC_BUILDERS = {
-    "rg": _spec_rg,
-    "rmsd": _spec_rmsd,
-    "msd": _spec_msd,
-    "rotacf": _spec_rotacf,
-    "conductivity": _spec_conductivity,
-    "dielectric": _spec_dielectric,
-    "dipole-alignment": _spec_dipole_alignment,
-    "ion-pair-correlation": _spec_ion_pair,
-    "structure-factor": _spec_structure_factor,
-    "water-count": _spec_water_count,
-    "free-volume": _spec_free_volume,
-    "bondi-ffv": _spec_bondi_ffv,
-    "equipartition": _spec_equipartition,
-    "hbond": _spec_hbond,
-    "rdf": _spec_rdf,
-    "end-to-end": _spec_end_to_end,
-    "contour-length": _spec_contour_length,
-    "chain-rg": _spec_chain_rg,
-    "bond-length-distribution": _spec_bond_length,
-    "bond-angle-distribution": _spec_bond_angle,
-    "persistence-length": _spec_persistence,
+    entry.cli_name: globals()[entry.spec_fn]
+    for entry in ANALYSIS_REGISTRY
+    if entry.spec_fn is not None
 }

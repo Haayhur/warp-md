@@ -31,7 +31,7 @@ def _load_native():
         from .traj_py import pep_build, pep_mutate  # type: ignore
 
         return pep_build, pep_mutate
-    except Exception as exc:  # pragma: no cover - import fallback
+    except (ImportError, AttributeError, OSError) as exc:  # pragma: no cover - import fallback
         raise RuntimeError(
             "warp-pep native bindings unavailable. Reinstall warp-md with compiled extensions."
         ) from exc
