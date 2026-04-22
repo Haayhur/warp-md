@@ -1,7 +1,8 @@
 use nalgebra::{DMatrix, SymmetricEigen};
 
 use traj_core::error::{TrajError, TrajResult};
-use traj_core::frame::{Box3, FrameChunk};
+use traj_core::frame::FrameChunk;
+use traj_core::pbc_math::{apply_pbc, box_lengths};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
@@ -81,7 +82,7 @@ impl Plan for MatrixPlan {
                 }
                 for frame in 0..chunk.n_frames {
                     let (lx, ly, lz) = if matches!(self.pbc, PbcMode::Orthorhombic) {
-                        box_lengths(chunk, frame)?
+                        box_lengths(chunk.box_[frame])?
                     } else {
                         (0.0, 0.0, 0.0)
                     };
@@ -557,26 +558,5 @@ impl Plan for ProjectionPlan {
             rows: self.frames,
             cols: self.n_components,
         })
-    }
-}
-
-fn box_lengths(chunk: &FrameChunk, frame: usize) -> TrajResult<(f64, f64, f64)> {
-    match chunk.box_[frame] {
-        Box3::Orthorhombic { lx, ly, lz } => Ok((lx as f64, ly as f64, lz as f64)),
-        _ => Err(TrajError::Mismatch(
-            "orthorhombic box required for PBC".into(),
-        )),
-    }
-}
-
-fn apply_pbc(dx: &mut f64, dy: &mut f64, dz: &mut f64, lx: f64, ly: f64, lz: f64) {
-    if lx > 0.0 {
-        *dx -= (*dx / lx).round() * lx;
-    }
-    if ly > 0.0 {
-        *dy -= (*dy / ly).round() * ly;
-    }
-    if lz > 0.0 {
-        *dz -= (*dz / lz).round() * lz;
     }
 }

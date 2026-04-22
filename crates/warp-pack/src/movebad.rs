@@ -10,14 +10,14 @@ use crate::constraint_penalty::penalty_and_grad;
 use crate::constraints::ConstraintSpec;
 use crate::error::{PackError, PackResult};
 use crate::gencan::optimize_gencan;
-use crate::geom::{Quaternion, Vec3};
+use crate::geometry::{Quaternion, Vec3};
 use crate::pack::AtomRecord;
 use crate::pack_ops::{
     random_center, satisfies_structure_constraints, transform_positions_into, TemplateEntry,
 };
 use crate::pbc::PbcBox;
 use crate::placement::PlacementRecord;
-use crate::spatial_hash::SpatialHashV2;
+use crate::spatial_hash::SpatialHashGrid;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_cells::build_gpu_cell_list;
@@ -125,7 +125,7 @@ pub(crate) fn run_movebad_pass(
     atoms: &mut Vec<AtomRecord>,
     positions: &mut Vec<Vec3>,
     params: &mut Vec<AtomParams>,
-    hash: &mut SpatialHashV2,
+    hash: &mut SpatialHashGrid,
     placements: &mut [PlacementRecord],
     box_size: [f32; 3],
     box_origin: Vec3,
@@ -318,7 +318,7 @@ fn compute_atom_overlap(
     pbc: Option<PbcBox>,
     _cell_size: f32,
     active_spec: Option<usize>,
-    hash: &SpatialHashV2,
+    hash: &SpatialHashGrid,
 ) -> Vec<f32> {
     #[cfg(feature = "cuda")]
     if active_spec.is_none() {
@@ -659,7 +659,7 @@ fn compute_bounds(
 }
 
 fn overlaps_except_indices(
-    hash: &SpatialHashV2,
+    hash: &SpatialHashGrid,
     candidate_positions: &[Vec3],
     candidate_params: &[AtomParams],
     existing_positions: &[Vec3],
@@ -693,7 +693,7 @@ fn relocate_molecule_in_place(
     atoms: &mut [AtomRecord],
     positions: &mut [Vec3],
     params: &mut [AtomParams],
-    hash: &mut SpatialHashV2,
+    hash: &mut SpatialHashGrid,
     box_size: [f32; 3],
     box_origin: Vec3,
     pbc: Option<PbcBox>,

@@ -8,11 +8,11 @@ use crate::atom_params::AtomParams;
 use crate::config::{PackConfig, StructureSpec};
 use crate::constraints::{satisfies_constraints, ConstraintMode, ShapeSpec};
 use crate::error::{PackError, PackResult};
-use crate::geom::{center_of_geometry, Quaternion, Vec3};
+use crate::geometry::{center_of_geometry, Quaternion, Vec3};
 use crate::io::{read_molecule, write_output};
 use crate::pack::{AtomRecord, PackOutput};
 use crate::pbc::PbcBox;
-use crate::spatial_hash::{SpatialHashParamsExt, SpatialHashV2};
+use crate::spatial_hash::{SpatialHashGrid, SpatialHashParamsExt};
 
 pub(crate) struct MoleculeTemplate {
     pub(crate) atoms: Vec<AtomRecord>,
@@ -228,7 +228,7 @@ pub(crate) fn place_fixed(
     atoms: &mut Vec<AtomRecord>,
     positions: &mut Vec<Vec3>,
     params: &mut Vec<AtomParams>,
-    hash: &mut SpatialHashV2,
+    hash: &mut SpatialHashGrid,
     mol_id_start: i32,
     pbc: Option<PbcBox>,
     res_mode: i32,
@@ -380,7 +380,6 @@ pub(crate) fn satisfies_structure_constraints(
 }
 
 pub(crate) fn validate_min_distance(atoms: &[AtomRecord], min_dist: f32) -> PackResult<()> {
-    // Compute bounds from atom positions for SpatialHashV2
     let mut box_min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
     let mut box_max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
     for atom in atoms {
@@ -397,7 +396,7 @@ pub(crate) fn validate_min_distance(atoms: &[AtomRecord], min_dist: f32) -> Pack
     box_min = box_min.sub(Vec3::new(pad, pad, pad));
     box_max = box_max.add(Vec3::new(pad, pad, pad));
 
-    let mut hash = SpatialHashV2::new(min_dist, box_min, box_max);
+    let mut hash = SpatialHashGrid::new(min_dist, box_min, box_max);
     let mut seen: Vec<Vec3> = Vec::with_capacity(atoms.len());
     let min2 = min_dist * min_dist;
     for atom in atoms {

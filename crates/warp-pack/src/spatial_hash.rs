@@ -1,8 +1,8 @@
 pub use traj_core::spatial_hash::SpatialHash;
-pub use traj_core::spatial_hash_v2::SpatialHashV2;
+pub use traj_core::spatial_hash_grid::SpatialHashGrid;
 
 use crate::atom_params::AtomParams;
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 
 pub trait SpatialHashParamsExt {
     fn overlaps_params(
@@ -115,7 +115,7 @@ impl SpatialHashParamsExt for SpatialHash {
     }
 }
 
-impl SpatialHashParamsExt for SpatialHashV2 {
+impl SpatialHashParamsExt for SpatialHashGrid {
     fn overlaps_params(
         &self,
         positions: &[Vec3],

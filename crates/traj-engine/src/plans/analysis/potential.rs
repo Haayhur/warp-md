@@ -1,8 +1,10 @@
 use traj_core::error::{TrajError, TrajResult};
-use traj_core::frame::{Box3, FrameChunk};
+use traj_core::frame::FrameChunk;
+use traj_core::pbc_math::orthorhombic_lengths;
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
+use super::binning::{bounded_bin, build_centers, periodic_bin, resolve_bins};
 use crate::executor::{Device, Plan, PlanOutput, PotentialOutput};
 
 const EPS0: f64 = 8.854_187_812_8e-12;
@@ -94,7 +96,7 @@ impl PotentialPlan {
         system: &System,
         frame: usize,
     ) -> TrajResult<()> {
-        let extent = if let Some(lengths) = orthorhombic_lengths(chunk.box_[frame]) {
+        let extent = if let Some(lengths) = orthorhombic_lengths(&chunk.box_[frame]) {
             self.used_box = true;
             self.cross_section_area = lengths[other_axis(self.axis, 0)]
                 * self.length_scale
@@ -105,7 +107,7 @@ impl PotentialPlan {
             self.used_box = false;
             self.initialize_fallback_bounds(chunk, system, frame)?
         };
-        self.bins = resolve_bins(self.n_slices, self.bin, extent)?;
+        self.bins = resolve_bins(self.n_slices, self.bin, extent, "potential")?;
         if self.discard_start.saturating_add(self.discard_end) >= self.bins {
             return Err(TrajError::Parse(
                 "potential discard_start + discard_end must be smaller than the number of slices"
@@ -296,13 +298,17 @@ impl Plan for PotentialPlan {
                 self.frames += 1;
                 continue;
             }
-            let extent = if self.used_box {
-                let lengths = orthorhombic_lengths(chunk.box_[frame]).ok_or_else(|| {
+            let lengths = if self.used_box {
+                Some(orthorhombic_lengths(&chunk.box_[frame]).ok_or_else(|| {
                     TrajError::Mismatch(
                         "potential currently requires orthorhombic boxes when box metadata is present"
                             .into(),
                     )
-                })?;
+                })?)
+            } else {
+                None
+            };
+            let extent = if let Some(lengths) = lengths {
                 lengths[self.axis] * self.length_scale
             } else {
                 self.bounds[1] - self.bounds[0]
@@ -312,13 +318,7 @@ impl Plan for PotentialPlan {
                     "potential requires positive axis extent".into(),
                 ));
             }
-            let cross_section_area = if self.used_box {
-                let lengths = orthorhombic_lengths(chunk.box_[frame]).ok_or_else(|| {
-                    TrajError::Mismatch(
-                        "potential currently requires orthorhombic boxes when box metadata is present"
-                            .into(),
-                    )
-                })?;
+            let cross_section_area = if let Some(lengths) = lengths {
                 lengths[other_axis(self.axis, 0)]
                     * self.length_scale
                     * lengths[other_axis(self.axis, 1)]
@@ -466,25 +466,6 @@ fn other_axis(axis: usize, which: usize) -> usize {
     }
 }
 
-fn orthorhombic_lengths(box_: Box3) -> Option<[f64; 3]> {
-    match box_ {
-        Box3::Orthorhombic { lx, ly, lz } => Some([lx as f64, ly as f64, lz as f64]),
-        _ => None,
-    }
-}
-
-fn resolve_bins(explicit: Option<usize>, bin: f64, extent: f64) -> TrajResult<usize> {
-    if let Some(value) = explicit {
-        return Ok(value.max(1));
-    }
-    if !extent.is_finite() || extent <= 0.0 {
-        return Err(TrajError::Mismatch(
-            "potential requires positive spatial extent".into(),
-        ));
-    }
-    Ok(((extent / bin).round() as usize).max(1))
-}
-
 fn extent_or_bin(min: f64, max: f64, bin: f64) -> f64 {
     if !min.is_finite() || !max.is_finite() || max <= min {
         bin
@@ -493,51 +474,9 @@ fn extent_or_bin(min: f64, max: f64, bin: f64) -> f64 {
     }
 }
 
-fn build_centers(min: f64, max: f64, bins: usize) -> Vec<f32> {
-    if bins == 0 {
-        return Vec::new();
-    }
-    let step = (max - min) / bins as f64;
-    let mut out = Vec::with_capacity(bins);
-    for idx in 0..bins {
-        out.push((min + (idx as f64 + 0.5) * step) as f32);
-    }
-    out
-}
-
-fn periodic_bin(value: f64, extent: f64, bins: usize) -> Option<usize> {
-    if !value.is_finite() || !extent.is_finite() || extent <= 0.0 || bins == 0 {
-        return None;
-    }
-    let wrapped = value.rem_euclid(extent);
-    let mut index = ((wrapped / extent) * bins as f64).floor() as usize;
-    if index >= bins {
-        index = bins - 1;
-    }
-    Some(index)
-}
-
 fn wrap_centered(value: f64, extent: f64) -> f64 {
     let shifted = (value + 0.5 * extent).rem_euclid(extent);
     shifted - 0.5 * extent
-}
-
-fn bounded_bin(value: f64, min: f64, max: f64, bins: usize) -> Option<usize> {
-    if !value.is_finite() || !min.is_finite() || !max.is_finite() || max <= min || bins == 0 {
-        return None;
-    }
-    if value < min || value > max {
-        return None;
-    }
-    if value == max {
-        return Some(bins - 1);
-    }
-    let frac = (value - min) / (max - min);
-    let mut index = (frac * bins as f64).floor() as usize;
-    if index >= bins {
-        index = bins - 1;
-    }
-    Some(index)
 }
 
 fn subtract_mean_nonzero(values: &mut [f64]) {

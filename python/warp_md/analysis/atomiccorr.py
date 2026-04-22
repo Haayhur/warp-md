@@ -37,9 +37,9 @@ def atomiccorr(
     device: str = "auto",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Atomic displacement autocorrelation."""
-    plan_cls = load_native_symbol("AtomicCorrPlan")
+    plan_cls = load_native_symbol("AtomicCorrelationPlan")
     if plan_cls is None:
-        raise RuntimeError("AtomicCorrPlan binding unavailable")
+        raise RuntimeError("AtomicCorrelationPlan binding unavailable")
     source = traj
     if frame_indices is not None:
         coords, _box, _time = read_all_frames(traj, chunk_frames)
@@ -89,7 +89,7 @@ def atomiccorr(
         time = np.asarray(time, dtype=np.float32).reshape(-1)
         data = np.asarray(data, dtype=np.float32).reshape(-1)
     except Exception as exc:
-        raise RuntimeError("native AtomicCorrPlan execution failed") from exc
+        raise RuntimeError("native AtomicCorrelationPlan execution failed") from exc
     if normalize and data.size > 0 and data[0] != 0.0:
         data = data / data[0]
     return time, data

@@ -1,5 +1,5 @@
 #[cfg(feature = "cuda")]
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 #[cfg(feature = "cuda")]
 use crate::pbc::PbcBox;
 

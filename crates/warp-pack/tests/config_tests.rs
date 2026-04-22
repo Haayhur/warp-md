@@ -1,7 +1,7 @@
 use std::fs;
 
-mod common;
-use common::{base_config, base_structure, temp_path, write_text};
+mod test_support;
+use test_support::{base_config, base_structure, temp_path, write_text};
 use warp_pack::inp::parse_packmol_inp;
 
 #[test]

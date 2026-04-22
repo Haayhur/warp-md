@@ -12,8 +12,8 @@ from .sorient import _resolve_triplets
 
 MaskLike = Union[str, Sequence[int], np.ndarray]
 
-_SpolPlan = (
-    getattr(warp_md.traj_py, "PySpolPlan", None)
+_SolventPolarizationPlan = (
+    getattr(warp_md.traj_py, "PySolventPolarizationPlan", None)
     if getattr(warp_md, "traj_py", None)
     else None
 )
@@ -51,9 +51,9 @@ def spol(
     explicit 3-atom triplet arguments remain supported. `solvent_selection`,
     when provided, must cover whole molecules.
     """
-    if _SpolPlan is None:
+    if _SolventPolarizationPlan is None:
         raise RuntimeError(
-            "PySpolPlan binding unavailable. Rebuild bindings with `maturin develop`."
+            "PySolventPolarizationPlan binding unavailable. Rebuild bindings with `maturin develop`."
         )
     solute_sel = _select(system, solute_selection)
     direction_offsets = np.asarray(direction_atom_offsets, dtype=np.int64).reshape(-1)
@@ -95,7 +95,7 @@ def spol(
             direction_offsets.tolist(),
         )
     charge_list = _resolve_charges(system, charges)
-    plan = _SpolPlan(
+    plan = _SolventPolarizationPlan(
         solute_sel,
         atom1,
         atom2,

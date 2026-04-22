@@ -69,7 +69,7 @@ def test_helixorient_forwards_selections_and_options(monkeypatch):
                 "length_scale": 0.1,
             }
 
-    monkeypatch.setattr(helixorient_mod, "_HelixOrientPlan", _DummyPlan, raising=True)
+    monkeypatch.setattr(helixorient_mod, "_HelixOrientationPlan", _DummyPlan, raising=True)
     out = helixorient_mod.helixorient(
         _DummyTraj(),
         _DummySystem(),
@@ -94,6 +94,6 @@ def test_helixorient_forwards_selections_and_options(monkeypatch):
 
 
 def test_helixorient_raises_when_binding_missing(monkeypatch):
-    monkeypatch.setattr(helixorient_mod, "_HelixOrientPlan", None, raising=True)
-    with pytest.raises(RuntimeError, match="PyHelixOrientPlan binding unavailable"):
+    monkeypatch.setattr(helixorient_mod, "_HelixOrientationPlan", None, raising=True)
+    with pytest.raises(RuntimeError, match="PyHelixOrientationPlan binding unavailable"):
         helixorient_mod.helixorient(_DummyTraj(), _DummySystem(), ca_selection="name CA")

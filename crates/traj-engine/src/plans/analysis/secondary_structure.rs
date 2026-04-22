@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use traj_core::frame::{Box3, FrameChunk};
-use traj_core::pbc_utils::{apply_pbc, apply_pbc_triclinic, cell_and_inv_from_box};
+use traj_core::pbc_math::{apply_pbc, apply_pbc_triclinic, cell_and_inv_from_box};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
@@ -25,8 +25,6 @@ const PEPTIDE_H_BOND_LENGTH: f64 = 1.0;
 pub(crate) struct BackboneResidue {
     pub resid: i32,
     pub chain_id: u32,
-    pub label: String,
-    pub resname: String,
     pub segment_id: usize,
     pub n_idx: Option<usize>,
     pub h_idx: Option<usize>,
@@ -71,10 +69,17 @@ struct BoxTransform {
     triclinic: Option<([[f64; 3]; 3], [[f64; 3]; 3])>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum BridgeOrientation {
+    Antiparallel,
+    Parallel,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BridgePair {
     i: usize,
     j: usize,
+    orientation: BridgeOrientation,
 }
 
 pub(crate) fn build_backbone_model(system: &System, selection: &Selection) -> BackboneModel {
@@ -121,8 +126,6 @@ pub(crate) fn build_backbone_model(system: &System, selection: &Selection) -> Ba
             let mut residue = BackboneResidue {
                 resid,
                 chain_id: chain,
-                label: label.clone(),
-                resname: resname.clone(),
                 segment_id: 0,
                 n_idx: None,
                 h_idx: None,
@@ -350,6 +353,7 @@ pub(crate) fn compute_backbone_frame(
     out
 }
 
+#[cfg(test)]
 pub(crate) fn collapse_dssp_code(code: u8) -> u8 {
     match code {
         DSSP_CODE_H | DSSP_CODE_G | DSSP_CODE_I => DSSP_CODE_H,
@@ -494,8 +498,8 @@ fn assign_dssp_states(model: &BackboneModel, frame: &BackboneFrame) -> Vec<u8> {
     for bridge in bridges.iter() {
         let in_ladder = bridges.iter().any(|other| {
             bridge != other
-                && (bridge.i.abs_diff(other.i) == 1)
-                && (bridge.j.abs_diff(other.j) == 1)
+                && bridge.orientation == other.orientation
+                && ladder_neighbor(*bridge, *other)
         });
         if in_ladder {
             ladder_state[bridge.i] = true;
@@ -573,17 +577,40 @@ fn bridge_pairs(model: &BackboneModel, frame: &BackboneFrame) -> Vec<BridgePair>
                 && hb(frame, n, j as isize, i as isize + 1)
                 || hb(frame, n, j as isize - 1, i as isize)
                     && hb(frame, n, i as isize, j as isize + 1);
-            if anti || parallel {
-                out.push(BridgePair { i, j });
+            if anti {
+                out.push(BridgePair {
+                    i,
+                    j,
+                    orientation: BridgeOrientation::Antiparallel,
+                });
+            }
+            if parallel {
+                out.push(BridgePair {
+                    i,
+                    j,
+                    orientation: BridgeOrientation::Parallel,
+                });
             }
         }
     }
-    out.sort_by_key(|pair| (pair.i, pair.j));
+    out.sort_by_key(|pair| (pair.i, pair.j, pair.orientation));
     out.dedup();
     out.retain(|pair| {
         model.residues[pair.i].ca_idx.is_some() && model.residues[pair.j].ca_idx.is_some()
     });
     out
+}
+
+fn ladder_neighbor(a: BridgePair, b: BridgePair) -> bool {
+    let di = b.i as isize - a.i as isize;
+    let dj = b.j as isize - a.j as isize;
+    if di.abs() != 1 || dj.abs() != 1 {
+        return false;
+    }
+    match a.orientation {
+        BridgeOrientation::Antiparallel => di == dj,
+        BridgeOrientation::Parallel => di == -dj,
+    }
 }
 
 fn hb(frame: &BackboneFrame, n: usize, i: isize, j: isize) -> bool {
@@ -802,12 +829,10 @@ mod tests {
                 .map(|i| BackboneResidue {
                     resid: i as i32 + 1,
                     chain_id: 0,
-                    label: format!("ALA:{}", i + 1),
-                    resname: "ALA".into(),
                     segment_id: 0,
                     n_idx: None,
                     h_idx: None,
-                    ca_idx: None,
+                    ca_idx: Some(i),
                     c_idx: None,
                     o_idx: None,
                     prev_index: if i > 0 { Some(i - 1) } else { None },
@@ -902,7 +927,7 @@ mod tests {
     #[test]
     fn bend_detection_marks_s() {
         let model = empty_model(5);
-        let mut frame = BackboneFrame {
+        let frame = BackboneFrame {
             n: vec![None; 5],
             h: vec![None; 5],
             ca: vec![

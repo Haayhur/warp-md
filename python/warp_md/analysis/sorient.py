@@ -11,8 +11,8 @@ from .h2order import _DEFAULT_WATER_RESNAMES, _select, _water_triplets
 
 MaskLike = Union[str, Sequence[int], np.ndarray]
 
-_SOrientPlan = (
-    getattr(warp_md.traj_py, "PySOrientPlan", None)
+_SolventOrientationPlan = (
+    getattr(warp_md.traj_py, "PySolventOrientationPlan", None)
     if getattr(warp_md, "traj_py", None)
     else None
 )
@@ -74,9 +74,9 @@ def sorient(
     v1 auto-detects 3-atom water-like solvent triplets residue-by-residue, or
     accepts explicit `atom1_indices`/`atom2_indices`/`atom3_indices`.
     """
-    if _SOrientPlan is None:
+    if _SolventOrientationPlan is None:
         raise RuntimeError(
-            "PySOrientPlan binding unavailable. Rebuild bindings with `maturin develop`."
+            "PySolventOrientationPlan binding unavailable. Rebuild bindings with `maturin develop`."
         )
     solute_sel = _select(system, solute_selection)
     atom1, atom2, atom3 = _resolve_triplets(
@@ -87,7 +87,7 @@ def sorient(
         atom3_indices,
         water_resnames,
     )
-    plan = _SOrientPlan(
+    plan = _SolventOrientationPlan(
         solute_sel,
         atom1,
         atom2,

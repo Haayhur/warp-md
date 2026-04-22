@@ -5,8 +5,8 @@ use warp_pack::config::OutputSpec;
 use warp_pack::io::{read_molecule, write_output};
 use warp_structure::PdbAtomMetadata;
 
-mod common;
-use common::{sample_output, temp_path, write_text};
+mod test_support;
+use test_support::{sample_output, temp_path, write_text};
 
 #[test]
 fn read_molecule_parses_pdb_with_conect() {

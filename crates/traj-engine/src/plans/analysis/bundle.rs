@@ -7,7 +7,9 @@ use crate::executor::{BundleOutput, Device, Plan, PlanOutput};
 use crate::plans::analysis::secondary_structure::{
     add, clamp, cross, dot, mul, norm, normalize, sub,
 };
-use crate::plans::geometry::utils::{apply_pbc, apply_pbc_triclinic, cell_and_inv_from_box};
+use crate::plans::geometry::geometry_math::{
+    apply_pbc, apply_pbc_triclinic, cell_and_inv_from_box,
+};
 
 #[derive(Clone, Debug)]
 struct AxisGroups {

@@ -3,7 +3,7 @@ use crate::constraint_penalty::penalty_and_grad;
 use crate::constraints::ConstraintSpec;
 use crate::error::{PackError, PackResult};
 use crate::gencan_math::{mat_vec, rotation_matrix, rotation_with_derivatives};
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 use crate::pack::AtomRecord;
 use crate::pbc::PbcBox;
 use crate::placement::PlacementRecord;

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 use crate::error::{TrajError, TrajResult};
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 use crate::pbc::PbcBox;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

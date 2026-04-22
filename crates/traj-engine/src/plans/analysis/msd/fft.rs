@@ -1,7 +1,8 @@
 use traj_core::error::TrajResult;
 
-use super::utils::{lag_allowed, msd_cols};
+use super::time_lag::msd_cols;
 use super::DtDecimation;
+use crate::plans::analysis::time_correlation::lag_allowed;
 
 pub(super) fn msd_fft(
     series: &[f32],

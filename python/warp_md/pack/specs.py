@@ -12,12 +12,6 @@ def _normalize_box_shape(shape: str) -> str:
     lowered = shape.lower()
     return "orthorhombic" if lowered == "cubic" else lowered
 
-
-def _infer_output_format(path: str) -> str:
-    suffix = path.rsplit(".", 1)[-1].lower() if "." in path else "pdb"
-    return suffix or "pdb"
-
-
 @dataclass
 class Constraint:
     mode: str
@@ -376,35 +370,13 @@ class OutputSpec:
     def from_dict(cls, data: Dict[str, Any]) -> "OutputSpec":
         return cls(
             path=data["path"],
-            format=data.get("format") or _infer_output_format(data["path"]),
+            format=data.get("format"),
             scale=data.get("scale"),
         )
 
     def validate(self) -> None:
         if not self.path:
             raise ValidationError("Output path cannot be empty")
-        fmt = (self.format or _infer_output_format(self.path)).lower()
-        valid_formats = (
-            "pdb",
-            "pdb-strict",
-            "xyz",
-            "pdbx",
-            "cif",
-            "mmcif",
-            "gro",
-            "lammps",
-            "lammps-data",
-            "lmp",
-            "mol2",
-            "crd",
-            "inpcrd",
-            "rst",
-            "rst7",
-        )
-        if fmt not in valid_formats:
-            raise ValidationError(
-                f"Invalid format '{fmt}'. Must be one of: {valid_formats}"
-            )
         if self.scale is not None and self.scale <= 0:
             raise ValidationError("Output scale must be positive")
 

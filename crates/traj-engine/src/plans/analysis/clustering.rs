@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::Vector3;
 
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::FrameChunk;
@@ -8,6 +8,9 @@ use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use crate::executor::{ClusteringOutput, Device, Plan, PlanOutput, PlanRequirements};
+use crate::plans::geometry::geometry_math::{kabsch_rmsd, kabsch_rotation};
+#[cfg(feature = "cuda")]
+use crate::plans::rmsd::rmsd_from_cov;
 
 #[cfg(feature = "cuda")]
 use traj_gpu::convert_coords;
@@ -245,8 +248,7 @@ fn pairwise_rmsd_triangular_cpu(frames: &[Vec<[f32; 4]>]) -> Vec<f32> {
     let mut tri = vec![0.0f32; tri_pairs_len(n)];
     for i in 0..n {
         for j in (i + 1)..n {
-            let rmsd = kabsch_rmsd(&frames[i], &frames[j]) as f32;
-            tri[tri_index(i, j, n)] = rmsd;
+            tri[tri_index(i, j, n)] = kabsch_rmsd(&frames[i], &frames[j]) as f32;
         }
     }
     tri
@@ -274,12 +276,12 @@ fn pairwise_rmsd_triangular_gpu(
         let cov =
             ctx.rmsd_covariance(&coords_gpu, n_sel, n_frames, &selection_gpu, &reference_gpu)?;
         for j in (i + 1)..n_frames {
-            tri[tri_index(i, j, n_frames)] = rmsd_from_cov_local(
+            tri[tri_index(i, j, n_frames)] = rmsd_from_cov(
                 &cov.cov[j],
                 cov.sum_x2[j] as f64,
                 cov.sum_y2[j] as f64,
                 n_sel,
-            ) as f32;
+            );
         }
     }
     Ok(tri)
@@ -398,40 +400,16 @@ fn align_to_reference(frame: &[[f32; 4]], reference: &[[f32; 4]]) -> TrajResult<
     if frame.is_empty() {
         return Ok(Vec::new());
     }
-    let mut x = Vec::with_capacity(frame.len());
-    let mut y = Vec::with_capacity(reference.len());
-    for p in frame.iter() {
-        x.push(Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64));
-    }
-    for p in reference.iter() {
-        y.push(Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64));
-    }
-    let cx = centroid(&x);
-    let cy = centroid(&y);
-    let mut h = Matrix3::<f64>::zeros();
-    for (px, py) in x.iter().zip(y.iter()) {
-        let x0 = px - cx;
-        let y0 = py - cy;
-        h += x0 * y0.transpose();
-    }
-    let svd = h.svd(true, true);
-    let (Some(u), Some(v_t)) = (svd.u, svd.v_t) else {
-        return Err(TrajError::Unsupported(
-            "trajectory_cluster Kabsch SVD failed".into(),
-        ));
-    };
-    let mut r = v_t.transpose() * u.transpose();
-    if r.determinant() < 0.0 {
-        let mut v_t_fix = v_t;
-        v_t_fix[(2, 0)] *= -1.0;
-        v_t_fix[(2, 1)] *= -1.0;
-        v_t_fix[(2, 2)] *= -1.0;
-        r = v_t_fix.transpose() * u.transpose();
-    }
+    let (r, cx, cy) = kabsch_rotation(frame, reference);
 
     let mut out = Vec::with_capacity(frame.len() * 3);
-    for px in x.iter() {
-        let aligned = r * (px - cx) + cy;
+    for point in frame.iter() {
+        let centered = Vector3::new(
+            point[0] as f64 - cx[0],
+            point[1] as f64 - cx[1],
+            point[2] as f64 - cx[2],
+        );
+        let aligned = r * centered + cy;
         out.push(aligned[0]);
         out.push(aligned[1]);
         out.push(aligned[2]);
@@ -569,87 +547,4 @@ fn xorshift64(state: &mut u64) -> u64 {
     x ^= x << 17;
     *state = x;
     x
-}
-
-fn kabsch_rmsd(a: &[[f32; 4]], b: &[[f32; 4]]) -> f64 {
-    if a.is_empty() || b.is_empty() || a.len() != b.len() {
-        return 0.0;
-    }
-    let mut x = Vec::with_capacity(a.len());
-    let mut y = Vec::with_capacity(b.len());
-    for p in a.iter() {
-        x.push(Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64));
-    }
-    for p in b.iter() {
-        y.push(Vector3::new(p[0] as f64, p[1] as f64, p[2] as f64));
-    }
-    let cx = centroid(&x);
-    let cy = centroid(&y);
-
-    let mut h = Matrix3::<f64>::zeros();
-    let mut sum_x2 = 0.0f64;
-    let mut sum_y2 = 0.0f64;
-    for (px, py) in x.iter().zip(y.iter()) {
-        let x0 = px - cx;
-        let y0 = py - cy;
-        h += x0 * y0.transpose();
-        sum_x2 += x0.dot(&x0);
-        sum_y2 += y0.dot(&y0);
-    }
-    let svd = h.svd(true, true);
-    let mut sigma_sum = svd.singular_values[0] + svd.singular_values[1] + svd.singular_values[2];
-    if let (Some(u), Some(v_t)) = (svd.u, svd.v_t) {
-        let det = (v_t.transpose() * u.transpose()).determinant();
-        if det < 0.0 {
-            sigma_sum -= 2.0 * svd.singular_values[2];
-        }
-    }
-    let n = a.len() as f64;
-    let rmsd2 = (sum_x2 + sum_y2 - 2.0 * sigma_sum) / n;
-    if rmsd2 <= 0.0 {
-        0.0
-    } else {
-        rmsd2.sqrt()
-    }
-}
-
-fn centroid(points: &[Vector3<f64>]) -> Vector3<f64> {
-    let mut c = Vector3::new(0.0, 0.0, 0.0);
-    for p in points {
-        c += p;
-    }
-    c / (points.len() as f64)
-}
-
-fn rmsd_from_cov_local(cov: &[f32; 9], sum_x2: f64, sum_y2: f64, n_sel: usize) -> f64 {
-    if n_sel == 0 {
-        return 0.0;
-    }
-    let cov_f64 = [
-        cov[0] as f64,
-        cov[1] as f64,
-        cov[2] as f64,
-        cov[3] as f64,
-        cov[4] as f64,
-        cov[5] as f64,
-        cov[6] as f64,
-        cov[7] as f64,
-        cov[8] as f64,
-    ];
-    let m = Matrix3::from_row_slice(&cov_f64);
-    let svd = m.svd(true, true);
-    let mut sigma_sum = svd.singular_values[0] + svd.singular_values[1] + svd.singular_values[2];
-    if let (Some(u), Some(v_t)) = (svd.u, svd.v_t) {
-        let det = (v_t.transpose() * u.transpose()).determinant();
-        if det < 0.0 {
-            sigma_sum -= 2.0 * svd.singular_values[2];
-        }
-    }
-    let n = n_sel as f64;
-    let rmsd2 = (sum_x2 + sum_y2 - 2.0 * sigma_sum) / n;
-    if rmsd2 <= 0.0 {
-        0.0
-    } else {
-        rmsd2.sqrt()
-    }
 }

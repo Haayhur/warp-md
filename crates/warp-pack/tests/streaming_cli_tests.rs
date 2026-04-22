@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-mod common;
-use common::{temp_path, write_text};
+mod test_support;
+use test_support::{temp_path, write_text};
 
 fn unique_missing_parent(label: &str) -> PathBuf {
     let mut path = std::env::temp_dir();

@@ -4,7 +4,7 @@ use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use crate::executor::{Device, PersistenceOutput, Plan, PlanOutput, PlanRequirements};
-use crate::plans::polymer::common::PolymerChains;
+use crate::plans::polymer::chain_layout::PolymerChains;
 
 pub struct PersistenceLengthPlan {
     selection: Selection,

@@ -7,6 +7,7 @@ use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use warp_common::resolve_relative_path;
 use warp_pack::agent::shared_contract::{self, to_error, to_warning};
 use warp_pack::{PackError, PackResult};
 use warp_structure::io::{write_amber_inpcrd, write_minimal_prmtop, write_output, AmberTopology};
@@ -974,20 +975,6 @@ fn sha256_file(path: &Path) -> PackResult<String> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-fn resolve_relative(base_path: &Path, value: &str) -> String {
-    let path = Path::new(value);
-    if path.is_absolute() {
-        value.to_string()
-    } else {
-        base_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(path)
-            .to_string_lossy()
-            .to_string()
-    }
-}
-
 fn parse_json<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T, ErrorDetail> {
     let mut deserializer = serde_json::Deserializer::from_str(text);
     serde_path_to_error::deserialize::<_, T>(&mut deserializer).map_err(|err| {
@@ -1314,7 +1301,7 @@ fn resolve_request_state(
         return Err(errors);
     }
     let (seed, seed_policy) = resolve_seed(req).map_err(|err| vec![err])?;
-    let source_coordinates = resolve_relative(
+    let source_coordinates = resolve_relative_path(
         Path::new(&req.source_ref.bundle_path),
         &bundle.artifacts.source_coordinates,
     );
@@ -1322,12 +1309,12 @@ fn resolve_request_state(
         .artifacts
         .source_charge_manifest
         .as_ref()
-        .map(|path| resolve_relative(Path::new(&req.source_ref.bundle_path), path));
+        .map(|path| resolve_relative_path(Path::new(&req.source_ref.bundle_path), path));
     let source_topology_ref = bundle
         .artifacts
         .source_topology_ref
         .as_ref()
-        .map(|path| resolve_relative(Path::new(&req.source_ref.bundle_path), path));
+        .map(|path| resolve_relative_path(Path::new(&req.source_ref.bundle_path), path));
     let artifacts = ResolvedArtifacts {
         coordinates: req.artifacts.coordinates.clone(),
         raw_coordinates: req.realization.relax.as_ref().map(|_| {
@@ -1570,19 +1557,15 @@ fn prepare_build_execution(
             edge_id: edge.edge_id.clone(),
             parent: edge.parent,
             child: edge.child,
-            parent_port: edge.parent_port.clone(),
-            child_port: edge.child_port.clone(),
             parent_attach_atom: edge.parent_attach_atom.clone(),
             parent_leaving_atoms: edge.parent_leaving_atoms.clone(),
             child_attach_atom: edge.child_attach_atom.clone(),
             child_leaving_atoms: edge.child_leaving_atoms.clone(),
             bond_order: edge.bond_order,
-            layout_mode: edge.layout_mode.clone(),
             branch_spread: edge.branch_spread.clone(),
             torsion_mode: edge.torsion_mode.clone(),
             torsion_deg: edge.torsion_deg,
             torsion_window_deg: edge.torsion_window_deg,
-            ring_mode: edge.ring_mode.clone(),
         })
         .collect::<Vec<_>>();
     let graph_root_idx = compiled_plan
@@ -2108,8 +2091,6 @@ struct CompiledBuildEdge {
     edge_id: String,
     parent: usize,
     child: usize,
-    parent_node_id: String,
-    child_node_id: String,
     parent_port: String,
     child_port: String,
     parent_junction: String,
@@ -2145,11 +2126,6 @@ struct ResolvedTokenPort {
     node_idx: usize,
     node_id: String,
     binding: String,
-    request_node_id: String,
-    port_name: String,
-    port_class: Option<String>,
-    default_cap: Option<CapBinding>,
-    allowed_caps: Vec<CapBinding>,
 }
 
 #[derive(Clone, Debug)]
@@ -2170,8 +2146,6 @@ struct TokenExpansion {
     root_node_idx: usize,
     request_node_id: String,
     source_token: String,
-    motif_instance_id: Option<String>,
-    motif_token: Option<String>,
     exposed_ports: BTreeMap<String, ResolvedTokenPort>,
 }
 
@@ -2254,11 +2228,6 @@ fn append_unit_token(
                     node_idx,
                     node_id: node_id_prefix.to_string(),
                     binding: port.clone(),
-                    request_node_id: request_node_id.to_string(),
-                    port_name: port.clone(),
-                    port_class: None,
-                    default_cap: None,
-                    allowed_caps: Vec::new(),
                 },
             )
         })
@@ -2267,8 +2236,6 @@ fn append_unit_token(
         root_node_idx: node_idx,
         request_node_id: request_node_id.to_string(),
         source_token: token.to_string(),
-        motif_instance_id: None,
-        motif_token: None,
         exposed_ports,
     })
 }
@@ -2385,11 +2352,6 @@ fn append_motif_token(
                 node_idx,
                 node_id: global_by_local[&port.node_id].clone(),
                 binding: port.junction.clone(),
-                request_node_id: request_node_id.to_string(),
-                port_name: port_name.clone(),
-                port_class: port.port_class.clone(),
-                default_cap: port.default_cap.clone(),
-                allowed_caps: port.allowed_caps.clone(),
             },
         );
     }
@@ -2412,8 +2374,6 @@ fn append_motif_token(
         root_node_idx,
         request_node_id: request_node_id.to_string(),
         source_token: token.to_string(),
-        motif_instance_id: Some(motif_instance_id),
-        motif_token: Some(token.to_string()),
         exposed_ports,
     })
 }
@@ -2811,11 +2771,11 @@ fn compile_connection(
     bundle: &SourceBundle,
     edge_id: String,
     parent_idx: usize,
-    parent_node_id: &str,
+    _parent_node_id: &str,
     parent_token: &str,
     parent_binding: &str,
     child_idx: usize,
-    child_node_id: &str,
+    _child_node_id: &str,
     child_token: &str,
     child_binding: &str,
     conformer_policy: Option<&ConformerPolicy>,
@@ -2846,8 +2806,6 @@ fn compile_connection(
         edge_id,
         parent: parent_idx,
         child: child_idx,
-        parent_node_id: parent_node_id.to_string(),
-        child_node_id: child_node_id.to_string(),
         parent_port: parent_binding.to_string(),
         child_port: child_binding.to_string(),
         parent_junction,
@@ -3649,19 +3607,12 @@ fn apply_motif_port_caps(
                     node_idx,
                     node_id: compiled_node_id.clone(),
                     binding: port_spec.junction.clone(),
-                    request_node_id: request_node_id.clone(),
-                    port_name: port_name.clone(),
-                    port_class: port_spec.port_class.clone(),
-                    default_cap: port_spec.default_cap.clone(),
-                    allowed_caps: port_spec.allowed_caps.clone(),
                 },
             );
             let source_expansion = TokenExpansion {
                 root_node_idx: node_idx,
                 request_node_id: request_node_id.clone(),
                 source_token: motif_token.clone(),
-                motif_instance_id: Some(format!("motif::{request_node_id}")),
-                motif_token: Some(motif_token.clone()),
                 exposed_ports,
             };
             let cap_edge_id = canonical_edge_id(
@@ -8022,7 +7973,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         topology_path.as_ref(),
     ) {
         let source_topology_path =
-            resolve_relative(Path::new(&req.source_ref.bundle_path), source_topology_ref);
+            resolve_relative_path(Path::new(&req.source_ref.bundle_path), source_topology_ref);
         ensure_parent(topology_path).ok();
         let write_started = Instant::now();
         if let Err(err) = write_polymer_prmtop_from_source(
@@ -8114,7 +8065,8 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             }
         }
     } else if let Some(topology_ref) = bundle.artifacts.source_topology_ref.as_ref() {
-        let topology_path = resolve_relative(Path::new(&req.source_ref.bundle_path), topology_ref);
+        let topology_path =
+            resolve_relative_path(Path::new(&req.source_ref.bundle_path), topology_ref);
         match compute_sequence_polymer_net_charge_from_prmtop(
             Path::new(&source_coordinates),
             &built.template_sequence_resnames,

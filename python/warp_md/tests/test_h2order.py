@@ -78,7 +78,7 @@ def test_h2order_detects_triplets_and_forwards(monkeypatch):
                 "dipole_unit": "debye",
             }
 
-    monkeypatch.setattr(h2order_mod, "_H2OrderPlan", _DummyPlan, raising=True)
+    monkeypatch.setattr(h2order_mod, "_WaterOrderPlan", _DummyPlan, raising=True)
     out = h2order_mod.h2order(
         _DummyTraj(),
         _DummySystem(),
@@ -107,6 +107,6 @@ def test_h2order_detects_triplets_and_forwards(monkeypatch):
 
 
 def test_h2order_raises_when_binding_missing(monkeypatch):
-    monkeypatch.setattr(h2order_mod, "_H2OrderPlan", None, raising=True)
-    with pytest.raises(RuntimeError, match="PyH2OrderPlan binding unavailable"):
+    monkeypatch.setattr(h2order_mod, "_WaterOrderPlan", None, raising=True)
+    with pytest.raises(RuntimeError, match="PyWaterOrderPlan binding unavailable"):
         h2order_mod.h2order(_DummyTraj(), _DummySystem(), selection="resname SOL")

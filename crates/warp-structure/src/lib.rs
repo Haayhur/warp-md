@@ -7,8 +7,8 @@ pub mod config {
     pub use crate::model::OutputSpec;
 }
 
-pub mod geom {
-    pub use traj_core::geom::*;
+pub mod geometry {
+    pub use traj_core::geometry::*;
 }
 
 pub mod pack {

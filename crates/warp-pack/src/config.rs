@@ -203,14 +203,6 @@ fn default_true() -> bool {
     true
 }
 
-fn infer_output_format(path: &str) -> String {
-    std::path::Path::new(path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("pdb")
-        .to_ascii_lowercase()
-}
-
 impl PackConfig {
     pub fn normalized(&self) -> PackResult<PackConfig> {
         let mut cfg = self.clone();
@@ -264,11 +256,7 @@ impl PackConfig {
             cfg.gencan_maxit = Some(cfg.maxit.unwrap_or(20));
         }
         if let Some(output) = cfg.output.as_mut() {
-            if output.format.trim().is_empty() {
-                output.format = infer_output_format(&output.path);
-            } else {
-                output.format = output.format.to_ascii_lowercase();
-            }
+            output.format = output.resolved_format();
         }
         Ok(cfg)
     }
@@ -396,6 +384,9 @@ impl PackConfig {
                     "relax_step must be a positive value".into(),
                 ));
             }
+        }
+        if let Some(output) = &self.output {
+            output.validate()?;
         }
         for s in &self.structures {
             if s.count == 0 {

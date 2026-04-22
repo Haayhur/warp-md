@@ -1,20 +1,25 @@
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::FrameChunk;
+use traj_core::pbc_math::orthorhombic_lengths;
 use traj_core::system::System;
 
-use crate::correlators::multi_tau::MultiTauBuffer;
-use crate::correlators::ring::RingBuffer;
 use crate::correlators::{DecimationMode, LagMode};
 use crate::executor::{Device, Plan, PlanOutput};
 #[cfg(feature = "cuda")]
-use crate::plans::analysis::common::groups_to_csr;
+use crate::plans::analysis::group_runtime::groups_to_csr;
+use crate::plans::analysis::group_runtime::{
+    alloc_group_positions, compute_group_inv_mass, fill_frame_group_positions,
+};
 use crate::plans::analysis::grouping::GroupSpec;
+use crate::plans::analysis::time_correlation::{
+    build_lag_runtime, fft_capacity, resolve_lag_mode, update_time_axis, AutoLagMode,
+};
 
 #[cfg(feature = "cuda")]
 use traj_gpu::convert_coords;
 
 use super::accumulate::accumulate_ion_pair;
-use super::utils::{box_lengths, distance_vec, hash_cluster};
+use super::cluster_math::{distance_vec, hash_cluster};
 use super::IonPairCorrelationPlan;
 #[cfg(feature = "cuda")]
 use super::IonPairGpuState;
@@ -28,7 +33,7 @@ impl Plan for IonPairCorrelationPlan {
         self.frames_hint = n_frames;
     }
 
-    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
         self.n_atoms = system.n_atoms();
         let mut spec = GroupSpec::new(self.selection.clone(), self.group_by);
         if let Some(types) = &self.group_types {
@@ -39,6 +44,11 @@ impl Plan for IonPairCorrelationPlan {
         self.type_ids = groups.type_ids();
         self.groups = Some(groups);
         self.masses = system.atoms.mass.iter().map(|m| *m as f64).collect();
+        self.group_inv_mass = self
+            .groups
+            .as_ref()
+            .map(|group_map| compute_group_inv_mass(group_map, &self.masses))
+            .unwrap_or_default();
         self.cat_indices = self
             .type_ids
             .iter()
@@ -74,7 +84,7 @@ impl Plan for IonPairCorrelationPlan {
         self.last_time = None;
         self.frame_index = 0;
         self.samples_seen = 0;
-        self.wrapped_curr = vec![[0.0; 3]; self.n_groups];
+        self.wrapped_curr = alloc_group_positions(self.n_groups);
         self.sample_f32 = vec![0.0f32; self.n_groups * 3];
         self.pair_idx = vec![u32::MAX; self.n_groups];
         self.cluster_hash = vec![0u64; self.n_groups];
@@ -85,48 +95,28 @@ impl Plan for IonPairCorrelationPlan {
         self.multi_tau = None;
         self.ring = None;
 
-        let mut resolved_mode = self.lag.mode;
-        if resolved_mode == LagMode::Auto {
-            resolved_mode = LagMode::MultiTau;
-        }
-        self.resolved_mode = resolved_mode;
-
-        match self.resolved_mode {
-            LagMode::MultiTau => {
-                let buffer = MultiTauBuffer::new_with_mode(
-                    self.n_groups,
-                    3,
-                    self.lag.multi_tau_m,
-                    self.lag.multi_tau_max_levels,
-                    DecimationMode::Latest,
-                );
-                self.lags = buffer.out_lags().to_vec();
-                self.acc = vec![0.0f64; self.lags.len() * 6];
-                self.multi_tau = Some(buffer);
-            }
-            LagMode::Ring => {
-                let max_lag = self.lag.ring_max_lag_capped(self.n_groups, 3, 4);
-                let buffer = RingBuffer::new(self.n_groups, 3, max_lag);
-                self.lags = (1..=max_lag).collect();
-                self.acc = vec![0.0f64; self.lags.len() * 6];
-                self.ring = Some(buffer);
-            }
-            LagMode::Fft => {
-                let capacity = self
-                    .frames_hint
-                    .unwrap_or(0)
-                    .saturating_mul(self.n_groups)
-                    .saturating_mul(3);
-                self.fft_com = Vec::with_capacity(capacity);
-                self.fft_box = Vec::with_capacity(self.frames_hint.unwrap_or(0).saturating_mul(3));
-            }
-            LagMode::Auto => {}
+        self.resolved_mode = resolve_lag_mode(&self.lag, AutoLagMode::MultiTau);
+        let runtime = build_lag_runtime(
+            &self.lag,
+            self.resolved_mode,
+            self.n_groups,
+            3,
+            6,
+            Some(DecimationMode::Latest),
+        );
+        self.lags = runtime.lags;
+        self.acc = runtime.acc;
+        self.multi_tau = runtime.multi_tau;
+        self.ring = runtime.ring;
+        if self.resolved_mode == LagMode::Fft {
+            self.fft_com = Vec::with_capacity(fft_capacity(self.frames_hint, self.n_groups, 3));
+            self.fft_box = Vec::with_capacity(fft_capacity(self.frames_hint, 1, 3));
         }
 
         #[cfg(feature = "cuda")]
         {
             self.gpu = None;
-            if let Device::Cuda(ctx) = device {
+            if let Device::Cuda(ctx) = _device {
                 let (offsets, indices, max_len) =
                     groups_to_csr(&self.groups.as_ref().unwrap().groups);
                 let groups = ctx.groups(&offsets, &indices, max_len)?;
@@ -146,7 +136,6 @@ impl Plan for IonPairCorrelationPlan {
         }
         #[cfg(not(feature = "cuda"))]
         {
-            let _ = device;
             if self.resolved_mode == LagMode::Fft {
                 return Err(TrajError::Unsupported(
                     "ion_pair_corr fft requires cuda".into(),
@@ -194,28 +183,18 @@ impl Plan for IonPairCorrelationPlan {
                 None
             }
         };
-        #[cfg(not(feature = "cuda"))]
-        let _com_gpu = ();
-
         for frame in 0..n_frames {
             self.frame_index += 1;
 
-            let time = if let Some(times) = &chunk.time_ps {
-                times[frame] as f64
-            } else {
-                (self.frame_index - 1) as f64
-            };
-            if let Some(last) = self.last_time {
-                let dt = time - last;
-                if let Some(dt0) = self.dt0 {
-                    if (dt - dt0).abs() > 1.0e-6 {
-                        self.uniform_time = false;
-                    }
-                } else if dt > 0.0 {
-                    self.dt0 = Some(dt);
-                }
-            }
-            self.last_time = Some(time);
+            update_time_axis(
+                self.frame_index,
+                frame,
+                chunk.time_ps.as_deref(),
+                &mut self.dt0,
+                &mut self.uniform_time,
+                &mut self.last_time,
+                1.0e-6,
+            );
 
             if used_gpu {
                 #[cfg(feature = "cuda")]
@@ -228,29 +207,22 @@ impl Plan for IonPairCorrelationPlan {
                 }
             } else {
                 let frame_offset = frame * self.n_atoms;
-                for (g_idx, atoms) in self.groups.as_ref().unwrap().groups.iter().enumerate() {
-                    let mut sum = [0.0f64; 3];
-                    let mut mass_sum = 0.0f64;
-                    for &atom_idx in atoms {
-                        let p = chunk.coords[frame_offset + atom_idx];
-                        let m = self.masses[atom_idx];
-                        sum[0] += (p[0] as f64) * m;
-                        sum[1] += (p[1] as f64) * m;
-                        sum[2] += (p[2] as f64) * m;
-                        mass_sum += m;
-                    }
-                    let inv = if mass_sum > 0.0 { 1.0 / mass_sum } else { 0.0 };
-                    self.wrapped_curr[g_idx][0] = sum[0] * inv * self.length_scale;
-                    self.wrapped_curr[g_idx][1] = sum[1] * inv * self.length_scale;
-                    self.wrapped_curr[g_idx][2] = sum[2] * inv * self.length_scale;
-                }
+                fill_frame_group_positions(
+                    &chunk.coords,
+                    frame_offset,
+                    Some(&self.groups.as_ref().unwrap().groups),
+                    &self.masses,
+                    &self.group_inv_mass,
+                    self.length_scale,
+                    &mut self.wrapped_curr,
+                );
             }
 
-            let box_l = box_lengths(&chunk.box_[frame]).map(|b| {
+            let box_l = orthorhombic_lengths(&chunk.box_[frame]).map(|[lx, ly, lz]| {
                 [
-                    b[0] * self.length_scale,
-                    b[1] * self.length_scale,
-                    b[2] * self.length_scale,
+                    lx * self.length_scale,
+                    ly * self.length_scale,
+                    lz * self.length_scale,
                 ]
             });
 

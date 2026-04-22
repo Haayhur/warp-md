@@ -1,10 +1,10 @@
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-use ::xdrfile::c_abi::xdr_seek;
-use ::xdrfile::c_abi::xdrfile::{self as xdr_cabi, XDRFILE};
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::{Box3, FrameChunkBuilder};
+use xdrfile::c_abi::xdr_seek;
+use xdrfile::c_abi::xdrfile::{self as xdr_cabi, XDRFILE};
 
 use crate::TrajReader;
 

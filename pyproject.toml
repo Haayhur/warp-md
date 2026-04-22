@@ -26,6 +26,7 @@ warp-pep = "warp_md.pep_cli:main"
 manifest-path = "crates/traj-py/Cargo.toml"
 module-name = "warp_md.traj_py"
 python-source = "python"
+features = ["extension-module"]
 include = [
     "Cargo.toml",
     "Cargo.lock",

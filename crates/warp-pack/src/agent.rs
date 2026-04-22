@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use traj_core::principal_axes_from_inertia;
+use warp_common::resolve_relative_path;
 use warp_topology_graph::TopologyGraph;
 
 use crate::charge::{
@@ -19,7 +20,7 @@ use crate::charge::{
 use crate::config::{BoxSpec, OutputSpec, PackConfig, StructureSpec};
 use crate::constraints::{ConstraintMode, ConstraintSpec, ShapeSpec};
 use crate::error::{PackError, PackResult};
-use crate::geom::{center_of_geometry, Quaternion, Vec3};
+use crate::geometry::{center_of_geometry, Quaternion, Vec3};
 use crate::io::{read_molecule, write_output, MoleculeData};
 use crate::pack::run;
 
@@ -47,24 +48,6 @@ const SUPPORTED_MORPHOLOGY_MODES: &[&str] = &[
     "amorphous_bulk",
     "backbone_aligned_bulk",
 ];
-const SUPPORTED_OUTPUT_FORMATS: &[&str] = &[
-    "pdb",
-    "pdb-strict",
-    "pdbx",
-    "cif",
-    "mmcif",
-    "gro",
-    "lammps",
-    "lammps-data",
-    "lmp",
-    "mol2",
-    "crd",
-    "inpcrd",
-    "rst",
-    "rst7",
-    "xyz",
-];
-
 const AVOGADRO: f64 = 6.022_140_76e23;
 const ANGSTROM3_TO_LITER: f64 = 1.0e-27;
 const ANGSTROM3_TO_CM3: f64 = 1.0e-24;
@@ -1062,20 +1045,6 @@ struct LoadedPolymerBuildHandoff {
     manifest: Value,
 }
 
-fn resolve_relative(base_path: &str, value: &str) -> String {
-    let path = Path::new(value);
-    if path.is_absolute() {
-        value.to_string()
-    } else {
-        Path::new(base_path)
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(path)
-            .to_string_lossy()
-            .to_string()
-    }
-}
-
 fn supported_topology_graph_version(version: &str) -> bool {
     matches!(version, "warp-build.topology-graph.v5")
 }
@@ -1175,7 +1144,7 @@ fn load_polymer_build_handoff(
     );
     let topology_graph_path = topology_graph_path
         .as_deref()
-        .map(|path| resolve_relative(&handoff.build_manifest, path));
+        .map(|path| resolve_relative_path(&handoff.build_manifest, path));
     let topology_graph = if let Some(path) = topology_graph_path.as_deref() {
         let text = fs::read_to_string(path).map_err(|err| {
             error_detail(
@@ -1227,18 +1196,18 @@ fn load_polymer_build_handoff(
 
     Ok(LoadedPolymerBuildHandoff {
         manifest_path: handoff.build_manifest.clone(),
-        coordinates_path: resolve_relative(&handoff.build_manifest, &coordinates),
+        coordinates_path: resolve_relative_path(&handoff.build_manifest, &coordinates),
         charge_manifest_path: charge_manifest_path
             .as_deref()
-            .map(|path| resolve_relative(&handoff.build_manifest, path)),
+            .map(|path| resolve_relative_path(&handoff.build_manifest, path)),
         topology: topology
             .as_deref()
-            .map(|path| resolve_relative(&handoff.build_manifest, path)),
+            .map(|path| resolve_relative_path(&handoff.build_manifest, path)),
         topology_graph_path,
         topology_graph,
         forcefield_ref: forcefield_ref
             .as_deref()
-            .map(|path| resolve_relative(&handoff.build_manifest, path)),
+            .map(|path| resolve_relative_path(&handoff.build_manifest, path)),
         manifest,
     })
 }
@@ -1261,19 +1230,11 @@ fn common_output_dir(coords: &str, manifest: &str) -> String {
     }
 }
 
-fn infer_output_format(path: &str) -> String {
-    Path::new(path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("pdb")
-        .to_ascii_lowercase()
-}
-
 fn resolved_output_format(outputs: &OutputRequest) -> String {
     outputs
         .format
         .clone()
-        .unwrap_or_else(|| infer_output_format(&outputs.coordinates))
+        .unwrap_or_else(|| OutputSpec::infer_format_from_path(&outputs.coordinates))
 }
 
 fn default_md_package_path(manifest_path: &str) -> String {
@@ -2150,7 +2111,7 @@ fn validate_request(req: &BuildRequest) -> Vec<ErrorDetail> {
         ));
     }
     let resolved_format = resolved_output_format(&req.outputs);
-    if !SUPPORTED_OUTPUT_FORMATS.contains(&resolved_format.as_str()) {
+    if !OutputSpec::SUPPORTED_FORMATS.contains(&resolved_format.as_str()) {
         errors.push(error_detail(
             "E_CONFIG_VALIDATION",
             Some("/outputs/format".into()),
@@ -4644,7 +4605,7 @@ fn build_pack_config(
         output: Some(OutputSpec {
             path: req.outputs.coordinates.clone(),
             format: resolved_output_format(&req.outputs),
-            scale: Some(1.0),
+            scale: None,
         }),
     };
 
@@ -5269,7 +5230,7 @@ pub fn capabilities() -> Value {
         "supported_salt_inputs": ["salt.name", "salt.formula", "salt.species", "legacy_pair"],
         "supported_morphology_modes": SUPPORTED_MORPHOLOGY_MODES,
         "supported_charge_sources": ["charge_manifest", "prmtop"],
-        "supported_output_formats": SUPPORTED_OUTPUT_FORMATS,
+        "supported_output_formats": OutputSpec::SUPPORTED_FORMATS,
         "supported_output_controls": ["format", "write_conect", "preserve_topology_graph", "md_package"],
         "supported_ion_controls": [
             "neutralize",

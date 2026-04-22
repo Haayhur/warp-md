@@ -9,8 +9,8 @@ import warp_md
 
 MaskLike = Union[str, Sequence[int], np.ndarray]
 
-_H2OrderPlan = (
-    getattr(warp_md.traj_py, "PyH2OrderPlan", None)
+_WaterOrderPlan = (
+    getattr(warp_md.traj_py, "PyWaterOrderPlan", None)
     if getattr(warp_md, "traj_py", None)
     else None
 )
@@ -143,9 +143,9 @@ def h2order(
     This v1 contract is planar only and does not expose `gmx h2order -nm`
     spherical micelle mode yet.
     """
-    if _H2OrderPlan is None:
+    if _WaterOrderPlan is None:
         raise RuntimeError(
-            "PyH2OrderPlan binding unavailable. Rebuild bindings with `maturin develop`."
+            "PyWaterOrderPlan binding unavailable. Rebuild bindings with `maturin develop`."
         )
     oxygen_indices, hydrogen1_indices, hydrogen2_indices = _water_triplets(
         system,
@@ -153,7 +153,7 @@ def h2order(
         water_resnames,
     )
     charge_list = _resolve_charges(system, charges)
-    plan = _H2OrderPlan(
+    plan = _WaterOrderPlan(
         oxygen_indices,
         hydrogen1_indices,
         hydrogen2_indices,

@@ -1,5 +1,5 @@
 use crate::error::{TrajError, TrajResult};
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PbcBox {

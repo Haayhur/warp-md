@@ -1,4 +1,4 @@
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 
 pub(crate) fn rotation_matrix(beta: f32, gamma: f32, teta: f32) -> [[f32; 3]; 3] {
     let cb = beta.cos();

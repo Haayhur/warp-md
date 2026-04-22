@@ -1,8 +1,7 @@
 use traj_core::error::TrajResult;
 
 use crate::plans::analysis::msd::DtDecimation;
-
-use super::utils::lag_allowed;
+use crate::plans::analysis::time_correlation::lag_allowed;
 
 pub(super) fn conductivity_fft(
     series: &[f32],

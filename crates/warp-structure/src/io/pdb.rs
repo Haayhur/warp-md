@@ -4,7 +4,7 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use crate::error::{StructureError as PackError, StructureResult as PackResult};
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 use crate::io::MoleculeData;
 use crate::pack::{AtomRecord, AtomRecordKind, PackOutput, PdbAtomMetadata};
 use traj_core::pdb_gro::{parse_pdb_reader, PdbParseOptions, PdbRecordKind};

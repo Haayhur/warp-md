@@ -73,7 +73,7 @@ def test_hydorder_forwards_selection_and_options(monkeypatch):
                 "block_size": 2,
             }
 
-    monkeypatch.setattr(hydorder_mod, "_HydOrderPlan", _DummyPlan, raising=True)
+    monkeypatch.setattr(hydorder_mod, "_HydrationOrderPlan", _DummyPlan, raising=True)
     out = hydorder_mod.hydorder(
         _DummyTraj(),
         _DummySystem(),
@@ -104,6 +104,6 @@ def test_hydorder_forwards_selection_and_options(monkeypatch):
 
 
 def test_hydorder_raises_when_binding_missing(monkeypatch):
-    monkeypatch.setattr(hydorder_mod, "_HydOrderPlan", None, raising=True)
-    with pytest.raises(RuntimeError, match="PyHydOrderPlan binding unavailable"):
+    monkeypatch.setattr(hydorder_mod, "_HydrationOrderPlan", None, raising=True)
+    with pytest.raises(RuntimeError, match="PyHydrationOrderPlan binding unavailable"):
         hydorder_mod.hydorder(_DummyTraj(), _DummySystem(), selection="name OW")

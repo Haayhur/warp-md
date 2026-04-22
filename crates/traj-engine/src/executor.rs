@@ -1,7 +1,7 @@
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::{Box3, FrameChunk, FrameChunkBuilder};
 use traj_core::system::System;
-use traj_io::TrajReader;
+use traj_io::{validate_selection, TrajReader};
 
 #[cfg(feature = "cuda")]
 use traj_gpu::GpuContext;
@@ -219,17 +219,6 @@ pub fn normalize_frame_indices(frame_indices: Vec<i64>, n_frames: usize) -> Vec<
         }
     }
     out
-}
-
-fn validate_selection(selection: &[u32], n_atoms: usize) -> TrajResult<()> {
-    for &idx in selection {
-        if (idx as usize) >= n_atoms {
-            return Err(TrajError::Mismatch(format!(
-                "selection index {idx} out of bounds for trajectory with {n_atoms} atoms"
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn extract_chunk_frame(chunk: &FrameChunk, frame: usize) -> SelectedFrame {

@@ -9,7 +9,7 @@ use crate::gencan_objective::{
     compute_objective_only, compute_objective_with_buffer, grad_norm, pack_variables, project_step,
     update_positions, validate_molecule_counts, Bounds, MolInfo, ObjectiveBuffer,
 };
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 use crate::pack::AtomRecord;
 use crate::pack_ops::TemplateEntry;
 use crate::pbc::PbcBox;

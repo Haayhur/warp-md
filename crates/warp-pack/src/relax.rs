@@ -1,12 +1,12 @@
 use crate::atom_params::AtomParams;
 use crate::config::PackConfig;
 use crate::error::PackResult;
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 use crate::pack::AtomRecord;
 use crate::pack_ops::{satisfies_structure_constraints, TemplateEntry};
 use crate::pbc::PbcBox;
 use crate::placement::PlacementRecord;
-use crate::spatial_hash::SpatialHashV2;
+use crate::spatial_hash::SpatialHashGrid;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_cells::build_gpu_cell_list;
@@ -166,7 +166,6 @@ pub(crate) fn relax_overlaps(
         }
 
         if !used_gpu {
-            // Compute bounds from positions for SpatialHashV2
             let mut box_min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
             let mut box_max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
             for pos in positions.iter() {
@@ -181,7 +180,7 @@ pub(crate) fn relax_overlaps(
             box_min = box_min.sub(Vec3::new(pad, pad, pad));
             box_max = box_max.add(Vec3::new(pad, pad, pad));
 
-            let mut hash = SpatialHashV2::new(cell_size, box_min, box_max);
+            let mut hash = SpatialHashGrid::new(cell_size, box_min, box_max);
             for (i, pos_i) in positions.iter().enumerate() {
                 hash.for_each_neighbor(*pos_i, |j| {
                     if j >= i {

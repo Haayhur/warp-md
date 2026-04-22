@@ -11,8 +11,8 @@ from .h2order import _select
 
 MaskLike = Union[str, Sequence[int], np.ndarray]
 
-_HelixOrientPlan = (
-    getattr(warp_md.traj_py, "PyHelixOrientPlan", None)
+_HelixOrientationPlan = (
+    getattr(warp_md.traj_py, "PyHelixOrientationPlan", None)
     if getattr(warp_md, "traj_py", None)
     else None
 )
@@ -30,13 +30,13 @@ def helixorient(
     device: str = "auto",
 ):
     """Local helix-axis geometry via Rust plan path."""
-    if _HelixOrientPlan is None:
+    if _HelixOrientationPlan is None:
         raise RuntimeError(
-            "PyHelixOrientPlan binding unavailable. Rebuild bindings with `maturin develop`."
+            "PyHelixOrientationPlan binding unavailable. Rebuild bindings with `maturin develop`."
         )
     ca_sel = _select(system, ca_selection)
     sidechain_sel = None if sidechain_selection is None else _select(system, sidechain_selection)
-    plan = _HelixOrientPlan(
+    plan = _HelixOrientationPlan(
         ca_sel,
         sidechain_selection=sidechain_sel,
         incremental=bool(incremental),

@@ -1,5 +1,5 @@
 use warp_pack::constraints::{satisfies_constraints, ConstraintMode, ConstraintSpec, ShapeSpec};
-use warp_pack::geom::Vec3;
+use warp_pack::geometry::Vec3;
 use warp_pack::pbc::PbcBox;
 
 #[test]

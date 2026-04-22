@@ -15,15 +15,16 @@ pub use feature_store::{
     ChunkIndex, FeatureIndex, FeatureSchema, FeatureStoreReader, FeatureStoreWriter,
 };
 pub use plans::analysis::{
-    AtomicCorrPlan, BondiFfvPlan, BundlePlan, ClusterMethod, ConductivityPlan, CountInVoxelPlan,
-    CurrentPlan, DensityMapPlan, DensityMapUnit, DensityPlan, DielectricPlan, DipoleAlignmentPlan,
-    DockingPlan, DsspPlan, EquipartitionPlan, FreeVolumePlan, GistDirectPlan, GistGridPlan,
-    GroupBy, GroupMap, GroupSpec, H2OrderPlan, HbondPlan, HelixOrientPlan, HelixPlan, HydOrderPlan,
+    AtomicCorrelationPlan, BondiFfvPlan, BundlePlan, ClusterMethod, ConductivityPlan,
+    CountInVoxelPlan, CrossCorrelationPlan, CurrentPlan, DensityMapPlan, DensityMapUnit,
+    DensityPlan, DielectricPlan, DipoleAlignmentPlan, DockingPlan, DsspPlan, DtDecimation,
+    EquipartitionPlan, FrameDecimation, FreeVolumePlan, GistDirectPlan, GistGridPlan, GroupBy,
+    GroupMap, GroupSpec, HbondPlan, HelixOrientationPlan, HelixPlan, HydrationOrderPlan,
     IonPairCorrelationPlan, MdmatPlan, MolSurfPlan, MsdPlan, MultiPuckerMode, MultiPuckerPlan,
-    NmrIredPlan, PotentialPlan, RamaPlan, RotAcfPlan, SOrientPlan, SaltBridgePlan, SpolPlan,
-    StructureFactorPlan, SurfAlgorithm, SurfPlan, ToroidalDiffusionPlan, TorsionDiffusionPlan,
-    TorsionStat, TrajectoryClusterPlan, VanHovePlan, VelocityAutoCorrPlan, VolmapPlan,
-    WaterCountPlan, WaveletPlan, XcorrPlan,
+    NmrIredPlan, OrientationSpec, PotentialPlan, RamaPlan, RotAcfPlan, SaltBridgePlan,
+    SolventOrientationPlan, SolventPolarizationPlan, StructureFactorPlan, SurfAlgorithm, SurfPlan,
+    TimeBinning, ToroidalDiffusionPlan, TorsionDiffusionPlan, TorsionStat, TrajectoryClusterPlan,
+    VanHovePlan, VelocityAutoCorrPlan, VolmapPlan, WaterCountPlan, WaterOrderPlan, WaveletPlan,
 };
 pub use plans::{
     AlignPlan, AlignPrincipalAxisPlan, AnalyzeModesPlan, AnglePlan, AtomMapPlan, AtomicAdpPlan,

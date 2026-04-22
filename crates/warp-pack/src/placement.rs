@@ -1,4 +1,4 @@
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PlacementRecord {

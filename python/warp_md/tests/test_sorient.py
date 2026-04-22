@@ -102,7 +102,7 @@ def test_sorient_detects_triplets_and_forwards(monkeypatch):
                 "length_scale": 0.1,
             }
 
-    monkeypatch.setattr(sorient_mod, "_SOrientPlan", _DummyPlan, raising=True)
+    monkeypatch.setattr(sorient_mod, "_SolventOrientationPlan", _DummyPlan, raising=True)
     out = sorient_mod.sorient(
         _DummyTraj(),
         _DummySystem(),
@@ -137,6 +137,6 @@ def test_sorient_detects_triplets_and_forwards(monkeypatch):
 
 
 def test_sorient_raises_when_binding_missing(monkeypatch):
-    monkeypatch.setattr(sorient_mod, "_SOrientPlan", None, raising=True)
-    with pytest.raises(RuntimeError, match="PySOrientPlan binding unavailable"):
+    monkeypatch.setattr(sorient_mod, "_SolventOrientationPlan", None, raising=True)
+    with pytest.raises(RuntimeError, match="PySolventOrientationPlan binding unavailable"):
         sorient_mod.sorient(_DummyTraj(), _DummySystem(), solute_selection="resid 1")

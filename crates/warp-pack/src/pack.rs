@@ -9,7 +9,7 @@ use crate::config::PackConfig;
 use crate::error::{PackError, PackResult};
 use crate::gencan::{evaluate_state, optimize_gencan, GencanResult};
 use crate::gencan_objective::ObjectiveBuffer;
-use crate::geom::{Quaternion, Vec3};
+use crate::geometry::{Quaternion, Vec3};
 use crate::io::write_output;
 use crate::movebad::{build_movebad_index, run_movebad_pass};
 use crate::pack_ops::{
@@ -22,7 +22,7 @@ use crate::pbc::PbcBox;
 use crate::placement::PlacementRecord;
 use crate::relax::relax_overlaps;
 use crate::restart::{read_restart, write_restart, RestartEntry};
-use crate::spatial_hash::{SpatialHashParamsExt, SpatialHashV2};
+use crate::spatial_hash::{SpatialHashGrid, SpatialHashParamsExt};
 use crate::streaming::{PackingPhase, StreamEmitter};
 
 #[derive(Default)]
@@ -54,7 +54,7 @@ impl PackProfile {
     }
 }
 
-fn rebuild_hash_from_positions(hash: &mut SpatialHashV2, positions: &[Vec3]) {
+fn rebuild_hash_from_positions(hash: &mut SpatialHashGrid, positions: &[Vec3]) {
     hash.clear();
     for (idx, pos) in positions.iter().copied().enumerate() {
         hash.insert(idx, pos);
@@ -299,7 +299,7 @@ fn run_once(
     };
     let cell_size = ((2.0 * max_atom_radius) * fbins * dist_scale).max(1.0e-6);
     let box_max = box_origin.add(Vec3::from_array(box_size));
-    let mut hash = SpatialHashV2::new(cell_size, box_origin, box_max);
+    let mut hash = SpatialHashGrid::new(cell_size, box_origin, box_max);
 
     for (idx, spec) in cfg.structures.iter().enumerate() {
         if !spec.fixed {

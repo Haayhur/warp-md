@@ -6,7 +6,7 @@ use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use super::align::AlignPlan;
-use super::utils::*;
+use super::geometry_math::*;
 use crate::executor::{Device, Plan, PlanOutput};
 use crate::plans::ReferenceMode;
 

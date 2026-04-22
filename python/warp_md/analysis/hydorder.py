@@ -11,8 +11,8 @@ from .h2order import _select
 
 MaskLike = Union[str, Sequence[int], np.ndarray]
 
-_HydOrderPlan = (
-    getattr(warp_md.traj_py, "PyHydOrderPlan", None)
+_HydrationOrderPlan = (
+    getattr(warp_md.traj_py, "PyHydrationOrderPlan", None)
     if getattr(warp_md, "traj_py", None)
     else None
 )
@@ -38,12 +38,12 @@ def hydorder(
     When both `sgang1` and `sgang2` are given, Rust also extracts lower/upper
     interface surfaces from block-averaged angular-order grids.
     """
-    if _HydOrderPlan is None:
+    if _HydrationOrderPlan is None:
         raise RuntimeError(
-            "PyHydOrderPlan binding unavailable. Rebuild bindings with `maturin develop`."
+            "PyHydrationOrderPlan binding unavailable. Rebuild bindings with `maturin develop`."
         )
     sel = _select(system, selection)
-    plan = _HydOrderPlan(
+    plan = _HydrationOrderPlan(
         sel,
         axis=axis,
         bin=bin,

@@ -5,8 +5,8 @@ use traj_core::frame::FrameChunk;
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
+use super::geometry_math::*;
 use super::neighbors::SearchNeighborsPlan;
-use super::utils::*;
 use crate::executor::{Device, Plan, PlanOutput};
 use crate::plans::{PbcMode, ReferenceMode};
 

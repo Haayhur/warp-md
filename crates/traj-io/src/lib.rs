@@ -6,11 +6,13 @@ pub mod gromos96_traj;
 pub mod h5md;
 pub mod pdb;
 pub mod pdb_traj;
+mod selection_support;
 pub mod tng;
 pub mod trr;
 pub mod xtc;
+pub use selection_support::{validate_and_materialize_selection, validate_selection};
 
-use traj_core::error::{TrajError, TrajResult};
+use traj_core::error::TrajResult;
 use traj_core::frame::{Box3, FrameChunkBuilder};
 use traj_core::system::System;
 
@@ -45,13 +47,7 @@ pub trait TrajReader {
         out: &mut FrameChunkBuilder,
     ) -> TrajResult<usize> {
         let n_atoms = self.n_atoms();
-        for &idx in selection {
-            if (idx as usize) >= n_atoms {
-                return Err(TrajError::Mismatch(format!(
-                    "selection index {idx} out of bounds for trajectory with {n_atoms} atoms"
-                )));
-            }
-        }
+        let selection = validate_and_materialize_selection(selection, n_atoms)?;
 
         let max_frames = max_frames.max(1);
         let mut full = FrameChunkBuilder::new(n_atoms, max_frames);
@@ -82,18 +78,18 @@ pub trait TrajReader {
             let dst = out.start_frame(box_, time_ps);
             let src_base = frame * chunk.n_atoms;
             for (dst_atom, &src_idx) in dst.iter_mut().zip(selection.iter()) {
-                *dst_atom = chunk.coords[src_base + src_idx as usize];
+                *dst_atom = chunk.coords[src_base + src_idx];
             }
             let velocities = chunk.velocities.as_ref().map(|data| {
                 selection
                     .iter()
-                    .map(|&src_idx| data[src_base + src_idx as usize])
+                    .map(|&src_idx| data[src_base + src_idx])
                     .collect::<Vec<_>>()
             });
             let forces = chunk.forces.as_ref().map(|data| {
                 selection
                     .iter()
-                    .map(|&src_idx| data[src_base + src_idx as usize])
+                    .map(|&src_idx| data[src_base + src_idx])
                     .collect::<Vec<_>>()
             });
             let velocities_ref = velocities.as_deref();

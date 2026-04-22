@@ -1,5 +1,5 @@
 use crate::constraints::{ConstraintMode, ConstraintSpec, ShapeSpec};
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 
 const SCALE2: f32 = 1.0e-2;
 

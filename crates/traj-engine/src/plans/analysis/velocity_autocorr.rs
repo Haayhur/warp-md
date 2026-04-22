@@ -7,6 +7,9 @@ use crate::correlators::multi_tau::MultiTauBuffer;
 use crate::correlators::ring::RingBuffer;
 use crate::correlators::{LagMode, LagSettings};
 use crate::executor::{Device, Plan, PlanOutput};
+use crate::plans::analysis::time_correlation::{
+    build_lag_runtime, fft_capacity, impl_lag_builder_methods, resolve_lag_mode, AutoLagMode,
+};
 
 #[cfg(feature = "cuda")]
 use traj_gpu::GpuContext;
@@ -62,31 +65,6 @@ impl VelocityAutoCorrPlan {
         }
     }
 
-    pub fn with_lag_mode(mut self, mode: LagMode) -> Self {
-        self.lag = self.lag.with_mode(mode);
-        self
-    }
-
-    pub fn with_max_lag(mut self, max_lag: usize) -> Self {
-        self.lag = self.lag.with_max_lag(max_lag);
-        self
-    }
-
-    pub fn with_memory_budget_bytes(mut self, budget: usize) -> Self {
-        self.lag = self.lag.with_memory_budget_bytes(budget);
-        self
-    }
-
-    pub fn with_multi_tau_m(mut self, m: usize) -> Self {
-        self.lag = self.lag.with_multi_tau_m(m);
-        self
-    }
-
-    pub fn with_multi_tau_levels(mut self, levels: usize) -> Self {
-        self.lag = self.lag.with_multi_tau_levels(levels);
-        self
-    }
-
     pub fn with_normalize(mut self, normalize: bool) -> Self {
         self.normalize = normalize;
         self
@@ -98,6 +76,8 @@ impl VelocityAutoCorrPlan {
     }
 }
 
+impl_lag_builder_methods!(VelocityAutoCorrPlan);
+
 impl Plan for VelocityAutoCorrPlan {
     fn name(&self) -> &'static str {
         "velocityautocorr"
@@ -107,7 +87,7 @@ impl Plan for VelocityAutoCorrPlan {
         self.frames_hint = n_frames;
     }
 
-    fn init(&mut self, _system: &System, device: &Device) -> TrajResult<()> {
+    fn init(&mut self, _system: &System, _device: &Device) -> TrajResult<()> {
         self.n_sel = self.selection.indices.len();
         self.sample.clear();
         self.sample.resize(self.n_sel * 3, 0.0);
@@ -128,51 +108,23 @@ impl Plan for VelocityAutoCorrPlan {
             return Ok(());
         }
 
-        let mut resolved = self.lag.mode;
-        if resolved == LagMode::Auto {
-            resolved = LagMode::MultiTau;
-        }
-        self.resolved_mode = resolved;
-
-        match self.resolved_mode {
-            LagMode::MultiTau => {
-                let buffer = MultiTauBuffer::new(
-                    self.n_sel,
-                    3,
-                    self.lag.multi_tau_m,
-                    self.lag.multi_tau_max_levels,
-                );
-                self.lags = buffer.out_lags().to_vec();
-                self.acc = vec![0.0f64; self.lags.len()];
-                self.multi_tau = Some(buffer);
-            }
-            LagMode::Ring => {
-                let max_lag = self.lag.ring_max_lag_capped(self.n_sel, 3, 4);
-                let buffer = RingBuffer::new(self.n_sel, 3, max_lag);
-                self.lags = (1..=max_lag).collect();
-                self.acc = vec![0.0f64; self.lags.len()];
-                self.ring = Some(buffer);
-            }
-            LagMode::Fft => {
-                let capacity = self
-                    .frames_hint
-                    .unwrap_or(0)
-                    .saturating_mul(self.n_sel)
-                    .saturating_mul(3);
-                self.series = Vec::with_capacity(capacity);
-            }
-            LagMode::Auto => {}
+        self.resolved_mode = resolve_lag_mode(&self.lag, AutoLagMode::MultiTau);
+        let buffers = build_lag_runtime(&self.lag, self.resolved_mode, self.n_sel, 3, 1, None);
+        self.lags = buffers.lags;
+        self.acc = buffers.acc;
+        self.multi_tau = buffers.multi_tau;
+        self.ring = buffers.ring;
+        if self.resolved_mode == LagMode::Fft {
+            self.series = Vec::with_capacity(fft_capacity(self.frames_hint, self.n_sel, 3));
         }
 
         #[cfg(feature = "cuda")]
         {
             self.gpu = None;
-            if let Device::Cuda(ctx) = device {
+            if let Device::Cuda(ctx) = _device {
                 self.gpu = Some(ctx.clone());
             }
         }
-        #[cfg(not(feature = "cuda"))]
-        let _ = device;
 
         Ok(())
     }

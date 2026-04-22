@@ -5,7 +5,7 @@ use traj_core::system::System;
 
 use crate::executor::{Device, Plan, PlanOutput};
 
-use super::common::{
+use super::grid_support::{
     dims_from_bounds, keep_frame_internal, mean_center_all_atoms, mean_center_indices,
     orientation_bin, sorted_unique_indices, validate_water_vectors, voxel_flat,
 };

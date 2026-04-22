@@ -1,12 +1,12 @@
-use std::ffi::{CString, c_ulong};
+use std::ffi::{c_ulong, CString};
 use std::path::{Path, PathBuf};
 
-use ::xdrfile::c_abi::xdr_seek;
-use ::xdrfile::c_abi::xdrfile::{self as xdr_cabi, Matrix, Rvec, XDRFILE};
-use ::xdrfile::c_abi::xdrfile_trr;
-use ::xdrfile::{Error as XdrError, ErrorCode as XdrErrorCode, ErrorTask as XdrErrorTask};
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::{Box3, FrameChunkBuilder};
+use xdrfile::c_abi::xdr_seek;
+use xdrfile::c_abi::xdrfile::{self as xdr_cabi, Matrix, Rvec, XDRFILE};
+use xdrfile::c_abi::xdrfile_trr;
+use xdrfile::{Error as XdrError, ErrorCode as XdrErrorCode, ErrorTask as XdrErrorTask};
 
 use crate::TrajReader;
 

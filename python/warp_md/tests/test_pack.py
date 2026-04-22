@@ -149,6 +149,17 @@ def test_export_crd_writes_lines(tmp_path):
     assert lines[3].strip().endswith("EXT")
 
 
+def test_export_infers_format_from_path_when_fmt_none(tmp_path):
+    if not HAS_PACK_EXPORT:
+        return
+    out = tmp_path / "out.crd"
+    written = export(DummyResult(), None, str(out))
+    assert written["format"] == "crd"
+    text = out.read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if line.strip()]
+    assert lines[0].startswith("* TITLE")
+
+
 def test_export_accepts_none_optional_fields(tmp_path):
     assert HAS_PACK_EXPORT, "pack_write_output binding unavailable"
     out = tmp_path / "out_none_optional.pdb"

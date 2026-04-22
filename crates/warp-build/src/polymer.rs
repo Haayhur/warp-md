@@ -79,25 +79,13 @@ pub struct PolymerParamBundle {
 
 #[derive(Clone, Debug)]
 pub struct PolymerSourceResolved {
-    pub artifact_path: PathBuf,
     pub training_structure_path: PathBuf,
-    pub topology_ref: Option<String>,
-    pub charge_manifest_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
 pub struct PolymerBuiltArtifact {
     pub path: PathBuf,
-    pub source_training_structure_path: PathBuf,
-    pub source_nmer: usize,
-    pub target_n_repeat: usize,
-    pub conformation_mode: String,
-    pub tacticity_mode: String,
     pub step_length_angstrom: f32,
-    pub residue_count: usize,
-    pub template_resnames: BTreeMap<String, String>,
-    pub applied_resnames: BTreeMap<String, String>,
-    pub sequence_label: Option<String>,
     pub sequence_labels: Vec<String>,
     pub template_sequence_resnames: Vec<String>,
     pub residue_resnames: Vec<String>,
@@ -105,8 +93,6 @@ pub struct PolymerBuiltArtifact {
     pub qc_context: BuildQcContext,
     pub qc_report: BuildQcReport,
     pub solver_report: Option<BuildSolverReport>,
-    pub source_charge_manifest_path: Option<PathBuf>,
-    pub topology_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -200,19 +186,15 @@ pub struct GraphEdgeSpec {
     pub edge_id: String,
     pub parent: usize,
     pub child: usize,
-    pub parent_port: String,
-    pub child_port: String,
     pub parent_attach_atom: String,
     pub parent_leaving_atoms: Vec<String>,
     pub child_attach_atom: String,
     pub child_leaving_atoms: Vec<String>,
     pub bond_order: u8,
-    pub layout_mode: String,
     pub branch_spread: String,
     pub torsion_mode: String,
     pub torsion_deg: Option<f32>,
     pub torsion_window_deg: Option<[f32; 2]>,
-    pub ring_mode: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -223,6 +205,7 @@ struct ResidueTemplate {
     local_bonds: Vec<(usize, usize)>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct BuildResidueSpec {
     sequence_label: String,
@@ -235,6 +218,7 @@ fn centroid_of_atoms(atoms: &[AtomRecord]) -> Vec3 {
     center_of_geometry(&positions)
 }
 
+#[allow(dead_code)]
 fn normalize_label(label: Option<&str>, fallback: &str) -> String {
     let raw = label.unwrap_or("default").trim();
     if raw.is_empty()
@@ -432,6 +416,7 @@ fn sum_sequence_template_charges(
     Some(total)
 }
 
+#[allow(dead_code)]
 fn resolve_template_sequence(
     sequence_labels: &[String],
     template_resname_by_token: &BTreeMap<String, String>,
@@ -672,20 +657,6 @@ fn resolved_torsion_angle(edge: &GraphEdgeSpec, rng: &mut StdRng) -> f32 {
         }
         _ => edge.torsion_deg.unwrap_or(180.0).to_radians(),
     }
-}
-
-fn attachment_local_position(template: &ResidueTemplate, atom_name: &str) -> PackResult<Vec3> {
-    let atom = template
-        .atoms
-        .iter()
-        .find(|atom| atom.name.trim() == atom_name.trim())
-        .ok_or_else(|| {
-            PackError::Invalid(format!(
-                "attach atom '{}' missing from template '{}'",
-                atom_name, template.resname
-            ))
-        })?;
-    Ok(atom.position.sub(template.centroid))
 }
 
 fn graph_tree(
@@ -1227,22 +1198,12 @@ pub fn resolve_polymer_param_source(
             }
             let base = artifact_path.parent().unwrap_or_else(|| Path::new("."));
             return Ok(PolymerSourceResolved {
-                artifact_path: artifact_path.clone(),
                 training_structure_path: base.join(bundle.training_structure),
-                topology_ref: explicit_topology_ref
-                    .map(ToOwned::to_owned)
-                    .or(bundle.topology_ref),
-                charge_manifest_path: explicit_charge_manifest
-                    .map(PathBuf::from)
-                    .or_else(|| bundle.charge_manifest.map(|value| base.join(value))),
             });
         }
         if matches!(ext.as_str(), "pdb" | "cif" | "mmcif" | "pdbx") {
             return Ok(PolymerSourceResolved {
-                artifact_path: artifact_path.clone(),
                 training_structure_path: artifact_path.clone(),
-                topology_ref: explicit_topology_ref.map(ToOwned::to_owned),
-                charge_manifest_path: explicit_charge_manifest.map(PathBuf::from),
             });
         }
         return Err(PackError::Invalid(
@@ -1303,6 +1264,7 @@ pub fn load_charge_manifest(path: &Path) -> PackResult<ChargeManifest> {
     Ok(manifest)
 }
 
+#[allow(dead_code)]
 pub fn charge_manifest_field_kinds(manifest: &ChargeManifest) -> Vec<String> {
     let mut kinds = Vec::new();
     if manifest.net_charge_e.is_some() {
@@ -1320,6 +1282,7 @@ pub fn charge_manifest_field_kinds(manifest: &ChargeManifest) -> Vec<String> {
     kinds
 }
 
+#[allow(dead_code)]
 pub fn compute_solute_net_charge(manifest: &ChargeManifest) -> NetChargeEstimate {
     NetChargeEstimate {
         net_charge_e: manifest.net_charge_e,
@@ -1486,6 +1449,7 @@ fn compute_sequence_polymer_net_charge(
     }
 }
 
+#[allow(dead_code)]
 pub fn compute_polymer_net_charge_from_source(
     manifest: &ChargeManifest,
     training_structure_path: &Path,
@@ -1516,6 +1480,7 @@ pub fn compute_sequence_polymer_net_charge_from_source(
     ))
 }
 
+#[allow(dead_code)]
 pub fn compute_solute_net_charge_from_prmtop(path: &Path) -> PackResult<NetChargeEstimate> {
     Ok(NetChargeEstimate {
         net_charge_e: Some(read_prmtop_total_charge(path)?),
@@ -2236,6 +2201,7 @@ fn stage_polymer_output_path(final_coordinates_path: &str) -> PathBuf {
     parent.join(format!("{stem}_built_solute.pdb"))
 }
 
+#[allow(dead_code)]
 fn build_centroids(
     n_repeat: usize,
     step_length: f32,
@@ -2332,6 +2298,7 @@ fn build_centroids(
     Ok(centroids)
 }
 
+#[allow(dead_code)]
 pub fn build_linear_homopolymer(
     artifact: &str,
     explicit_charge_manifest: Option<&str>,
@@ -2386,6 +2353,7 @@ pub fn build_linear_homopolymer(
     )
 }
 
+#[allow(dead_code)]
 pub fn build_linear_sequence_polymer(
     artifact: &str,
     explicit_charge_manifest: Option<&str>,
@@ -2616,70 +2584,9 @@ pub fn build_linear_sequence_polymer(
         false,
     )?;
 
-    let mut template_resnames = BTreeMap::new();
-    template_resnames.insert(
-        "head".into(),
-        sequence_specs
-            .first()
-            .map(|item| item.template_resname.clone())
-            .unwrap_or_else(|| head.resname.clone()),
-    );
-    template_resnames.insert(
-        "repeat".into(),
-        sequence_specs
-            .get(sequence_specs.len().saturating_sub(1).min(1))
-            .map(|item| item.template_resname.clone())
-            .unwrap_or_else(|| repeat.resname.clone()),
-    );
-    template_resnames.insert(
-        "tail".into(),
-        sequence_specs
-            .last()
-            .map(|item| item.template_resname.clone())
-            .unwrap_or_else(|| tail.resname.clone()),
-    );
-    let mut applied_resnames = BTreeMap::new();
-    applied_resnames.insert(
-        "head".into(),
-        sequence_specs
-            .first()
-            .map(|item| item.applied_resname.clone())
-            .unwrap_or_else(|| head.resname.clone()),
-    );
-    applied_resnames.insert(
-        "repeat".into(),
-        sequence_specs
-            .get(sequence_specs.len().saturating_sub(1).min(1))
-            .map(|item| item.applied_resname.clone())
-            .unwrap_or_else(|| repeat.resname.clone()),
-    );
-    applied_resnames.insert(
-        "tail".into(),
-        sequence_specs
-            .last()
-            .map(|item| item.applied_resname.clone())
-            .unwrap_or_else(|| tail.resname.clone()),
-    );
-
     Ok(PolymerBuiltArtifact {
         path,
-        source_training_structure_path: resolved.training_structure_path,
-        source_nmer,
-        target_n_repeat: sequence_specs.len(),
-        conformation_mode: conformation_mode.to_string(),
-        tacticity_mode: tacticity_mode.to_string(),
         step_length_angstrom: step_length,
-        residue_count: sequence_specs.len(),
-        template_resnames,
-        applied_resnames,
-        sequence_label: if sequence_labels
-            .windows(2)
-            .all(|window| window[0] == window[1])
-        {
-            sequence_labels.first().cloned()
-        } else {
-            None
-        },
         sequence_labels: sequence_specs
             .iter()
             .map(|item| item.sequence_label.clone())
@@ -2696,8 +2603,6 @@ pub fn build_linear_sequence_polymer(
         qc_context,
         qc_report,
         solver_report: None,
-        source_charge_manifest_path: resolved.charge_manifest_path,
-        topology_ref: resolved.topology_ref,
     })
 }
 
@@ -3046,70 +2951,9 @@ pub fn build_polymer_graph(
         false,
     )?;
 
-    let mut template_resnames = BTreeMap::new();
-    template_resnames.insert(
-        "head".into(),
-        node_specs
-            .first()
-            .map(|item| item.template_resname.clone())
-            .unwrap_or_else(|| head.resname.clone()),
-    );
-    template_resnames.insert(
-        "repeat".into(),
-        node_specs
-            .get(node_specs.len().saturating_sub(1).min(1))
-            .map(|item| item.template_resname.clone())
-            .unwrap_or_else(|| repeat.resname.clone()),
-    );
-    template_resnames.insert(
-        "tail".into(),
-        node_specs
-            .last()
-            .map(|item| item.template_resname.clone())
-            .unwrap_or_else(|| tail.resname.clone()),
-    );
-    let mut applied_resnames = BTreeMap::new();
-    applied_resnames.insert(
-        "head".into(),
-        node_specs
-            .first()
-            .map(|item| item.applied_resname.clone())
-            .unwrap_or_else(|| head.resname.clone()),
-    );
-    applied_resnames.insert(
-        "repeat".into(),
-        node_specs
-            .get(node_specs.len().saturating_sub(1).min(1))
-            .map(|item| item.applied_resname.clone())
-            .unwrap_or_else(|| repeat.resname.clone()),
-    );
-    applied_resnames.insert(
-        "tail".into(),
-        node_specs
-            .last()
-            .map(|item| item.applied_resname.clone())
-            .unwrap_or_else(|| tail.resname.clone()),
-    );
-
     Ok(PolymerBuiltArtifact {
         path,
-        source_training_structure_path: resolved.training_structure_path,
-        source_nmer,
-        target_n_repeat: node_specs.len(),
-        conformation_mode: conformation_mode.to_string(),
-        tacticity_mode: tacticity_mode.to_string(),
         step_length_angstrom: step_length,
-        residue_count: node_specs.len(),
-        template_resnames,
-        applied_resnames,
-        sequence_label: if node_specs
-            .windows(2)
-            .all(|window| window[0].sequence_label == window[1].sequence_label)
-        {
-            node_specs.first().map(|item| item.sequence_label.clone())
-        } else {
-            None
-        },
         sequence_labels: node_specs
             .iter()
             .map(|item| item.sequence_label.clone())
@@ -3126,8 +2970,6 @@ pub fn build_polymer_graph(
         qc_context,
         qc_report,
         solver_report,
-        source_charge_manifest_path: resolved.charge_manifest_path,
-        topology_ref: resolved.topology_ref,
     })
 }
 

@@ -2,20 +2,25 @@ use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::FrameChunk;
 use traj_core::system::System;
 
-use crate::correlators::multi_tau::MultiTauBuffer;
-use crate::correlators::ring::RingBuffer;
 use crate::correlators::LagMode;
 use crate::executor::{Device, Plan, PlanOutput};
 #[cfg(feature = "cuda")]
-use crate::plans::analysis::common::groups_to_csr;
+use crate::plans::analysis::group_runtime::groups_to_csr;
+use crate::plans::analysis::group_runtime::{
+    alloc_group_unwrap_buffers, compute_group_inv_mass, fill_frame_group_positions,
+    seed_unwrapped_groups, unwrap_frame_groups,
+};
 use crate::plans::analysis::grouping::GroupSpec;
+use crate::plans::analysis::time_correlation::{
+    build_lag_runtime, fft_capacity, lag_allowed, resolve_lag_mode, update_time_axis, AutoLagMode,
+};
 
 #[cfg(feature = "cuda")]
 use traj_gpu::coords_as_float4;
 
 use super::accumulate::accumulate_msd;
 use super::fft::msd_fft;
-use super::utils::{box_lengths, lag_allowed, msd_cols};
+use super::time_lag::msd_cols;
 #[cfg(feature = "cuda")]
 use super::MsdGpuState;
 use super::MsdPlan;
@@ -44,7 +49,7 @@ impl Plan for MsdPlan {
         }
     }
 
-    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
         self.n_atoms = system.n_atoms();
         let mut spec = GroupSpec::new(self.selection.clone(), self.group_by);
         if let Some(types) = &self.group_types {
@@ -66,28 +71,23 @@ impl Plan for MsdPlan {
         };
         self.groups = Some(groups);
         self.masses = system.atoms.mass.iter().map(|m| *m as f64).collect();
-        self.group_inv_mass.clear();
-        if let Some(group_map) = &self.groups {
-            self.group_inv_mass.reserve(group_map.groups.len());
-            for atoms in &group_map.groups {
-                let mut mass_sum = 0.0f64;
-                for &atom_idx in atoms {
-                    mass_sum += self.masses[atom_idx];
-                }
-                let inv = if mass_sum > 0.0 { 1.0 / mass_sum } else { 0.0 };
-                self.group_inv_mass.push(inv);
-            }
-        }
+        self.group_inv_mass = self
+            .groups
+            .as_ref()
+            .map(|group_map| compute_group_inv_mass(group_map, &self.masses))
+            .unwrap_or_default();
 
         self.dt0 = None;
         self.uniform_time = true;
         self.last_time = None;
         self.frame_index = 0;
         self.samples_seen = 0;
-        self.last_wrapped = vec![[0.0; 3]; self.n_groups];
-        self.wrapped_curr = vec![[0.0; 3]; self.n_groups];
-        self.unwrap_prev = vec![[0.0; 3]; self.n_groups];
-        self.unwrap_curr = vec![[0.0; 3]; self.n_groups];
+        (
+            self.last_wrapped,
+            self.wrapped_curr,
+            self.unwrap_prev,
+            self.unwrap_curr,
+        ) = alloc_group_unwrap_buffers(self.n_groups);
         self.sample_f32 = vec![0.0f32; self.n_groups * 3];
         self.lags.clear();
         self.acc.clear();
@@ -106,57 +106,30 @@ impl Plan for MsdPlan {
         self.perf_accum_ns = 0;
         self.perf_finalize_ns = 0;
 
-        let mut resolved_mode = self.lag.mode;
-        if resolved_mode == LagMode::Auto {
-            let use_fft = if let Some(n_frames) = self.frames_hint {
-                self.lag.fft_fits(n_frames, self.n_groups, 3, 4)
-            } else {
-                false
-            };
-            resolved_mode = if use_fft {
-                LagMode::Fft
-            } else {
-                LagMode::MultiTau
-            };
-        }
-        self.resolved_mode = resolved_mode;
-
-        match self.resolved_mode {
-            LagMode::MultiTau => {
-                let buffer = MultiTauBuffer::new(
-                    self.n_groups,
-                    3,
-                    self.lag.multi_tau_m,
-                    self.lag.multi_tau_max_levels,
-                );
-                self.lags = buffer.out_lags().to_vec();
-                let cols = msd_cols(self.axis, self.type_counts.len());
-                self.acc = vec![0.0f64; self.lags.len() * cols];
-                self.multi_tau = Some(buffer);
-            }
-            LagMode::Ring => {
-                let max_lag = self.lag.ring_max_lag_capped(self.n_groups, 3, 4);
-                let buffer = RingBuffer::new(self.n_groups, 3, max_lag);
-                self.lags = (1..=max_lag).collect();
-                let cols = msd_cols(self.axis, self.type_counts.len());
-                self.acc = vec![0.0f64; self.lags.len() * cols];
-                self.ring = Some(buffer);
-            }
-            LagMode::Fft => {
-                let capacity = self
-                    .frames_hint
-                    .unwrap_or(0)
-                    .saturating_mul(self.n_groups)
-                    .saturating_mul(3);
-                self.series = Vec::with_capacity(capacity);
-            }
-            LagMode::Auto => {}
+        self.resolved_mode = resolve_lag_mode(
+            &self.lag,
+            AutoLagMode::FftIfFits {
+                frames_hint: self.frames_hint,
+                streams: self.n_groups,
+                width: 3,
+                scalar_bytes: 4,
+            },
+        );
+        let cols = msd_cols(self.axis, self.type_counts.len());
+        let runtime =
+            build_lag_runtime(&self.lag, self.resolved_mode, self.n_groups, 3, cols, None);
+        self.lags = runtime.lags;
+        self.acc = runtime.acc;
+        self.multi_tau = runtime.multi_tau;
+        self.ring = runtime.ring;
+        if self.resolved_mode == LagMode::Fft {
+            self.series = Vec::with_capacity(fft_capacity(self.frames_hint, self.n_groups, 3));
         }
 
         #[cfg(feature = "cuda")]
         {
             self.gpu = None;
-            if let Device::Cuda(ctx) = device {
+            if let Device::Cuda(ctx) = _device {
                 let (offsets, indices, max_len) =
                     groups_to_csr(&self.groups.as_ref().unwrap().groups);
                 let groups = ctx.groups(&offsets, &indices, max_len)?;
@@ -169,9 +142,6 @@ impl Plan for MsdPlan {
                 });
             }
         }
-        #[cfg(not(feature = "cuda"))]
-        let _ = device;
-
         let has_gpu = {
             #[cfg(feature = "cuda")]
             {
@@ -240,8 +210,6 @@ impl Plan for MsdPlan {
                 None
             }
         };
-        #[cfg(not(feature = "cuda"))]
-        let _com_gpu = ();
         let axis = self.axis;
         let cols = msd_cols(axis, self.type_counts.len());
         let type_ids = &self.type_ids;
@@ -274,22 +242,15 @@ impl Plan for MsdPlan {
                 }
             }
 
-            let time = if let Some(times) = &chunk.time_ps {
-                times[frame] as f64
-            } else {
-                (self.frame_index - 1) as f64
-            };
-            if let Some(last) = self.last_time {
-                let dt = time - last;
-                if let Some(dt0) = self.dt0 {
-                    if (dt - dt0).abs() > self.time_binning.eps_num.max(1.0e-6) {
-                        self.uniform_time = false;
-                    }
-                } else if dt > 0.0 {
-                    self.dt0 = Some(dt);
-                }
-            }
-            self.last_time = Some(time);
+            update_time_axis(
+                self.frame_index,
+                frame,
+                chunk.time_ps.as_deref(),
+                &mut self.dt0,
+                &mut self.uniform_time,
+                &mut self.last_time,
+                self.time_binning.eps_num.max(1.0e-6),
+            );
 
             if used_gpu {
                 #[cfg(feature = "cuda")]
@@ -302,64 +263,40 @@ impl Plan for MsdPlan {
                 }
             } else {
                 let frame_offset = frame * chunk.n_atoms;
-                if self.atom_io_fastpath && chunk.n_atoms == self.n_groups {
-                    for g in 0..self.n_groups {
-                        let p = chunk.coords[frame_offset + g];
-                        self.wrapped_curr[g][0] = (p[0] as f64) * self.length_scale;
-                        self.wrapped_curr[g][1] = (p[1] as f64) * self.length_scale;
-                        self.wrapped_curr[g][2] = (p[2] as f64) * self.length_scale;
-                    }
+                let groups = if self.atom_io_fastpath && chunk.n_atoms == self.n_groups {
+                    None
                 } else {
-                    for (g_idx, atoms) in groups_ref.unwrap().iter().enumerate() {
-                        let mut sum = [0.0f64; 3];
-                        for &atom_idx in atoms {
-                            let p = chunk.coords[frame_offset + atom_idx];
-                            let m = self.masses[atom_idx];
-                            sum[0] += (p[0] as f64) * m;
-                            sum[1] += (p[1] as f64) * m;
-                            sum[2] += (p[2] as f64) * m;
-                        }
-                        let scale = self.group_inv_mass.get(g_idx).copied().unwrap_or(0.0)
-                            * self.length_scale;
-                        self.wrapped_curr[g_idx][0] = sum[0] * scale;
-                        self.wrapped_curr[g_idx][1] = sum[1] * scale;
-                        self.wrapped_curr[g_idx][2] = sum[2] * scale;
-                    }
-                }
+                    groups_ref
+                };
+                fill_frame_group_positions(
+                    &chunk.coords,
+                    frame_offset,
+                    groups,
+                    &self.masses,
+                    &self.group_inv_mass,
+                    self.length_scale,
+                    &mut self.wrapped_curr,
+                );
             }
             add_elapsed_ns(&mut self.perf_read_ns, read_t0);
 
             let unwrap_t0 = self.profile_transport.then(std::time::Instant::now);
             if self.samples_seen == 0 {
-                self.last_wrapped.copy_from_slice(&self.wrapped_curr);
-                self.unwrap_prev.copy_from_slice(&self.wrapped_curr);
-                self.unwrap_curr.copy_from_slice(&self.wrapped_curr);
+                seed_unwrapped_groups(
+                    &self.wrapped_curr,
+                    &mut self.last_wrapped,
+                    &mut self.unwrap_prev,
+                    &mut self.unwrap_curr,
+                );
             } else {
-                let box_l = box_lengths(&chunk.box_[frame]).map(|b| {
-                    [
-                        b[0] * self.length_scale,
-                        b[1] * self.length_scale,
-                        b[2] * self.length_scale,
-                    ]
-                });
-                for g in 0..self.n_groups {
-                    let curr = self.wrapped_curr[g];
-                    let prev = self.last_wrapped[g];
-                    let mut diff = [curr[0] - prev[0], curr[1] - prev[1], curr[2] - prev[2]];
-                    if let Some(b) = box_l {
-                        for k in 0..3 {
-                            let l = b[k];
-                            if l > 0.0 {
-                                diff[k] -= (diff[k] / l).round() * l;
-                            }
-                        }
-                    }
-                    self.unwrap_curr[g][0] = self.unwrap_prev[g][0] + diff[0];
-                    self.unwrap_curr[g][1] = self.unwrap_prev[g][1] + diff[1];
-                    self.unwrap_curr[g][2] = self.unwrap_prev[g][2] + diff[2];
-                }
-                self.unwrap_prev.copy_from_slice(&self.unwrap_curr);
-                self.last_wrapped.copy_from_slice(&self.wrapped_curr);
+                unwrap_frame_groups(
+                    &self.wrapped_curr,
+                    &mut self.last_wrapped,
+                    &mut self.unwrap_prev,
+                    &mut self.unwrap_curr,
+                    &chunk.box_[frame],
+                    self.length_scale,
+                );
             }
             add_elapsed_ns(&mut self.perf_unwrap_ns, unwrap_t0);
 

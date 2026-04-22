@@ -8,9 +8,11 @@ use traj_core::frame::FrameChunk;
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
-use super::utils::*;
+use super::geometry_math::*;
 use crate::executor::{Device, Plan, PlanOutput};
 use crate::plans::ReferenceMode;
 
-include!("align_part1.rs");
-include!("align_part2.rs");
+#[path = "align/plan_shapes.rs"]
+mod shapes;
+
+pub use shapes::{AlignPlan, PrincipalAxesPlan, SuperposePlan};

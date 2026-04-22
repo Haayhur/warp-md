@@ -2,8 +2,8 @@ use std::fs;
 
 use warp_pack::io::{read_amber_inpcrd, read_prmtop_topology, write_minimal_prmtop, AmberTopology};
 
-mod common;
-use common::{base_config, base_structure, temp_path, write_text};
+mod test_support;
+use test_support::{base_config, base_structure, temp_path, write_text};
 
 #[test]
 fn read_amber_inpcrd_parses_coords() {

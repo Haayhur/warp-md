@@ -10,7 +10,7 @@ use crate::plans::analysis::secondary_structure::{
     distance, dot, helix_flags, jcaha_delta, longest_true_run, mul, norm, normalize, sub,
     BackboneModel,
 };
-use crate::plans::geometry::utils::kabsch_rotation;
+use crate::plans::geometry::geometry_math::kabsch_rotation;
 
 const IDEAL_RADIUS: f64 = 2.3;
 const IDEAL_RISE: f64 = 1.5;

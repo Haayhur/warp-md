@@ -3,7 +3,7 @@ use traj_core::frame::{Box3, FrameChunk};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
-use super::utils::*;
+use super::geometry_math::*;
 use crate::executor::{Device, Plan, PlanOutput, PlanRequirements};
 
 #[cfg(feature = "cuda")]

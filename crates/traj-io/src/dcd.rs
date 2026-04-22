@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::{Box3, FrameChunkBuilder};
 
+use crate::selection_support::validate_and_materialize_selection;
 use crate::TrajReader;
 
 #[derive(Debug, Clone, Copy)]
@@ -823,20 +824,6 @@ fn fill_selected_axes3_scaled(
         dst[out + 1] = unsafe { *y.get_unchecked(src) } * scale;
         dst[out + 2] = unsafe { *z.get_unchecked(src) } * scale;
     }
-}
-
-fn validate_and_materialize_selection(selection: &[u32], n_atoms: usize) -> TrajResult<Vec<usize>> {
-    let mut out = Vec::with_capacity(selection.len());
-    for &idx in selection {
-        let src = idx as usize;
-        if src >= n_atoms {
-            return Err(TrajError::Mismatch(format!(
-                "selection index {idx} out of bounds for trajectory with {n_atoms} atoms"
-            )));
-        }
-        out.push(src);
-    }
-    Ok(out)
 }
 
 fn detect_header_marker(file: &mut (impl Read + Seek)) -> TrajResult<(Endian, usize, u64)> {

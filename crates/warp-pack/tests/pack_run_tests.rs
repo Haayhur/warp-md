@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use warp_pack::config::AtomConstraintSpec;
 use warp_pack::constraints::{ConstraintMode, ConstraintSpec, ShapeSpec};
-mod common;
-use common::{base_config, base_structure, temp_path, write_text};
+mod test_support;
+use test_support::{base_config, base_structure, temp_path, write_text};
 
 fn water_model_path(model: &str) -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

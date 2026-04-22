@@ -1,6 +1,6 @@
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::FrameChunk;
-use traj_core::pbc_utils;
+use traj_core::pbc_math;
 use traj_core::system::System;
 
 use crate::executor::{Device, Plan, PlanOutput};
@@ -93,7 +93,7 @@ impl Plan for NmrIredPlan {
                 PbcMode::Orthorhombic => {
                     let mut boxes = Vec::with_capacity(chunk.n_frames);
                     for box_ in chunk.box_.iter().take(chunk.n_frames) {
-                        let (lx, ly, lz) = pbc_utils::box_lengths(*box_)?;
+                        let (lx, ly, lz) = pbc_math::box_lengths(*box_)?;
                         boxes.push(Float4 {
                             x: lx as f32 * self.length_scale as f32,
                             y: ly as f32 * self.length_scale as f32,
@@ -121,7 +121,7 @@ impl Plan for NmrIredPlan {
         }
         for frame in 0..chunk.n_frames {
             let (lx, ly, lz) = if matches!(self.pbc, PbcMode::Orthorhombic) {
-                pbc_utils::box_lengths(chunk.box_[frame])?
+                pbc_math::box_lengths(chunk.box_[frame])?
             } else {
                 (0.0, 0.0, 0.0)
             };
@@ -140,7 +140,7 @@ impl Plan for NmrIredPlan {
                 let mut dy = (pb[1] - pa[1]) as f64 * self.length_scale;
                 let mut dz = (pb[2] - pa[2]) as f64 * self.length_scale;
                 if matches!(self.pbc, PbcMode::Orthorhombic) {
-                    pbc_utils::apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
+                    pbc_math::apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
                 }
                 let norm = (dx * dx + dy * dy + dz * dz).sqrt();
                 if norm > 0.0 {

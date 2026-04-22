@@ -5,7 +5,7 @@ use traj_core::system::System;
 
 use crate::executor::{Device, Plan, PlanOutput};
 #[cfg(feature = "cuda")]
-use crate::plans::analysis::common::groups_to_csr;
+use crate::plans::analysis::group_runtime::groups_to_csr;
 use crate::plans::analysis::grouping::{GroupBy, GroupMap, GroupSpec};
 
 #[cfg(feature = "cuda")]

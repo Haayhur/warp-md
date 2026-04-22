@@ -1278,10 +1278,15 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "traj-core",
+ "warp-common",
  "warp-pack",
  "warp-structure",
  "warp-topology-graph",
 ]
+
+[[package]]
+name = "warp-common"
+version = "0.1.0"
 
 [[package]]
 name = "warp-pack"
@@ -1299,6 +1304,7 @@ dependencies = [
  "traj-core",
  "traj-gpu",
  "warp-build",
+ "warp-common",
  "warp-structure",
  "warp-topology-graph",
 ]

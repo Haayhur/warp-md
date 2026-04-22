@@ -1,13 +1,13 @@
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::{Box3, FrameChunk};
-use traj_core::pbc_utils::{apply_pbc, apply_pbc_triclinic, cell_and_inv_from_box};
+use traj_core::pbc_math::{apply_pbc, apply_pbc_triclinic, cell_and_inv_from_box};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use crate::executor::{Device, Plan, PlanOutput};
-use crate::plans::analysis::common::compute_group_com;
+use crate::plans::analysis::group_runtime::compute_group_com;
 #[cfg(feature = "cuda")]
-use crate::plans::analysis::common::groups_to_csr;
+use crate::plans::analysis::group_runtime::groups_to_csr;
 use crate::plans::analysis::grouping::{GroupBy, GroupMap, GroupSpec};
 
 #[cfg(feature = "cuda")]

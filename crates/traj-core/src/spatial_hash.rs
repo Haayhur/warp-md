@@ -1,6 +1,6 @@
 use fxhash::FxHashMap;
 
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 
 pub struct SpatialHash {
     cell: f32,

@@ -1,5 +1,6 @@
-use traj_core::error::{TrajError, TrajResult};
-use traj_core::frame::{Box3, FrameChunk};
+use traj_core::error::TrajResult;
+use traj_core::frame::FrameChunk;
+use traj_core::pbc_math::{apply_pbc, box_lengths};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
@@ -63,7 +64,7 @@ impl Plan for WaveletPlan {
             let mut dy = b[1] - a[1];
             let mut dz = b[2] - a[2];
             if matches!(self.pbc, PbcMode::Orthorhombic) {
-                let (lx, ly, lz) = box_lengths(chunk, frame)?;
+                let (lx, ly, lz) = box_lengths(chunk.box_[frame])?;
                 apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
             }
             let dist = (dx * dx + dy * dy + dz * dz).sqrt() as f32;
@@ -135,25 +136,4 @@ fn center_of_selection(
         return [0.0, 0.0, 0.0];
     }
     [sum[0] / mass_sum, sum[1] / mass_sum, sum[2] / mass_sum]
-}
-
-fn box_lengths(chunk: &FrameChunk, frame: usize) -> TrajResult<(f64, f64, f64)> {
-    match chunk.box_[frame] {
-        Box3::Orthorhombic { lx, ly, lz } => Ok((lx as f64, ly as f64, lz as f64)),
-        _ => Err(TrajError::Mismatch(
-            "orthorhombic box required for PBC".into(),
-        )),
-    }
-}
-
-fn apply_pbc(dx: &mut f64, dy: &mut f64, dz: &mut f64, lx: f64, ly: f64, lz: f64) {
-    if lx > 0.0 {
-        *dx -= (*dx / lx).round() * lx;
-    }
-    if ly > 0.0 {
-        *dy -= (*dy / ly).round() * ly;
-    }
-    if lz > 0.0 {
-        *dz -= (*dz / lz).round() * lz;
-    }
 }

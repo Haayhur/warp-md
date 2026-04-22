@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::{Box3, FrameChunkBuilder};
 
-use crate::TrajReader;
+use crate::{validate_and_materialize_selection, TrajReader};
 
 pub struct PdbTrajReader {
     frames: Vec<Vec<[f32; 3]>>,
@@ -76,14 +76,7 @@ impl TrajReader for PdbTrajReader {
         selection: &[u32],
         out: &mut FrameChunkBuilder,
     ) -> TrajResult<usize> {
-        for &idx in selection {
-            if (idx as usize) >= self.n_atoms {
-                return Err(TrajError::Mismatch(format!(
-                    "selection index {idx} out of bounds for trajectory with {} atoms",
-                    self.n_atoms
-                )));
-            }
-        }
+        let selection = validate_and_materialize_selection(selection, self.n_atoms)?;
 
         let max_frames = max_frames.max(1);
         out.reset(selection.len(), max_frames);
@@ -93,7 +86,7 @@ impl TrajReader for PdbTrajReader {
             let box_ = self.boxes.get(self.index).copied().unwrap_or(Box3::None);
             let coords_dst = out.start_frame(box_, None);
             for (i, &src_idx) in selection.iter().enumerate() {
-                let coord = coords_src[src_idx as usize];
+                let coord = coords_src[src_idx];
                 coords_dst[i] = [coord[0], coord[1], coord[2], 1.0];
             }
             self.index += 1;

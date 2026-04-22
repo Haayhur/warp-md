@@ -261,9 +261,9 @@ class PackConfigBuilder:
     def __init__(self):
         self._structures: List[Structure] = []
         self._box: Optional[Box] = None
-        self._seed: int = 0
-        self._max_attempts: int = 10000
-        self._min_distance: float = 2.0
+        self._seed: Optional[int] = None
+        self._max_attempts: Optional[int] = None
+        self._min_distance: Optional[float] = None
         self._pbc: bool = False
         self._output: Optional[OutputSpec] = None
         self._nloop: Optional[int] = None

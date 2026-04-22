@@ -5,6 +5,7 @@ Re-exports the core pack data structures for backwards compatibility.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,13 +14,30 @@ from .result import PackResult
 from .specs import AtomOverride, Box, Constraint, OutputSpec, Structure
 
 
+def _native_normalize_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        from .. import traj_py  # type: ignore
+    except Exception:
+        return None
+    if traj_py is None or not hasattr(traj_py, "pack_config_normalize_json"):
+        return None
+    try:
+        normalized = traj_py.pack_config_normalize_json(json.dumps(payload))
+    except Exception as exc:
+        raise ValidationError(str(exc)) from exc
+    if not isinstance(normalized, dict):
+        raise ValidationError("native pack config normalization returned non-dict payload")
+    return normalized
+
+
 @dataclass
 class PackConfig:
     structures: List[Structure]
     box: Box
-    seed: int = 0
-    max_attempts: int = 10000
-    min_distance: float = 2.0
+    # Rust owns normalized numeric defaults for pack execution.
+    seed: Optional[int] = None
+    max_attempts: Optional[int] = None
+    min_distance: Optional[float] = None
     filetype: Optional[str] = None
     add_box_sides: bool = True
     add_box_sides_fix: Optional[float] = None
@@ -27,7 +45,7 @@ class PackConfig:
     amber_ter_preserve: bool = False
     hexadecimal_indices: bool = False
     ignore_conect: bool = False
-    non_standard_conect: bool = True
+    non_standard_conect: bool = False
     pbc: bool = False
     pbc_min: Optional[Tuple[float, float, float]] = None
     pbc_max: Optional[Tuple[float, float, float]] = None
@@ -89,6 +107,8 @@ class PackConfig:
             out["hexadecimal_indices"] = True
         if self.ignore_conect:
             out["ignore_conect"] = True
+        # Legacy Python payloads omitted this field when the effective value was true.
+        # Keep false explicit so newer configs still round-trip under that older contract.
         if not self.non_standard_conect:
             out["non_standard_conect"] = False
         if self.pbc_min is not None:
@@ -167,9 +187,9 @@ class PackConfig:
         return cls(
             structures=structures,
             box=box,
-            seed=data.get("seed", 0),
-            max_attempts=data.get("max_attempts", 10000),
-            min_distance=data.get("min_distance", 2.0),
+            seed=data.get("seed"),
+            max_attempts=data.get("max_attempts"),
+            min_distance=data.get("min_distance"),
             filetype=data.get("filetype"),
             add_box_sides=data.get("add_box_sides", True),
             add_box_sides_fix=data.get("add_box_sides_fix"),
@@ -214,10 +234,20 @@ class PackConfig:
             output=output,
         )
 
+    def normalized(self) -> "PackConfig":
+        payload = self.to_dict()
+        native_payload = _native_normalize_payload(payload)
+        if native_payload is not None:
+            return PackConfig.from_dict(native_payload)
+        return PackConfig.from_dict(payload)
+
     def validate(self) -> None:
+        if _native_normalize_payload(self.to_dict()) is not None:
+            return
+
         if not self.structures:
             raise ValidationError("PackConfig requires at least one structure")
-        if self.min_distance <= 0:
+        if self.min_distance is not None and self.min_distance <= 0:
             raise ValidationError("min_distance must be positive")
         if self.max_attempts is not None and self.max_attempts < 1:
             raise ValidationError("max_attempts must be >= 1")

@@ -4,7 +4,7 @@ use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use crate::executor::{Device, Plan, PlanOutput, PlanRequirements};
-use crate::plans::polymer::common::{histogram_centers, PolymerChains};
+use crate::plans::polymer::chain_layout::{histogram_centers, PolymerChains};
 
 #[cfg(feature = "cuda")]
 use traj_gpu::{convert_coords, GpuPolymer};
@@ -50,7 +50,7 @@ impl Plan for BondLengthDistributionPlan {
         PlanRequirements::new(false, false)
     }
 
-    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
         self.use_selected_input = true;
         let chains = PolymerChains::from_selection(system, &self.selection)?;
         if chains.bond_pairs.is_empty() {
@@ -64,7 +64,7 @@ impl Plan for BondLengthDistributionPlan {
         let mut gpu: Option<GpuPolymer> = None;
         #[cfg(feature = "cuda")]
         {
-            if let Device::Cuda(ctx) = device {
+            if let Device::Cuda(ctx) = _device {
                 self.use_selected_input = false;
                 gpu = Some(ctx.polymer_data(
                     &chains.offsets,

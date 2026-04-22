@@ -408,8 +408,6 @@ impl Plan for DockingAnalysisPlan {
                         salt2,
                         halogen2,
                         metal2,
-                        cation_pi2,
-                        pi_pi2,
                         hbond_score.is_some(),
                     );
                     if code == 0 {
@@ -1166,8 +1164,6 @@ fn classify_interaction(
     salt2: f64,
     halogen2: f64,
     metal2: f64,
-    cation_pi2: f64,
-    pi_pi2: f64,
     hbond_ok: bool,
 ) -> u8 {
     let heavy_atom_pair = !(receptor.hydrogen || ligand.hydrogen);
@@ -1181,6 +1177,9 @@ fn classify_interaction(
     }
     if is_halogen_pair(receptor, ligand) && r2 <= halogen2 {
         return INTERACTION_HALOGEN_BOND;
+    }
+    if is_salt_pair(receptor, ligand) && r2 <= salt2 {
+        return 0;
     }
     if hbond_ok && r2 <= hbond2 {
         return INTERACTION_HYDROGEN_BOND;
@@ -1208,10 +1207,6 @@ fn is_salt_pair(receptor: AtomFlags, ligand: AtomFlags) -> bool {
 
 fn is_halogen_pair(receptor: AtomFlags, ligand: AtomFlags) -> bool {
     (receptor.halogen && ligand.acceptor) || (ligand.halogen && receptor.acceptor)
-}
-
-fn is_cation_pi_pair(receptor: AtomFlags, ligand: AtomFlags) -> bool {
-    (receptor.positive && ligand.aromatic) || (ligand.positive && receptor.aromatic)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -16,6 +16,7 @@ sha2 = "0.10.8"
 thiserror = "1.0.58"
 traj-core = { path = "../traj-core" }
 traj-gpu = { path = "../traj-gpu", optional = true }
+warp-common = { path = "../warp-common" }
 warp-structure = { path = "../warp-structure" }
 warp-topology-graph = { path = "../warp-topology-graph" }
 

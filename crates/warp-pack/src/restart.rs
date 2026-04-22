@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
 use crate::error::{PackError, PackResult};
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RestartEntry {

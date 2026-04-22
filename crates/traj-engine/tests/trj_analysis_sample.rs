@@ -1,10 +1,12 @@
 use std::path::Path;
 
 use traj_core::error::TrajResult;
-use traj_engine::plans::analysis::msd::{DtDecimation, FrameDecimation};
 #[cfg(feature = "cuda")]
 use traj_engine::{Device, GroupSpec, IonPairCorrelationPlan, LagMode};
-use traj_engine::{Executor, GroupBy, MsdPlan, PbcMode, PlanOutput, StructureFactorPlan};
+use traj_engine::{
+    DtDecimation, Executor, FrameDecimation, GroupBy, MsdPlan, PbcMode, PlanOutput,
+    StructureFactorPlan,
+};
 use traj_io::gro::GroReader;
 use traj_io::xtc::XtcReader;
 use traj_io::TopologyReader;

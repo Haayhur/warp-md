@@ -2,8 +2,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-mod common;
-use common::{temp_path, write_text};
+mod test_support;
+use test_support::{temp_path, write_text};
 
 use serde_json::{json, Value};
 

@@ -105,7 +105,7 @@ def test_spol_detects_triplets_charges_and_forwards(monkeypatch):
                 "dipole_unit": "debye",
             }
 
-    monkeypatch.setattr(spol_mod, "_SpolPlan", _DummyPlan, raising=True)
+    monkeypatch.setattr(spol_mod, "_SolventPolarizationPlan", _DummyPlan, raising=True)
     out = spol_mod.spol(
         _DummyTraj(),
         _DummySystem(),
@@ -143,8 +143,8 @@ def test_spol_detects_triplets_charges_and_forwards(monkeypatch):
 
 
 def test_spol_raises_when_binding_missing(monkeypatch):
-    monkeypatch.setattr(spol_mod, "_SpolPlan", None, raising=True)
-    with pytest.raises(RuntimeError, match="PySpolPlan binding unavailable"):
+    monkeypatch.setattr(spol_mod, "_SolventPolarizationPlan", None, raising=True)
+    with pytest.raises(RuntimeError, match="PySolventPolarizationPlan binding unavailable"):
         spol_mod.spol(_DummyTraj(), _DummySystem(), solute_selection="resid 1")
 
 
@@ -181,7 +181,7 @@ def test_spol_supports_explicit_molecules(monkeypatch):
                 "dipole_unit": "debye",
             }
 
-    monkeypatch.setattr(spol_mod, "_SpolPlan", _DummyPlan, raising=True)
+    monkeypatch.setattr(spol_mod, "_SolventPolarizationPlan", _DummyPlan, raising=True)
     spol_mod.spol(
         _DummyTraj(),
         _DummySystem(),
@@ -252,7 +252,7 @@ def test_spol_prefers_mol_id_whole_molecule_groups(monkeypatch):
                 "dipole_unit": "debye",
             }
 
-    monkeypatch.setattr(spol_mod, "_SpolPlan", _DummyPlan, raising=True)
+    monkeypatch.setattr(spol_mod, "_SolventPolarizationPlan", _DummyPlan, raising=True)
     spol_mod.spol(
         _DummyTraj(),
         _MolIdSystem(),

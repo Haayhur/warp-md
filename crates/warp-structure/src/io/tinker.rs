@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use crate::error::{StructureError as PackError, StructureResult as PackResult};
-use crate::geom::Vec3;
+use crate::geometry::Vec3;
 use crate::io::MoleculeData;
 use crate::pack::{AtomRecord, AtomRecordKind};
 

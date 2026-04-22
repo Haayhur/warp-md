@@ -1,5 +1,6 @@
 use crate::correlators::{LagMode, LagSettings};
 use crate::plans::analysis::grouping::GroupBy;
+use crate::plans::analysis::time_correlation::impl_lag_builder_methods;
 use traj_core::selection::Selection;
 
 use super::IonPairCorrelationPlan;
@@ -24,6 +25,7 @@ impl IonPairCorrelationPlan {
             n_groups: 0,
             n_atoms: 0,
             masses: Vec::new(),
+            group_inv_mass: Vec::new(),
             cat_indices: Vec::new(),
             ani_indices: Vec::new(),
             dt0: None,
@@ -66,29 +68,6 @@ impl IonPairCorrelationPlan {
         self.length_scale = scale;
         self
     }
-
-    pub fn with_lag_mode(mut self, mode: LagMode) -> Self {
-        self.lag = self.lag.with_mode(mode);
-        self
-    }
-
-    pub fn with_max_lag(mut self, max_lag: usize) -> Self {
-        self.lag = self.lag.with_max_lag(max_lag);
-        self
-    }
-
-    pub fn with_memory_budget_bytes(mut self, budget: usize) -> Self {
-        self.lag = self.lag.with_memory_budget_bytes(budget);
-        self
-    }
-
-    pub fn with_multi_tau_m(mut self, m: usize) -> Self {
-        self.lag = self.lag.with_multi_tau_m(m);
-        self
-    }
-
-    pub fn with_multi_tau_levels(mut self, levels: usize) -> Self {
-        self.lag = self.lag.with_multi_tau_levels(levels);
-        self
-    }
 }
+
+impl_lag_builder_methods!(IonPairCorrelationPlan);

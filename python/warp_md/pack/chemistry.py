@@ -518,8 +518,7 @@ def solution_pack_config(
         )
     output = None
     if output_path is not None:
-        suffix = Path(output_path).suffix.lower().lstrip(".") or "pdb"
-        output = OutputSpec(output_path, suffix)
+        output = OutputSpec(output_path)
     return PackConfig(
         structures=structures,
         box=Box(resolved_box, shape="orthorhombic"),
