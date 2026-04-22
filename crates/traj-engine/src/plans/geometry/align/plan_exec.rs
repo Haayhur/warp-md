@@ -1,11 +1,5 @@
 use super::*;
 
-#[cfg(feature = "cuda")]
-struct SuperposeGpuState {
-    selection: GpuSelection,
-    reference: GpuReference,
-}
-
 impl AlignPlan {
     pub fn new(
         selection: Selection,

@@ -227,5 +227,11 @@ pub struct SuperposePlan {
     gpu: Option<SuperposeGpuState>,
 }
 
+#[cfg(feature = "cuda")]
+struct SuperposeGpuState {
+    selection: GpuSelection,
+    reference: GpuReference,
+}
+
 #[path = "plan_exec.rs"]
 mod plan_exec;
