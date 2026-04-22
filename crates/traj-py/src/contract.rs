@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::io::load_system_auto;
 use schemars::schema_for;
 
 const WARP_MD_AGENT_SCHEMA_VERSION: &str = "warp-md.agent.v1";
@@ -1295,33 +1296,7 @@ fn warp_md_lint_result(
 }
 
 fn warp_md_load_system_from_path(path: &str) -> Result<System, String> {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
-    match ext.as_str() {
-        "pdb" => {
-            let mut reader = PdbReader::new(path);
-            match reader.read_system() {
-                Ok(system) => Ok(system),
-                Err(err) => {
-                    let message = err.to_string();
-                    if message.to_ascii_lowercase().contains("invalid resid") {
-                        let reader = PdbReader::new(path);
-                        reader.read_system_permissive().map_err(|e| e.to_string())
-                    } else {
-                        Err(message)
-                    }
-                }
-            }
-        }
-        "gro" => {
-            let mut reader = GroReader::new(path);
-            reader.read_system().map_err(|e| e.to_string())
-        }
-        _ => Err("system.format must be pdb or gro".into()),
-    }
+    load_system_auto(path, None).map_err(|err| err.to_string())
 }
 
 fn warp_md_lint_selection_value(

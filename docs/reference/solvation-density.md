@@ -246,7 +246,7 @@ from warp_md import (
     SurfPlan, DensityPlan
 )
 
-system = System.from_pdb("solvated_protein.pdb")
+system = System.from_file("solvated_protein.pdb")
 traj = Trajectory.open_xtc("solvated_protein.xtc", system)
 
 protein = system.select("protein")

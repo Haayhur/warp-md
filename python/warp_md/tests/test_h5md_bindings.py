@@ -25,7 +25,7 @@ def _atom_table(n_atoms: int):
 
 
 def test_open_h5md_matches_gromacs_xtc_fixture():
-    system = wmd.System.from_gro(str(_fixture("spc2.gro")))
+    system = wmd.System.from_file(str(_fixture("spc2.gro")))
     h5md = wmd.Trajectory.open_h5md(str(_fixture("spc2-traj.h5md")), system)
     xtc = wmd.Trajectory.open_xtc(str(_fixture("spc2-traj.xtc")), system)
 

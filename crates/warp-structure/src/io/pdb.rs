@@ -7,15 +7,13 @@ use crate::error::{StructureError as PackError, StructureResult as PackResult};
 use crate::geometry::Vec3;
 use crate::io::MoleculeData;
 use crate::pack::{AtomRecord, AtomRecordKind, PackOutput, PdbAtomMetadata};
-use traj_core::pdb_gro::{parse_pdb_reader, PdbParseOptions, PdbRecordKind};
+use traj_core::pdb_gro::{parse_pdb_reader, PdbParseOptions, PdbParseResult, PdbRecordKind};
 
 pub fn read_pdb(
     path: &Path,
     ignore_conect: bool,
     non_standard_conect: bool,
 ) -> PackResult<MoleculeData> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
     let options = PdbParseOptions {
         include_conect: !ignore_conect,
         non_standard_conect,
@@ -23,7 +21,20 @@ pub fn read_pdb(
         strict: false,
         only_first_model: false,
     };
-    let parsed = parse_pdb_reader(reader, &options).map_err(|e| PackError::Parse(e.to_string()))?;
+    read_pdb_with_options(path, &options)
+}
+
+pub(crate) fn read_pdb_with_options(
+    path: &Path,
+    options: &PdbParseOptions,
+) -> PackResult<MoleculeData> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let parsed = parse_pdb_reader(reader, options).map_err(|e| PackError::Parse(e.to_string()))?;
+    molecule_from_parsed(parsed)
+}
+
+pub(crate) fn molecule_from_parsed(parsed: PdbParseResult) -> PackResult<MoleculeData> {
     let atoms = parsed
         .atoms
         .into_iter()

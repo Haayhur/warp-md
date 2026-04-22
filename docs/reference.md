@@ -19,7 +19,7 @@ All units are Angstrom unless noted.
 ### System
 
 - Holds topology + optional reference coordinates
-- Python: `System.from_pdb(path)` or `System.from_gro(path)`
+- Python: `System.from_file(path)`
 - Methods:
   - `system.select(expr)` returns a `Selection`
   - `system.n_atoms()` returns atom count

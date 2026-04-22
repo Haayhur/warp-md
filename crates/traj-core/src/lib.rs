@@ -34,10 +34,6 @@ pub use pbc_math::{
     apply_pbc, apply_pbc_triclinic, box_diagonal_extents, box_lengths, cell_and_inv_from_box,
     minimum_image_delta, minimum_image_displacement, minimum_image_vector, orthorhombic_lengths,
 };
-pub use pdb_gro::{
-    parse_gro_reader, parse_pdb_reader, GroAtom, GroParseResult, PdbAtom, PdbParseOptions,
-    PdbParseResult, PdbRecordKind,
-};
 pub use rng::{gaussian_pair, next_f64, next_u64};
 pub use selection::Selection;
 pub use selection_expression::{

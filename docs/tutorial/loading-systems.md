@@ -18,7 +18,7 @@ A `System` is your molecular cast of characters — atom names, residues, chains
 ```python
 from warp_md import System
 
-system = System.from_pdb("example.pdb")
+system = System.from_file("example.pdb")
 print(f"Loaded {system.n_atoms()} atoms — let's goooo")
 ```
 
@@ -31,7 +31,7 @@ PDB files are in **Angstrom**. No conversion needed.
 ```python
 from warp_md import System
 
-system = System.from_pdbqt("docking_poses.pdbqt")
+system = System.from_file("docking_poses.pdbqt")
 print(f"Loaded {system.n_atoms()} atoms")
 ```
 
@@ -44,7 +44,7 @@ PDBQT is treated like PDB with extra columns (charges/atom types). warp-md ignor
 ```python
 from warp_md import System
 
-system = System.from_gro("example.gro")
+system = System.from_file("example.gro")
 print(f"Loaded {system.n_atoms()} atoms")
 ```
 
@@ -130,7 +130,7 @@ Your trajectory and topology are having a disagreement about how many atoms exis
 from warp_md import System, Trajectory
 
 # 1. Load topology
-system = System.from_pdb("protein_solvated.pdb")
+system = System.from_file("protein_solvated.pdb")
 print(f"System: {system.n_atoms()} atoms")
 
 # 2. Open trajectory

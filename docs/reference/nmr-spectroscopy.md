@@ -209,7 +209,7 @@ ti_result = ti(traj, system)
 from warp_md import System, Trajectory, NmrIredPlan
 from warp_md.analysis import nh_order_parameters, jcoupling
 
-system = System.from_pdb("protein.pdb")
+system = System.from_file("protein.pdb")
 traj = Trajectory.open_xtc("protein.xtc", system)
 backbone = system.select("backbone")
 

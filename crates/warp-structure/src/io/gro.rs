@@ -12,9 +12,13 @@ use traj_core::pdb_gro::parse_gro_reader;
 const GRO_TO_INTERNAL_LENGTH_SCALE: f32 = 10.0;
 
 pub fn read_gro(path: &Path) -> PackResult<MoleculeData> {
+    read_gro_with_strict(path, false)
+}
+
+pub(crate) fn read_gro_with_strict(path: &Path, strict: bool) -> PackResult<MoleculeData> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let parsed = parse_gro_reader(reader, false).map_err(|e| PackError::Parse(e.to_string()))?;
+    let parsed = parse_gro_reader(reader, strict).map_err(|e| PackError::Parse(e.to_string()))?;
     let atoms = parsed
         .atoms
         .into_iter()

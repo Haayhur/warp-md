@@ -46,16 +46,14 @@ use traj_engine::{
 };
 use traj_io::cpt::{CptReader, CptWriter};
 use traj_io::dcd::{DcdReader, DcdWriter};
-use traj_io::gro::GroReader;
 use traj_io::gro_traj::{GroTrajReader, GroTrajWriter};
 use traj_io::gromos96_traj::{Gromos96TrajReader, Gromos96TrajWriter};
 use traj_io::h5md::{H5mdReader, H5mdWriter};
-use traj_io::pdb::{PdbReader, PdbqtReader};
 use traj_io::pdb_traj::PdbTrajReader;
 use traj_io::tng::{TngReader, TngWriter};
 use traj_io::trr::{TrrReader, TrrWriter};
 use traj_io::xtc::{XtcReader, XtcWriter};
-use traj_io::{TopologyReader, TrajReader};
+use traj_io::TrajReader;
 
 mod analysis;
 mod contract;

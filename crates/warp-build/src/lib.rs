@@ -1,4 +1,5 @@
 pub mod contract;
+mod minimize;
 mod polymer;
 
 pub use contract::{

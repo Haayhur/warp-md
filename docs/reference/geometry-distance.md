@@ -314,7 +314,7 @@ from warp_md import (
     MindistPlan, NativeContactsPlan
 )
 
-system = System.from_pdb("complex.pdb")
+system = System.from_file("complex.pdb")
 traj = Trajectory.open_xtc("complex.xtc", system)
 
 protein = system.select("protein")

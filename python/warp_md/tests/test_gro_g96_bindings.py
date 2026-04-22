@@ -25,7 +25,7 @@ def _atom_table(n_atoms: int):
 
 
 def test_open_gro_matches_gromacs_xtc_fixture():
-    system = wmd.System.from_gro(str(_fixture("spc2.gro")))
+    system = wmd.System.from_file(str(_fixture("spc2.gro")))
     gro = wmd.Trajectory.open_gro(str(_fixture("spc2-traj.gro")), system)
     xtc = wmd.Trajectory.open_xtc(str(_fixture("spc2-traj.xtc")), system)
 
@@ -44,7 +44,7 @@ def test_open_gro_matches_gromacs_xtc_fixture():
 
 
 def test_open_g96_matches_gromacs_xtc_fixture():
-    system = wmd.System.from_gro(str(_fixture("spc2.gro")))
+    system = wmd.System.from_file(str(_fixture("spc2.gro")))
     g96 = wmd.Trajectory.open_g96(str(_fixture("spc2-traj.g96")), system)
     xtc = wmd.Trajectory.open_xtc(str(_fixture("spc2-traj.xtc")), system)
 

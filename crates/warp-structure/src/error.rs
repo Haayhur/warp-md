@@ -25,3 +25,13 @@ impl From<TrajError> for StructureError {
         }
     }
 }
+
+impl From<StructureError> for TrajError {
+    fn from(err: StructureError) -> Self {
+        match err {
+            StructureError::Io(source) => Self::Io(source),
+            StructureError::Parse(message) => Self::Parse(message),
+            StructureError::Invalid(message) => Self::Invalid(message),
+        }
+    }
+}

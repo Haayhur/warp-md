@@ -57,7 +57,7 @@ warp-md list-plans
 ```python
 from warp_md import System, Trajectory, RgPlan
 
-system = System.from_pdb("topology.pdb")
+system = System.from_file("topology.pdb")
 selection = system.select("protein")
 traj = Trajectory.open_xtc("trajectory.xtc", system)
 rg = RgPlan(selection).run(traj, system, device="auto")

@@ -77,7 +77,7 @@ Make sure you have:
 
 | Concept | How to Use It |
 |---------|---------------|
-| System loading | `System.from_pdb()`, `System.from_gro()` |
+| System loading | `System.from_file()` |
 | Selections | `system.select("backbone")` |
 | Trajectories | `Trajectory.open_dcd()`, `Trajectory.open_xtc()` |
 | Analyses | `RgPlan`, `RmsdPlan`, `MsdPlan`, `RdfPlan`, ... |

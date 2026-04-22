@@ -162,14 +162,20 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
     let mut bond_type_indices = Vec::new();
     let mut bonds_inc_hydrogen_count = 0usize;
     let mut bonds_without_hydrogen_count = 0usize;
+    let mut bonds_inc_hydrogen_raw = Vec::new();
+    let mut bonds_without_hydrogen_raw = Vec::new();
     let mut bond_force_constants = Vec::new();
     let mut bond_equil_values = Vec::new();
     let mut angles = Vec::new();
     let mut angle_type_indices = Vec::new();
+    let mut angles_inc_hydrogen_raw = Vec::new();
+    let mut angles_without_hydrogen_raw = Vec::new();
     let mut angle_force_constants = Vec::new();
     let mut angle_equil_values = Vec::new();
     let mut dihedrals = Vec::new();
     let mut dihedral_type_indices = Vec::new();
+    let mut dihedrals_inc_hydrogen_raw = Vec::new();
+    let mut dihedrals_without_hydrogen_raw = Vec::new();
     let mut dihedral_force_constants = Vec::new();
     let mut dihedral_periodicities = Vec::new();
     let mut dihedral_phases = Vec::new();
@@ -299,27 +305,12 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
                 }
             }
             "BONDS_INC_HYDROGEN" | "BONDS_WITHOUT_HYDROGEN" => {
-                let include_hydrogen = matches!(flag, "BONDS_INC_HYDROGEN");
-                let values = tokens
-                    .filter_map(|tok| tok.parse::<usize>().ok())
-                    .collect::<Vec<_>>();
-                for chunk in values.chunks(3) {
-                    if chunk.len() < 2 {
-                        continue;
-                    }
-                    let a = chunk[0] / 3;
-                    let b = chunk[1] / 3;
-                    let (i, j) = if a <= b { (a, b) } else { (b, a) };
-                    if i != j {
-                        bonds.push((i, j));
-                        bond_type_indices.push(chunk.get(2).copied().unwrap_or(1));
-                        if include_hydrogen {
-                            bonds_inc_hydrogen_count += 1;
-                        } else {
-                            bonds_without_hydrogen_count += 1;
-                        }
-                    }
-                }
+                let target = if matches!(flag, "BONDS_INC_HYDROGEN") {
+                    &mut bonds_inc_hydrogen_raw
+                } else {
+                    &mut bonds_without_hydrogen_raw
+                };
+                target.extend(tokens.filter_map(|tok| tok.parse::<usize>().ok()));
             }
             "ANGLE_FORCE_CONSTANT" => {
                 for tok in tokens {
@@ -336,16 +327,12 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
                 }
             }
             "ANGLES_INC_HYDROGEN" | "ANGLES_WITHOUT_HYDROGEN" => {
-                let values = tokens
-                    .filter_map(|tok| tok.parse::<usize>().ok())
-                    .collect::<Vec<_>>();
-                for chunk in values.chunks(4) {
-                    if chunk.len() < 3 {
-                        continue;
-                    }
-                    angles.push([chunk[0] / 3, chunk[1] / 3, chunk[2] / 3]);
-                    angle_type_indices.push(chunk.get(3).copied().unwrap_or(1));
-                }
+                let target = if matches!(flag, "ANGLES_INC_HYDROGEN") {
+                    &mut angles_inc_hydrogen_raw
+                } else {
+                    &mut angles_without_hydrogen_raw
+                };
+                target.extend(tokens.filter_map(|tok| tok.parse::<usize>().ok()));
             }
             "DIHEDRAL_FORCE_CONSTANT" => {
                 for tok in tokens {
@@ -390,27 +377,12 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
                 }
             }
             "DIHEDRALS_INC_HYDROGEN" | "DIHEDRALS_WITHOUT_HYDROGEN" => {
-                let values = tokens
-                    .filter_map(|tok| tok.parse::<isize>().ok())
-                    .collect::<Vec<_>>();
-                for chunk in values.chunks(5) {
-                    if chunk.len() < 4 {
-                        continue;
-                    }
-                    let entry = [
-                        chunk[0].unsigned_abs() / 3,
-                        chunk[1].unsigned_abs() / 3,
-                        chunk[2].unsigned_abs() / 3,
-                        chunk[3].unsigned_abs() / 3,
-                    ];
-                    if chunk[2] < 0 || chunk[3] < 0 {
-                        impropers.push(entry);
-                        improper_type_indices.push(chunk.get(4).copied().unwrap_or(1) as usize);
-                    } else {
-                        dihedrals.push(entry);
-                        dihedral_type_indices.push(chunk.get(4).copied().unwrap_or(1) as usize);
-                    }
-                }
+                let target = if matches!(flag, "DIHEDRALS_INC_HYDROGEN") {
+                    &mut dihedrals_inc_hydrogen_raw
+                } else {
+                    &mut dihedrals_without_hydrogen_raw
+                };
+                target.extend(tokens.filter_map(|tok| tok.parse::<isize>().ok()));
             }
             "NUMBER_EXCLUDED_ATOMS" => {
                 for tok in tokens {
@@ -598,6 +570,78 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
     if screen.len() < n_atoms {
         screen.resize(n_atoms, 0.8);
     }
+
+    let mut decode_bonds = |values: &[usize], include_hydrogen: bool| -> PackResult<()> {
+        if values.len() % 3 != 0 {
+            return Err(PackError::Parse(format!(
+                "amber prmtop {} entry count is not divisible by 3",
+                if include_hydrogen {
+                    "BONDS_INC_HYDROGEN"
+                } else {
+                    "BONDS_WITHOUT_HYDROGEN"
+                }
+            )));
+        }
+        for chunk in values.chunks_exact(3) {
+            let a = chunk[0] / 3;
+            let b = chunk[1] / 3;
+            let (i, j) = if a <= b { (a, b) } else { (b, a) };
+            if i != j {
+                bonds.push((i, j));
+                bond_type_indices.push(chunk[2]);
+                if include_hydrogen {
+                    bonds_inc_hydrogen_count += 1;
+                } else {
+                    bonds_without_hydrogen_count += 1;
+                }
+            }
+        }
+        Ok(())
+    };
+    decode_bonds(&bonds_inc_hydrogen_raw, true)?;
+    decode_bonds(&bonds_without_hydrogen_raw, false)?;
+
+    let mut decode_angles = |values: &[usize]| -> PackResult<()> {
+        if values.len() % 4 != 0 {
+            return Err(PackError::Parse(
+                "amber prmtop angle entry count is not divisible by 4".into(),
+            ));
+        }
+        for chunk in values.chunks_exact(4) {
+            angles.push([chunk[0] / 3, chunk[1] / 3, chunk[2] / 3]);
+            angle_type_indices.push(chunk[3]);
+        }
+        Ok(())
+    };
+    decode_angles(&angles_inc_hydrogen_raw)?;
+    decode_angles(&angles_without_hydrogen_raw)?;
+
+    let mut decode_dihedrals = |values: &[isize]| -> PackResult<()> {
+        if values.len() % 5 != 0 {
+            return Err(PackError::Parse(
+                "amber prmtop dihedral entry count is not divisible by 5".into(),
+            ));
+        }
+        for chunk in values.chunks_exact(5) {
+            let entry = [
+                chunk[0].unsigned_abs() / 3,
+                chunk[1].unsigned_abs() / 3,
+                chunk[2].unsigned_abs() / 3,
+                chunk[3].unsigned_abs() / 3,
+            ];
+            if chunk[2] < 0 || chunk[3] < 0 {
+                impropers.push(entry);
+                improper_type_indices.push(chunk[4] as usize);
+            } else {
+                dihedrals.push(entry);
+                dihedral_type_indices.push(chunk[4] as usize);
+            }
+        }
+        Ok(())
+    };
+    decode_dihedrals(&dihedrals_inc_hydrogen_raw)?;
+    decode_dihedrals(&dihedrals_without_hydrogen_raw)?;
+
     let check_term_alignment = |name: &str, terms_len: usize, type_len: usize| -> PackResult<()> {
         if terms_len != type_len {
             return Err(PackError::Parse(format!(
@@ -1382,4 +1426,103 @@ pub fn write_minimal_prmtop(path: &str, topology: &AmberTopology) -> PackResult<
 
 fn truncate_label(value: &str, width: usize) -> String {
     value.chars().take(width).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(label: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!(
+            "warp_structure_amber_test_{}_{}_{}.prmtop",
+            label,
+            std::process::id(),
+            nanos
+        ));
+        path
+    }
+
+    #[test]
+    fn minimal_prmtop_round_trip_preserves_hydrogen_bond_sections() {
+        let path = temp_path("hydrogen_roundtrip");
+        let topology = AmberTopology {
+            atom_names: vec!["C1".into(), "H1".into(), "C2".into(), "H2".into()],
+            residue_labels: vec!["MOL".into()],
+            residue_pointers: vec![1],
+            atomic_numbers: vec![6, 1, 6, 1],
+            masses: vec![12.011, 1.008, 12.011, 1.008],
+            charges: vec![0.0; 4],
+            atom_type_indices: vec![1, 2, 1, 2],
+            amber_atom_types: vec!["CT".into(), "HC".into(), "CT".into(), "HC".into()],
+            radii: vec![1.7, 1.2, 1.7, 1.2],
+            screen: vec![0.8; 4],
+            bonds: vec![(0, 1), (0, 2), (2, 3)],
+            bond_type_indices: vec![1, 1, 1],
+            bond_force_constants: vec![310.0],
+            bond_equil_values: vec![1.09],
+            angles: Vec::new(),
+            angle_type_indices: Vec::new(),
+            angle_force_constants: Vec::new(),
+            angle_equil_values: Vec::new(),
+            dihedrals: Vec::new(),
+            dihedral_type_indices: Vec::new(),
+            dihedral_force_constants: Vec::new(),
+            dihedral_periodicities: Vec::new(),
+            dihedral_phases: Vec::new(),
+            scee_scale_factors: Vec::new(),
+            scnb_scale_factors: Vec::new(),
+            solty: Vec::new(),
+            impropers: Vec::new(),
+            improper_type_indices: Vec::new(),
+            excluded_atoms: Vec::new(),
+            nonbonded_parm_index: Vec::new(),
+            lennard_jones_acoef: Vec::new(),
+            lennard_jones_bcoef: Vec::new(),
+            lennard_jones_14_acoef: Vec::new(),
+            lennard_jones_14_bcoef: Vec::new(),
+            hbond_acoef: Vec::new(),
+            hbond_bcoef: Vec::new(),
+            hbcut: Vec::new(),
+            tree_chain_classification: vec!["M".into(); 4],
+            join_array: vec![0; 4],
+            irotat: vec![0; 4],
+            solvent_pointers: Vec::new(),
+            atoms_per_molecule: vec![4],
+            box_dimensions: Vec::new(),
+            radius_set: Some("modified Bondi radii".into()),
+            ipol: 0,
+        };
+
+        write_minimal_prmtop(path.to_string_lossy().as_ref(), &topology).expect("write prmtop");
+        let parsed = read_prmtop_topology(&path).expect("read prmtop");
+        let mut bonds = parsed.bonds.clone();
+        bonds.sort_unstable();
+
+        assert_eq!(parsed.atom_names, topology.atom_names);
+        assert_eq!(parsed.residue_labels, topology.residue_labels);
+        assert_eq!(parsed.residue_pointers, topology.residue_pointers);
+        assert_eq!(parsed.atomic_numbers, topology.atomic_numbers);
+        assert_eq!(bonds, topology.bonds);
+        assert_eq!(parsed.angles, vec![[1, 0, 2], [0, 2, 3]]);
+        assert_eq!(parsed.dihedrals, vec![[1, 0, 2, 3]]);
+        assert_eq!(
+            parsed
+                .bonds
+                .iter()
+                .filter(|(a, b)| parsed.atomic_numbers[*a] == 1 || parsed.atomic_numbers[*b] == 1)
+                .count(),
+            2
+        );
+        assert_eq!(parsed.bond_force_constants, vec![310.0]);
+        assert_eq!(parsed.bond_equil_values, vec![1.09]);
+
+        fs::remove_file(path).ok();
+    }
 }

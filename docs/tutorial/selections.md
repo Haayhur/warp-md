@@ -16,7 +16,7 @@ Selections are like SQL for molecules. Match atom properties with intuitive pred
 ```python
 from warp_md import System
 
-system = System.from_pdb("protein.pdb")
+system = System.from_file("protein.pdb")
 
 # Select by atom name
 ca_atoms = system.select("name CA")  # All alpha carbons

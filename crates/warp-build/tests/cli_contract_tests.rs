@@ -102,9 +102,11 @@ fn make_bundle_dir(label: &str) -> (PathBuf, PathBuf) {
     let training = dir.join("training.pdb");
     let prmtop = dir.join("training.prmtop");
     let charges = dir.join("training_charge.json");
+    let forcefield = dir.join("training.ffxml");
     let bundle = dir.join("bundle.json");
     write_training_oligomer(&training);
     write_prmtop(&prmtop);
+    write_text(&forcefield, "<ForceField/>\n");
     write_json(
         &charges,
         &json!({
@@ -292,7 +294,18 @@ fn validate_supports_yaml_and_preserves_invalid_exit_code() {
     let valid_payload: Value =
         serde_yaml::from_slice(&valid_output.stdout).expect("parse yaml validate");
     assert_eq!(valid_payload["schema_version"], "warp-build.agent.v1");
-    assert_eq!(valid_payload["preflight"]["executed"], false);
+    assert_eq!(valid_payload["preflight"]["executed"], true);
+
+    let shallow_output = warp_build()
+        .args(["validate", "--shallow"])
+        .arg(&valid_request)
+        .output()
+        .expect("run warp-build shallow validate");
+
+    assert!(shallow_output.status.success(), "{shallow_output:?}");
+    let shallow_payload: Value =
+        serde_json::from_slice(&shallow_output.stdout).expect("parse json shallow validate");
+    assert_eq!(shallow_payload["preflight"]["executed"], false);
 
     let deep_output = warp_build()
         .args(["validate", "--deep"])

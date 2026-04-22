@@ -7,17 +7,21 @@ use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use traj_core::elements::{mass_for_element, normalize_element};
 use warp_common::resolve_relative_path;
 use warp_pack::agent::shared_contract::{self, to_error, to_warning};
 use warp_pack::{PackError, PackResult};
 use warp_structure::io::{write_amber_inpcrd, write_minimal_prmtop, write_output, AmberTopology};
 use warp_structure::{center_of_geometry, AtomRecord, OutputSpec, PackOutput, Vec3};
 
+use crate::minimize::minimize_synthetic_topology;
 use crate::polymer::{
-    build_polymer_graph, compute_sequence_polymer_net_charge_from_prmtop,
+    assess_training_source, build_polymer_graph, build_polymer_synthetic_uff_topology,
+    compute_sequence_polymer_net_charge_from_prmtop,
     compute_sequence_polymer_net_charge_from_source, ensure_build_qc_passes, load_charge_manifest,
-    recompute_build_qc_report, write_polymer_prmtop_from_source, GraphEdgeSpec, GraphNodeSpec,
-    TokenJunctionSpec, CHARGE_MANIFEST_VERSION,
+    recompute_build_qc_report, write_polymer_prmtop_from_ffxml, write_polymer_prmtop_from_source,
+    write_polymer_prmtop_synthetic_uff_like, GraphEdgeSpec, GraphNodeSpec, TokenJunctionSpec,
+    TrainingSourceAssessment, CHARGE_MANIFEST_VERSION,
 };
 use warp_topology_graph::{
     AlignmentPath as TopologyGraphAlignmentPath, Angle as TopologyGraphAngle,
@@ -387,6 +391,9 @@ pub struct Realization {
     pub ensemble_size: Option<usize>,
     #[serde(default)]
     pub relax: Option<RelaxSpec>,
+    #[serde(default = "default_qc_policy")]
+    #[schemars(default = "default_qc_policy")]
+    pub qc_policy: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -432,6 +439,8 @@ pub struct ArtifactRequest {
     pub topology_graph: Option<String>,
     #[serde(default)]
     pub ensemble_manifest: Option<String>,
+    #[serde(default)]
+    pub forcefield_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -471,6 +480,8 @@ pub struct ErrorEnvelope {
     pub request_id: String,
     pub errors: Vec<ErrorDetail>,
     pub warnings: Vec<ErrorDetail>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_diagnostics: Option<FailureDiagnostics>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -529,6 +540,7 @@ pub struct NormalizedRealization {
     pub alignment_axis: Option<String>,
     pub ensemble_size: Option<usize>,
     pub relax: Option<RelaxSpec>,
+    pub qc_policy: String,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -541,6 +553,7 @@ pub struct ResolvedArtifactSummary {
     pub topology: Option<String>,
     pub topology_graph: String,
     pub ensemble_manifest: Option<String>,
+    pub forcefield_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -632,6 +645,20 @@ pub struct AppliedJunctionSummary {
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct FailureDiagnostics {
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qc: Option<crate::polymer::BuildQcReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_junctions: Option<BTreeMap<String, AppliedJunctionSummary>>,
+    pub overlap_status: OverlapStatusSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_coordinates: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_coordinates: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct PreflightSummary {
     pub executed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -654,6 +681,8 @@ pub struct PreflightSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relax: Option<RelaxReport>,
     pub overlap_status: OverlapStatusSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameter_source_decision: Option<crate::polymer::TrainingSourceAssessment>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -673,6 +702,10 @@ pub struct RunSummary {
     pub solver_cleanup: Option<RelaxReport>,
     pub relax: Option<RelaxReport>,
     pub overlap_status: OverlapStatusSummary,
+    pub acceptance_state: String,
+    pub handoff_level: String,
+    pub limitations: Vec<String>,
+    pub parameter_source_decision: crate::polymer::TrainingSourceAssessment,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -689,6 +722,7 @@ pub struct BuildManifestRealization {
     pub seed: u64,
     pub seed_policy: String,
     pub relax: Option<RelaxSpec>,
+    pub qc_policy: String,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -712,6 +746,7 @@ pub struct BuildArtifactDigests {
     pub topology: Option<String>,
     pub topology_graph: Option<String>,
     pub ensemble_manifest: Option<String>,
+    pub forcefield_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -737,6 +772,9 @@ pub struct MdReadyHandoff {
     pub topology_graph: String,
     pub topology: Option<String>,
     pub charge_manifest: String,
+    pub acceptance_state: String,
+    pub handoff_level: String,
+    pub limitations: Vec<String>,
     pub source_structure_path: String,
     pub source_topology_path: Option<String>,
     pub source_charge_manifest_path: Option<String>,
@@ -796,6 +834,10 @@ pub struct BuildManifestSummary {
     pub timings_ms: BuildPhaseTimingsMs,
     pub qc: crate::polymer::BuildQcReport,
     pub overlap_status: OverlapStatusSummary,
+    pub acceptance_state: String,
+    pub handoff_level: String,
+    pub limitations: Vec<String>,
+    pub parameter_source_decision: crate::polymer::TrainingSourceAssessment,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -828,6 +870,7 @@ pub struct BuildManifestProvenance {
     pub source_bundle_path: String,
     pub source_bundle_digest: Option<String>,
     pub target_normalization: Option<TargetNormalizationSummary>,
+    pub parameter_source_decision: crate::polymer::TrainingSourceAssessment,
     pub build_metadata: BuildMetadataSummary,
 }
 
@@ -888,6 +931,8 @@ pub enum RunEvent {
     RunFailed {
         request_id: String,
         error: ErrorDetail,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        diagnostics: Option<FailureDiagnostics>,
     },
 }
 
@@ -912,7 +957,11 @@ fn default_stereo() -> String {
 }
 
 fn default_validation_depth() -> String {
-    "shallow".to_string()
+    "deep".to_string()
+}
+
+fn default_qc_policy() -> String {
+    "strict".to_string()
 }
 
 fn default_bond_order() -> u8 {
@@ -1056,6 +1105,19 @@ fn default_topology_graph_path(coordinates_path: &str) -> String {
         .to_string()
 }
 
+fn default_forcefield_ref_path(coordinates_path: &str) -> String {
+    let path = Path::new(coordinates_path);
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("polymer");
+    parent
+        .join(format!("{stem}.ffxml"))
+        .to_string_lossy()
+        .to_string()
+}
+
 fn default_ensemble_manifest_path(coordinates_path: &str) -> String {
     let path = Path::new(coordinates_path);
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -1079,6 +1141,7 @@ struct ResolvedArtifacts {
     topology: Option<String>,
     topology_graph: String,
     ensemble_manifest: Option<String>,
+    forcefield_ref: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1091,6 +1154,7 @@ struct ResolvedBuildRequest {
     source_coordinates: String,
     source_charge_manifest: Option<String>,
     source_topology_ref: Option<String>,
+    source_forcefield_ref: Option<String>,
     artifacts: ResolvedArtifacts,
     normalized_request: NormalizedBuildRequest,
     resolved_inputs: ResolvedInputsSummary,
@@ -1315,6 +1379,11 @@ fn resolve_request_state(
         .source_topology_ref
         .as_ref()
         .map(|path| resolve_relative_path(Path::new(&req.source_ref.bundle_path), path));
+    let source_forcefield_ref = bundle
+        .artifacts
+        .forcefield_ref
+        .as_ref()
+        .map(|path| resolve_relative_path(Path::new(&req.source_ref.bundle_path), path));
     let artifacts = ResolvedArtifacts {
         coordinates: req.artifacts.coordinates.clone(),
         raw_coordinates: req.realization.relax.as_ref().map(|_| {
@@ -1330,16 +1399,12 @@ fn resolve_request_state(
             .inpcrd
             .clone()
             .unwrap_or_else(|| default_inpcrd_path(&req.artifacts.coordinates)),
-        topology: if topology_transfer_supported(bundle) {
-            Some(
-                req.artifacts
-                    .topology
-                    .clone()
-                    .unwrap_or_else(|| default_topology_path(&req.artifacts.coordinates)),
-            )
-        } else {
-            req.artifacts.topology.clone()
-        },
+        topology: Some(
+            req.artifacts
+                .topology
+                .clone()
+                .unwrap_or_else(|| default_topology_path(&req.artifacts.coordinates)),
+        ),
         topology_graph: req
             .artifacts
             .topology_graph
@@ -1355,6 +1420,16 @@ fn resolve_request_state(
         } else {
             req.artifacts.ensemble_manifest.clone()
         },
+        forcefield_ref: if bundle.artifacts.forcefield_ref.is_some() {
+            Some(
+                req.artifacts
+                    .forcefield_ref
+                    .clone()
+                    .unwrap_or_else(|| default_forcefield_ref_path(&req.artifacts.coordinates)),
+            )
+        } else {
+            req.artifacts.forcefield_ref.clone()
+        },
     };
     let mut warnings = preflight_warnings;
     warnings.extend(collect_warnings(req));
@@ -1368,6 +1443,7 @@ fn resolve_request_state(
         topology: artifacts.topology.clone(),
         topology_graph: artifacts.topology_graph.clone(),
         ensemble_manifest: artifacts.ensemble_manifest.clone(),
+        forcefield_ref: artifacts.forcefield_ref.clone(),
     };
     let normalized_request = NormalizedBuildRequest {
         schema_version: BUILD_SCHEMA_VERSION.into(),
@@ -1389,6 +1465,7 @@ fn resolve_request_state(
             alignment_axis: req.realization.alignment_axis.clone(),
             ensemble_size: req.realization.ensemble_size,
             relax: req.realization.relax.clone(),
+            qc_policy: req.realization.qc_policy.clone(),
         },
         conformer_policy: req.conformer_policy.clone(),
         port_cap_overrides: req.port_cap_overrides.clone(),
@@ -1424,7 +1501,7 @@ fn resolve_request_state(
             coordinates: source_coordinates.clone(),
             charge_manifest: source_charge_manifest.clone(),
             topology: source_topology_ref.clone(),
-            forcefield_ref: bundle.artifacts.forcefield_ref.clone(),
+            forcefield_ref: source_forcefield_ref.clone(),
         },
         topology_transfer: TopologyTransferSummary {
             supported: topology_transfer_supported(bundle),
@@ -1433,7 +1510,7 @@ fn resolve_request_state(
                 topology: req.artifacts.topology.is_some(),
             },
             requirements: TopologyTransferRequirements {
-                topology: "artifacts.topology requires bundle.artifacts.source_topology_ref to reference a transferable .prmtop".into(),
+                topology: "artifacts.topology auto-derives a .prmtop output; transferable source .prmtop and validated ffxml fallback take precedence when the training source is unreliable, otherwise warp-build emits a synthetic UFF-like minimizer topology".into(),
                 inpcrd: "artifacts.inpcrd is coordinate-only and does not transfer bonded terms by itself".into(),
             },
         },
@@ -1447,6 +1524,7 @@ fn resolve_request_state(
         source_coordinates,
         source_charge_manifest,
         source_topology_ref,
+        source_forcefield_ref,
         artifacts,
         normalized_request,
         resolved_inputs,
@@ -1462,6 +1540,21 @@ fn validation_depth(req: &BuildRequest) -> Result<&str, ErrorDetail> {
             Some("/validation/depth".into()),
             format!(
                 "unsupported validation depth '{}'; expected 'shallow' or 'deep'",
+                other
+            ),
+        )),
+    }
+}
+
+fn qc_policy(req: &BuildRequest) -> Result<&str, ErrorDetail> {
+    match req.realization.qc_policy.as_str() {
+        "strict" => Ok("strict"),
+        "salvage" => Ok("salvage"),
+        other => Err(to_error(
+            "E_INVALID_REQUEST",
+            Some("/realization/qc_policy".into()),
+            format!(
+                "unsupported qc_policy '{}'; expected 'strict' or 'salvage'",
                 other
             ),
         )),
@@ -1506,6 +1599,149 @@ fn applied_junctions_value(
             )
         })
         .collect::<BTreeMap<_, _>>()
+}
+
+fn failure_diagnostics(
+    phase: &str,
+    qc: Option<&crate::polymer::BuildQcReport>,
+    token_junctions: Option<&BTreeMap<String, TokenJunctionSpec>>,
+    overlap_status: OverlapStatusSummary,
+    debug_coordinates: Option<String>,
+    raw_coordinates: Option<String>,
+) -> FailureDiagnostics {
+    FailureDiagnostics {
+        phase: phase.into(),
+        qc: qc.cloned(),
+        applied_junctions: token_junctions.map(applied_junctions_value),
+        overlap_status,
+        debug_coordinates,
+        raw_coordinates,
+    }
+}
+
+fn acceptance_state(salvaged: bool) -> String {
+    if salvaged {
+        "salvaged".into()
+    } else {
+        "accepted".into()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TopologyArtifactMode {
+    None,
+    SourceTransfer,
+    ForcefieldRef,
+    SyntheticUffLike,
+}
+
+fn handoff_level_and_limitations(
+    topology_mode: TopologyArtifactMode,
+    net_charge: Option<f32>,
+    salvaged: bool,
+    parameter_source: &TrainingSourceAssessment,
+) -> (String, Vec<String>) {
+    let mut limitations = Vec::new();
+    match topology_mode {
+        TopologyArtifactMode::None => limitations.push("topology_unavailable".into()),
+        TopologyArtifactMode::ForcefieldRef => {}
+        TopologyArtifactMode::SyntheticUffLike => limitations.push("synthetic_topology".into()),
+        TopologyArtifactMode::SourceTransfer => {}
+    }
+    match parameter_source.quality.as_str() {
+        "risky" => limitations.push("training_source_risky".into()),
+        "unreliable" => limitations.push("training_source_unreliable".into()),
+        _ => {}
+    }
+    if net_charge.is_none() {
+        limitations.push("charge_unavailable".into());
+    }
+    if salvaged {
+        limitations.push("salvaged_qc_failure".into());
+    }
+    let handoff_level = if salvaged {
+        "graph_bonded_only"
+    } else {
+        match topology_mode {
+            TopologyArtifactMode::SourceTransfer if net_charge.is_some() => "md_ready",
+            TopologyArtifactMode::ForcefieldRef if net_charge.is_some() => "forcefield_backed",
+            TopologyArtifactMode::SyntheticUffLike => "minimizable_synthetic",
+            _ => "graph_bonded_only",
+        }
+    };
+    (handoff_level.into(), limitations)
+}
+
+fn salvage_warning(detail: &ErrorDetail) -> ErrorDetail {
+    to_warning(
+        "W_SALVAGED_BUILD",
+        Some("/realization/qc_policy".into()),
+        format!(
+            "QC failed under salvage mode; non-final outputs were written for recovery/minimization: {}",
+            detail.message
+        ),
+    )
+}
+
+fn source_fallback_qc_warning(parameter_source: &str, detail: &ErrorDetail) -> ErrorDetail {
+    to_warning(
+        "W_SOURCE_FALLBACK_QC",
+        Some("/source_ref/bundle_path".into()),
+        format!(
+            "training source fallback '{}' kept the build moving despite QC failure; downstream minimization is expected: {}",
+            parameter_source, detail.message
+        ),
+    )
+}
+
+fn copy_forcefield_artifact(source_path: &str, target_path: &str) -> Result<(), ErrorDetail> {
+    ensure_parent(target_path).map_err(|err| {
+        to_error(
+            "E_OUTPUT_WRITE",
+            Some("/artifacts/forcefield_ref".into()),
+            err.to_string(),
+        )
+    })?;
+    fs::copy(source_path, target_path).map_err(|err| {
+        to_error(
+            "E_OUTPUT_WRITE",
+            Some("/artifacts/forcefield_ref".into()),
+            err.to_string(),
+        )
+    })?;
+    Ok(())
+}
+
+fn topology_graph_mass(element: &str) -> f32 {
+    let normalized = normalize_element(element).unwrap_or_else(|| element.trim().to_string());
+    let mass = mass_for_element(&normalized);
+    if mass > 0.0 {
+        mass
+    } else {
+        12.0
+    }
+}
+
+fn topology_graph_atom_type(element: &str) -> String {
+    normalize_element(element).unwrap_or_else(|| element.trim().to_string())
+}
+
+fn topology_graph_atom_type_index(element: &str) -> i32 {
+    match topology_graph_atom_type(element).as_str() {
+        "H" => 1,
+        "B" => 5,
+        "C" => 6,
+        "N" => 7,
+        "O" => 8,
+        "F" => 9,
+        "Si" => 14,
+        "P" => 15,
+        "S" => 16,
+        "Cl" => 17,
+        "Br" => 35,
+        "I" => 53,
+        _ => 0,
+    }
 }
 
 fn prepare_build_execution(
@@ -1589,6 +1825,44 @@ fn prepare_build_execution(
     ))
 }
 
+fn assess_parameter_source(
+    prepared: &PreparedBuildExecution,
+    resolved: &ResolvedBuildRequest,
+) -> Result<TrainingSourceAssessment, Vec<ErrorDetail>> {
+    let assessment = assess_training_source(
+        Path::new(&resolved.source_coordinates),
+        resolved.source_charge_manifest.as_deref().map(Path::new),
+        resolved.source_topology_ref.as_deref().map(Path::new),
+        resolved.source_forcefield_ref.as_deref().map(Path::new),
+        &prepared.graph_node_specs,
+        &prepared.token_junctions,
+    )
+    .map_err(|err| {
+        vec![to_error(
+            "E_SOURCE_GEOMETRY",
+            Some("/source_ref/bundle_path".into()),
+            err.to_string(),
+        )]
+    })?;
+    if assessment.parameter_source == "rejected" {
+        let message = if assessment.reasons.is_empty() {
+            "training source is unreliable and no trusted fallback parameter source is available"
+                .to_string()
+        } else {
+            format!(
+                "training source is unreliable: {}",
+                assessment.reasons.join(", ")
+            )
+        };
+        return Err(vec![to_error(
+            "E_SOURCE_UNRELIABLE",
+            Some("/source_ref/bundle_path".into()),
+            message,
+        )]);
+    }
+    Ok(assessment)
+}
+
 fn preflight_temp_dir(request_id: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1607,7 +1881,7 @@ fn shallow_preflight_summary() -> PreflightSummary {
         executed: false,
         mode: Some("shallow".into()),
         reason: Some(
-            "geometry/QC preflight skipped; set validation.depth=deep to execute build and QC during validation"
+            "geometry/QC preflight skipped because validation.depth=shallow; default validation is deep"
                 .into(),
         ),
         base_conformation_mode: None,
@@ -1619,6 +1893,7 @@ fn shallow_preflight_summary() -> PreflightSummary {
         solver_cleanup: None,
         relax: None,
         overlap_status: overlap_status_summary(None, None, None),
+        parameter_source_decision: None,
     }
 }
 
@@ -1651,6 +1926,27 @@ fn preflight_build(
 ) -> Result<PreflightSummary, Vec<ErrorDetail>> {
     let (prepared, mut timings_ms) =
         prepare_build_execution(req, bundle, resolved.seed).map_err(|err| vec![err])?;
+    let parameter_source_decision = assess_parameter_source(&prepared, resolved)?;
+    if parameter_source_decision.parameter_source != "synthetic_pdb" {
+        return Ok(PreflightSummary {
+            executed: false,
+            mode: Some("deep".into()),
+            reason: Some(format!(
+                "geometry/QC preflight skipped because training source was marked '{}' and fallback parameter source '{}' was selected",
+                parameter_source_decision.quality, parameter_source_decision.parameter_source
+            )),
+            base_conformation_mode: Some(prepared.base_mode),
+            target_residue_count: Some(prepared.compiled_plan.nodes.len()),
+            applied_junctions: Some(applied_junctions_value(&prepared.token_junctions)),
+            timings_ms,
+            qc: None,
+            solver: None,
+            solver_cleanup: None,
+            relax: None,
+            overlap_status: overlap_status_summary(None, None, None),
+            parameter_source_decision: Some(parameter_source_decision),
+        });
+    }
     let temp_dir = preflight_temp_dir(&req.request_id);
     fs::create_dir_all(&temp_dir)
         .map_err(|err| vec![to_error("E_OUTPUT_WRITE", None, err.to_string())])?;
@@ -1673,6 +1969,7 @@ fn preflight_build(
             other => other,
         },
         resolved.seed,
+        true,
         &final_coords_text,
     );
     timings_ms.build_graph = elapsed_ms(build_started);
@@ -1687,25 +1984,17 @@ fn preflight_build(
             )]);
         }
     };
-    let internal_cleanup_report = if matches!(
-        req.realization.conformation_mode.as_str(),
-        "random_walk" | "ensemble"
-    ) {
-        let cleanup_started = Instant::now();
-        let report = relax_built_output(
-            &mut built.output,
-            &prepared.compiled_plan,
-            built.step_length_angstrom,
-            &internal_solver_relax_spec(),
-            None,
+    let (internal_cleanup_report, cleanup_elapsed_ms, _cleanup_warning) =
+        run_internal_cleanup_pipeline(
+            &mut built,
+            &prepared,
+            &req.realization.conformation_mode,
+            &parameter_source_decision.parameter_source,
+            &resolved.source_coordinates,
+            resolved.source_charge_manifest.as_deref(),
         );
-        timings_ms.solver_cleanup = elapsed_ms(cleanup_started);
-        Some(report)
-    } else {
-        None
-    };
+    timings_ms.solver_cleanup = cleanup_elapsed_ms;
     if internal_cleanup_report.is_some() {
-        built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
         if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
             let _ = fs::remove_dir_all(&temp_dir);
             return Err(vec![to_error(
@@ -1757,6 +2046,7 @@ fn preflight_build(
         solver_cleanup: internal_cleanup_report,
         relax: relax_report,
         overlap_status,
+        parameter_source_decision: Some(parameter_source_decision),
     })
 }
 
@@ -4183,6 +4473,9 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     if let Err(err) = validation_depth(req) {
         errors.push(err);
     }
+    if let Err(err) = qc_policy(req) {
+        errors.push(err);
+    }
     if req.schema_version != BUILD_SCHEMA_VERSION {
         errors.push(to_error(
             "E_CONFIG_VERSION",
@@ -4819,6 +5112,52 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
                         .as_ref()
                         .map(|item| item == path)
                         .unwrap_or(false)
+                    || req
+                        .artifacts
+                        .forcefield_ref
+                        .as_ref()
+                        .map(|item| item == path)
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false)
+        || req
+            .artifacts
+            .forcefield_ref
+            .as_ref()
+            .map(|path| {
+                path == &req.artifacts.coordinates
+                    || req
+                        .artifacts
+                        .raw_coordinates
+                        .as_ref()
+                        .map(|item| item == path)
+                        .unwrap_or(false)
+                    || path == &req.artifacts.build_manifest
+                    || path == &req.artifacts.charge_manifest
+                    || req
+                        .artifacts
+                        .inpcrd
+                        .as_ref()
+                        .map(|item| item == path)
+                        .unwrap_or(false)
+                    || req
+                        .artifacts
+                        .topology
+                        .as_ref()
+                        .map(|item| item == path)
+                        .unwrap_or(false)
+                    || req
+                        .artifacts
+                        .topology_graph
+                        .as_ref()
+                        .map(|item| item == path)
+                        .unwrap_or(false)
+                    || req
+                        .artifacts
+                        .ensemble_manifest
+                        .as_ref()
+                        .map(|item| item == path)
+                        .unwrap_or(false)
             })
             .unwrap_or(false)
     {
@@ -4828,11 +5167,11 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             "output artifact paths must differ",
         ));
     }
-    if req.artifacts.topology.is_some() && !topology_transfer_supported(&bundle) {
+    if req.artifacts.forcefield_ref.is_some() && bundle.artifacts.forcefield_ref.is_none() {
         errors.push(to_error(
             "E_UNSUPPORTED_TARGET",
-            Some("/artifacts/topology".into()),
-            "artifacts.topology requires bundle.artifacts.source_topology_ref to point to a transferable .prmtop; update the source bundle or omit topology transfer outputs",
+            Some("/artifacts/forcefield_ref".into()),
+            "artifacts.forcefield_ref requires bundle.artifacts.forcefield_ref to point to a transferable .ffxml",
         ));
     }
     errors
@@ -4943,6 +5282,20 @@ pub struct RelaxReport {
     pre_fallback_max_clash: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pre_fallback_overlap_pairs: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_energy_kcal_mol: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_energy_kcal_mol: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_max_force: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_max_force: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accepted_line_search_steps: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rejected_line_search_steps: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    termination_reason: Option<String>,
     raw_coordinates: Option<String>,
 }
 
@@ -5201,9 +5554,9 @@ fn targeted_steric_fallback_spec(relax: &RelaxSpec) -> RelaxSpec {
     }
 }
 
-fn merge_relax_report_with_targeted_fallback(
+fn merge_relax_report_with_followup_stage(
     primary: RelaxReport,
-    fallback: RelaxReport,
+    followup: RelaxReport,
     initial_positions: &[Vec3],
     final_positions: &[Vec3],
 ) -> RelaxReport {
@@ -5211,23 +5564,133 @@ fn merge_relax_report_with_targeted_fallback(
         mode: primary.mode,
         steps_requested: primary
             .steps_requested
-            .saturating_add(fallback.steps_requested),
+            .saturating_add(followup.steps_requested),
         steps_executed: primary
             .steps_executed
-            .saturating_add(fallback.steps_executed),
+            .saturating_add(followup.steps_executed),
         initial_max_clash: primary.initial_max_clash,
-        final_max_clash: fallback.final_max_clash,
+        final_max_clash: followup.final_max_clash,
         rms_displacement: rms_atom_displacement(initial_positions, final_positions),
         initial_overlap_pairs: primary.initial_overlap_pairs,
-        final_overlap_pairs: fallback.final_overlap_pairs,
-        movable_atom_count: fallback.movable_atom_count.or(primary.movable_atom_count),
+        final_overlap_pairs: followup.final_overlap_pairs,
+        movable_atom_count: followup.movable_atom_count.or(primary.movable_atom_count),
         max_atom_displacement_angstrom: max_atom_displacement(initial_positions, final_positions),
-        fallback_mode: Some(fallback.mode),
-        fallback_steps_requested: Some(fallback.steps_requested),
-        fallback_steps_executed: Some(fallback.steps_executed),
+        fallback_mode: Some(followup.mode),
+        fallback_steps_requested: Some(followup.steps_requested),
+        fallback_steps_executed: Some(followup.steps_executed),
         pre_fallback_max_clash: Some(primary.final_max_clash),
         pre_fallback_overlap_pairs: Some(primary.final_overlap_pairs),
-        raw_coordinates: primary.raw_coordinates.or(fallback.raw_coordinates),
+        initial_energy_kcal_mol: primary.initial_energy_kcal_mol,
+        final_energy_kcal_mol: followup
+            .final_energy_kcal_mol
+            .or(primary.final_energy_kcal_mol),
+        initial_max_force: primary.initial_max_force,
+        final_max_force: followup.final_max_force.or(primary.final_max_force),
+        accepted_line_search_steps: followup
+            .accepted_line_search_steps
+            .or(primary.accepted_line_search_steps),
+        rejected_line_search_steps: followup
+            .rejected_line_search_steps
+            .or(primary.rejected_line_search_steps),
+        termination_reason: followup.termination_reason.or(primary.termination_reason),
+        raw_coordinates: primary.raw_coordinates.or(followup.raw_coordinates),
+    }
+}
+
+fn synthetic_cleanup_should_run(report: &crate::polymer::BuildQcReport) -> bool {
+    !report.severe_bond_violations.is_empty()
+        || report.severe_nonbonded_clash_count > 0
+        || report
+            .min_nonbonded_distance_angstrom
+            .map(|value| value < 1.05)
+            .unwrap_or(false)
+}
+
+fn relax_synthetic_topology_output(
+    output: &mut PackOutput,
+    topology: &AmberTopology,
+    qc_context: &crate::polymer::BuildQcContext,
+    raw_coordinates: Option<String>,
+) -> RelaxReport {
+    let steps_requested = 48usize;
+    let initial_positions = output
+        .atoms
+        .iter()
+        .map(|atom| atom.position)
+        .collect::<Vec<_>>();
+    let topology_context = build_relax_topology_context(output.atoms.len(), &output.bonds);
+    let initial_overlap_stats = collect_overlap_stats(
+        &output.atoms,
+        &initial_positions,
+        0.9,
+        &topology_context,
+        false,
+    );
+    let initial_report = crate::polymer::recompute_build_qc_report(output, qc_context);
+    if output.atoms.len() < 4 || !synthetic_cleanup_should_run(&initial_report) {
+        return RelaxReport {
+            mode: "synthetic_bonded".into(),
+            steps_requested,
+            steps_executed: 0,
+            initial_max_clash: initial_overlap_stats.max_overlap,
+            final_max_clash: initial_overlap_stats.max_overlap,
+            rms_displacement: 0.0,
+            initial_overlap_pairs: initial_overlap_stats.pair_count,
+            final_overlap_pairs: initial_overlap_stats.pair_count,
+            movable_atom_count: None,
+            max_atom_displacement_angstrom: 0.0,
+            fallback_mode: None,
+            fallback_steps_requested: None,
+            fallback_steps_executed: None,
+            pre_fallback_max_clash: None,
+            pre_fallback_overlap_pairs: None,
+            initial_energy_kcal_mol: None,
+            final_energy_kcal_mol: None,
+            initial_max_force: None,
+            final_max_force: None,
+            accepted_line_search_steps: None,
+            rejected_line_search_steps: None,
+            termination_reason: Some("not_needed".into()),
+            raw_coordinates,
+        };
+    }
+    let telemetry = minimize_synthetic_topology(output, topology, steps_requested, 0.35);
+    let final_positions = output
+        .atoms
+        .iter()
+        .map(|atom| atom.position)
+        .collect::<Vec<_>>();
+    let final_overlap_stats = collect_overlap_stats(
+        &output.atoms,
+        &final_positions,
+        0.9,
+        &topology_context,
+        false,
+    );
+    RelaxReport {
+        mode: "synthetic_bonded".into(),
+        steps_requested,
+        steps_executed: telemetry.steps_executed,
+        initial_max_clash: initial_overlap_stats.max_overlap,
+        final_max_clash: final_overlap_stats.max_overlap,
+        rms_displacement: rms_atom_displacement(&initial_positions, &final_positions),
+        initial_overlap_pairs: initial_overlap_stats.pair_count,
+        final_overlap_pairs: final_overlap_stats.pair_count,
+        movable_atom_count: Some(telemetry.moved_atom_count),
+        max_atom_displacement_angstrom: max_atom_displacement(&initial_positions, &final_positions),
+        fallback_mode: None,
+        fallback_steps_requested: None,
+        fallback_steps_executed: None,
+        pre_fallback_max_clash: None,
+        pre_fallback_overlap_pairs: None,
+        initial_energy_kcal_mol: Some(telemetry.initial_energy),
+        final_energy_kcal_mol: Some(telemetry.final_energy),
+        initial_max_force: Some(telemetry.initial_max_force),
+        final_max_force: Some(telemetry.final_max_force),
+        accepted_line_search_steps: Some(telemetry.accepted_steps),
+        rejected_line_search_steps: Some(telemetry.rejected_steps),
+        termination_reason: Some(telemetry.termination_reason),
+        raw_coordinates,
     }
 }
 
@@ -5274,6 +5737,13 @@ fn relax_graph_spring_output(
             fallback_steps_executed: None,
             pre_fallback_max_clash: None,
             pre_fallback_overlap_pairs: None,
+            initial_energy_kcal_mol: None,
+            final_energy_kcal_mol: None,
+            initial_max_force: None,
+            final_max_force: None,
+            accepted_line_search_steps: None,
+            rejected_line_search_steps: None,
+            termination_reason: None,
             raw_coordinates,
         };
     }
@@ -5435,6 +5905,13 @@ fn relax_graph_spring_output(
         fallback_steps_executed: None,
         pre_fallback_max_clash: None,
         pre_fallback_overlap_pairs: None,
+        initial_energy_kcal_mol: None,
+        final_energy_kcal_mol: None,
+        initial_max_force: None,
+        final_max_force: None,
+        accepted_line_search_steps: None,
+        rejected_line_search_steps: None,
+        termination_reason: None,
         raw_coordinates,
     }
 }
@@ -5938,6 +6415,13 @@ fn relax_targeted_steric_output(
             fallback_steps_executed: None,
             pre_fallback_max_clash: None,
             pre_fallback_overlap_pairs: None,
+            initial_energy_kcal_mol: None,
+            final_energy_kcal_mol: None,
+            initial_max_force: None,
+            final_max_force: None,
+            accepted_line_search_steps: None,
+            rejected_line_search_steps: None,
+            termination_reason: None,
             raw_coordinates,
         };
     }
@@ -6008,6 +6492,13 @@ fn relax_targeted_steric_output(
         fallback_steps_executed: None,
         pre_fallback_max_clash: None,
         pre_fallback_overlap_pairs: None,
+        initial_energy_kcal_mol: None,
+        final_energy_kcal_mol: None,
+        initial_max_force: None,
+        final_max_force: None,
+        accepted_line_search_steps: None,
+        rejected_line_search_steps: None,
+        termination_reason: None,
         raw_coordinates,
     }
 }
@@ -6041,7 +6532,7 @@ fn relax_built_output(
                 .iter()
                 .map(|atom| atom.position)
                 .collect::<Vec<_>>();
-            merge_relax_report_with_targeted_fallback(
+            merge_relax_report_with_followup_stage(
                 primary,
                 fallback,
                 &stage_initial_positions,
@@ -6051,6 +6542,83 @@ fn relax_built_output(
         "targeted_steric" => relax_targeted_steric_output(output, relax, raw_coordinates),
         _ => relax_graph_spring_output(output, plan, step_length, relax, raw_coordinates),
     }
+}
+
+fn run_internal_cleanup_pipeline(
+    built: &mut crate::polymer::PolymerBuiltArtifact,
+    prepared: &PreparedBuildExecution,
+    conformation_mode: &str,
+    parameter_source: &str,
+    source_coordinates: &str,
+    source_charge_manifest: Option<&str>,
+) -> (Option<RelaxReport>, u64, Option<String>) {
+    let stage_initial_positions = built
+        .output
+        .atoms
+        .iter()
+        .map(|atom| atom.position)
+        .collect::<Vec<_>>();
+    let mut cleanup_elapsed_ms = 0u64;
+    let mut cleanup_warning = None;
+    let mut cleanup_report = if matches!(conformation_mode, "random_walk" | "ensemble") {
+        let cleanup_started = Instant::now();
+        let report = relax_built_output(
+            &mut built.output,
+            &prepared.compiled_plan,
+            built.step_length_angstrom,
+            &internal_solver_relax_spec(),
+            None,
+        );
+        cleanup_elapsed_ms = cleanup_elapsed_ms.saturating_add(elapsed_ms(cleanup_started));
+        Some(report)
+    } else {
+        None
+    };
+    if cleanup_report.is_some() {
+        built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
+    }
+    if parameter_source == "synthetic_pdb" && synthetic_cleanup_should_run(&built.qc_report) {
+        match build_polymer_synthetic_uff_topology(
+            built,
+            Path::new(source_coordinates),
+            source_charge_manifest.map(Path::new),
+        ) {
+            Ok(topology) => {
+                let synthetic_started = Instant::now();
+                let followup = relax_synthetic_topology_output(
+                    &mut built.output,
+                    &topology,
+                    &built.qc_context,
+                    None,
+                );
+                cleanup_elapsed_ms =
+                    cleanup_elapsed_ms.saturating_add(elapsed_ms(synthetic_started));
+                let final_positions = built
+                    .output
+                    .atoms
+                    .iter()
+                    .map(|atom| atom.position)
+                    .collect::<Vec<_>>();
+                cleanup_report = Some(if let Some(primary) = cleanup_report.take() {
+                    merge_relax_report_with_followup_stage(
+                        primary,
+                        followup,
+                        &stage_initial_positions,
+                        &final_positions,
+                    )
+                } else {
+                    followup
+                });
+                built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
+            }
+            Err(err) => {
+                cleanup_warning = Some(format!(
+                    "synthetic bonded cleanup skipped because synthetic topology could not be built: {err}"
+                ));
+            }
+        }
+    }
+    (cleanup_report, cleanup_elapsed_ms, cleanup_warning)
 }
 
 fn bond_adjacency(atom_count: usize, bonds: &[(usize, usize)]) -> Vec<Vec<usize>> {
@@ -6666,25 +7234,28 @@ fn topology_graph_value(
             .atoms
             .iter()
             .enumerate()
-            .map(|(idx, atom)| TopologyGraphAtom {
-                index: idx + 1,
-                name: atom.name.clone(),
-                element: atom.element.clone(),
-                resid: atom.resid,
-                resname: atom.resname.clone(),
-                charge_e: atom.charge,
-                mass: 12.0,
-                atom_type_index: atom.element.bytes().next().unwrap_or(b'X') as i32,
-                amber_atom_type: atom.element.clone(),
-                lj_class: atom.element.clone(),
-                position: [atom.position.x, atom.position.y, atom.position.z],
-                neighbors: adjacency
-                    .get(idx)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|value| value + 1)
-                    .collect(),
+            .map(|(idx, atom)| {
+                let atom_type = topology_graph_atom_type(&atom.element);
+                TopologyGraphAtom {
+                    index: idx + 1,
+                    name: atom.name.clone(),
+                    element: atom.element.clone(),
+                    resid: atom.resid,
+                    resname: atom.resname.clone(),
+                    charge_e: atom.charge,
+                    mass: topology_graph_mass(&atom.element),
+                    atom_type_index: topology_graph_atom_type_index(&atom.element),
+                    amber_atom_type: atom_type.clone(),
+                    lj_class: atom_type,
+                    position: [atom.position.x, atom.position.y, atom.position.z],
+                    neighbors: adjacency
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|value| value + 1)
+                        .collect(),
+                }
             })
             .collect(),
         bonds: built
@@ -6742,19 +7313,19 @@ fn topology_graph_value(
                 .output
                 .atoms
                 .iter()
-                .map(|atom| atom.element.bytes().next().unwrap_or(b'X') as i32)
+                .map(|atom| topology_graph_atom_type_index(&atom.element))
                 .collect(),
             amber_atom_types: built
                 .output
                 .atoms
                 .iter()
-                .map(|atom| atom.element.clone())
+                .map(|atom| topology_graph_atom_type(&atom.element))
                 .collect(),
             lj_classes: built
                 .output
                 .atoms
                 .iter()
-                .map(|atom| atom.element.clone())
+                .map(|atom| topology_graph_atom_type(&atom.element))
                 .collect(),
         },
         residues,
@@ -7207,6 +7778,7 @@ pub fn example_request_for_bundle(mode: &str, bundle_path: &str) -> Value {
             "alignment_axis": realization.get("alignment_axis").cloned().unwrap_or(Value::Null),
             "seed": realization["seed"].clone(),
             "ensemble_size": realization.get("ensemble_size").cloned().unwrap_or(Value::Null),
+            "qc_policy": "strict",
             "relax": {
                 "mode": "graph_spring",
                 "steps": 64,
@@ -7229,7 +7801,7 @@ pub fn example_request_for_bundle(mode: &str, bundle_path: &str) -> Value {
         },
         "port_cap_overrides": Vec::<Value>::new(),
         "validation": {
-            "depth": "shallow"
+            "depth": "deep"
         },
         "artifacts": {
             "coordinates": "pmma_50mer.pdb",
@@ -7239,7 +7811,8 @@ pub fn example_request_for_bundle(mode: &str, bundle_path: &str) -> Value {
             "inpcrd": "pmma_50mer.inpcrd",
             "topology": "pmma_50mer.prmtop",
             "topology_graph": "pmma_50mer.topology.json",
-            "ensemble_manifest": ensemble_manifest
+            "ensemble_manifest": ensemble_manifest,
+            "forcefield_ref": "pmma_50mer.ffxml"
         }
     })
 }
@@ -7272,7 +7845,8 @@ pub fn capabilities() -> Value {
         "supported_tacticity_modes": SUPPORTED_TACTICITY_MODES,
         "supported_termini_policies": SUPPORTED_TERMINI_POLICIES,
         "supported_validation_depths": ["shallow", "deep"],
-        "default_validation_depth": "shallow",
+        "default_validation_depth": "deep",
+        "supported_qc_policies": ["strict", "salvage"],
         "artifact_outputs": [
             "coordinates",
             "raw_coordinates",
@@ -7281,14 +7855,16 @@ pub fn capabilities() -> Value {
             "inpcrd",
             "topology",
             "topology_graph",
-            "ensemble_manifest"
+            "ensemble_manifest",
+            "forcefield_ref"
         ],
         "topology_outputs": ["inpcrd", "prmtop"],
         "artifact_contract": {
-            "coordinates": "final accepted coordinates written only after QC passes",
+            "coordinates": "strict mode writes accepted coordinates after QC passes; salvage mode may emit non-final coordinates with acceptance_state=salvaged",
             "raw_coordinates": "optional pre-relax snapshot when realization.relax is enabled",
             "built_solute_debug": "*_built_solute.pdb may be staged during execution; treat it as a recovery/debug artifact, not the final contract output",
-            "topology_transfer_requirement": "artifacts.topology requires bundle.artifacts.source_topology_ref to reference a transferable .prmtop",
+            "topology_transfer_requirement": "artifacts.topology auto-derives a .prmtop output; transferable source .prmtop and validated ffxml fallback take precedence when the training source is unreliable, otherwise warp-build emits a synthetic UFF-like minimizer topology",
+            "forcefield_transfer_requirement": "artifacts.forcefield_ref requires bundle.artifacts.forcefield_ref to reference a transferable .ffxml",
         },
         "junction_selector_semantics": {
             "attach_atom": "retained atom on the unit that forms the new inter-unit bond",
@@ -7349,10 +7925,11 @@ pub fn inspect_source_json(path: &str) -> (i32, Value) {
                 "charge_transfer_supported": bundle.capabilities.charge_transfer_supported,
                 "topology_transfer_supported": topology_transfer_supported(&bundle),
                 "artifact_contract": {
-                    "coordinates": "final accepted coordinates written only after QC passes",
+                    "coordinates": "strict mode writes accepted coordinates after QC passes; salvage mode may emit non-final coordinates with acceptance_state=salvaged",
                     "raw_coordinates": "optional pre-relax snapshot when realization.relax is enabled",
                     "built_solute_debug": "*_built_solute.pdb may be staged during execution; treat it as a recovery/debug artifact, not the final contract output",
-                    "topology_transfer_requirement": "artifacts.topology requires bundle.artifacts.source_topology_ref to reference a transferable .prmtop",
+                    "topology_transfer_requirement": "artifacts.topology auto-derives a .prmtop output; transferable source .prmtop and validated ffxml fallback take precedence when the training source is unreliable, otherwise warp-build emits a synthetic UFF-like minimizer topology",
+                    "forcefield_transfer_requirement": "artifacts.forcefield_ref requires bundle.artifacts.forcefield_ref to reference a transferable .ffxml",
                 },
                 "junction_selector_semantics": {
                     "attach_atom": "retained atom on the unit that forms the new inter-unit bond",
@@ -7365,6 +7942,34 @@ pub fn inspect_source_json(path: &str) -> (i32, Value) {
             }),
         ),
         Err(err) => (2, json!({"status": "error", "errors": [err]})),
+    }
+}
+
+fn error_envelope(
+    request_id: &str,
+    errors: Vec<ErrorDetail>,
+    warnings: Vec<ErrorDetail>,
+    failure_diagnostics: Option<FailureDiagnostics>,
+) -> ErrorEnvelope {
+    ErrorEnvelope {
+        schema_version: BUILD_SCHEMA_VERSION.into(),
+        status: "error".into(),
+        request_id: request_id.into(),
+        errors,
+        warnings,
+        failure_diagnostics,
+    }
+}
+
+fn run_failed_event(
+    request_id: &str,
+    error: ErrorDetail,
+    diagnostics: Option<FailureDiagnostics>,
+) -> RunEvent {
+    RunEvent::RunFailed {
+        request_id: request_id.into(),
+        error,
+        diagnostics,
     }
 }
 
@@ -7489,13 +8094,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         Err(err) => {
             return (
                 2,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: "warp-build".into(),
-                    errors: vec![err],
-                    warnings: vec![],
-                }),
+                json!(error_envelope("warp-build", vec![err], vec![], None)),
             )
         }
     };
@@ -7509,21 +8108,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         Ok(bundle) => bundle,
         Err(err) => {
             emit(
-                &RunEvent::RunFailed {
-                    request_id: raw_req.request_id.clone(),
-                    error: err.clone(),
-                },
+                &run_failed_event(&raw_req.request_id, err.clone(), None),
                 stream_ndjson,
             );
             return (
                 2,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: raw_req.request_id,
-                    errors: vec![err],
-                    warnings: vec![],
-                }),
+                json!(error_envelope(&raw_req.request_id, vec![err], vec![], None)),
             );
         }
     };
@@ -7531,21 +8121,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         Ok(result) => result,
         Err(errors) => {
             emit(
-                &RunEvent::RunFailed {
-                    request_id: raw_req.request_id.clone(),
-                    error: errors[0].clone(),
-                },
+                &run_failed_event(&raw_req.request_id, errors[0].clone(), None),
                 stream_ndjson,
             );
             return (
                 2,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: raw_req.request_id,
-                    errors,
-                    warnings: vec![],
-                }),
+                json!(error_envelope(&raw_req.request_id, errors, vec![], None)),
             );
         }
     };
@@ -7555,21 +8136,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             Ok(resolved) => resolved,
             Err(errors) => {
                 emit(
-                    &RunEvent::RunFailed {
-                        request_id: req.request_id.clone(),
-                        error: errors[0].clone(),
-                    },
+                    &run_failed_event(&req.request_id, errors[0].clone(), None),
                     stream_ndjson,
                 );
                 return (
                     2,
-                    json!(ErrorEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "error".into(),
-                        request_id: req.request_id,
-                        errors,
-                        warnings: vec![],
-                    }),
+                    json!(error_envelope(&req.request_id, errors, vec![], None)),
                 );
             }
         };
@@ -7596,16 +8168,25 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         Err(err) => {
             return (
                 2,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: req.request_id,
-                    errors: vec![err],
-                    warnings: vec![],
-                }),
+                json!(error_envelope(&req.request_id, vec![err], vec![], None)),
             );
         }
     };
+    let parameter_source_decision = match assess_parameter_source(&prepared, &resolved) {
+        Ok(value) => value,
+        Err(errors) => {
+            emit(
+                &run_failed_event(&req.request_id, errors[0].clone(), None),
+                stream_ndjson,
+            );
+            return (
+                2,
+                json!(error_envelope(&req.request_id, errors, vec![], None)),
+            );
+        }
+    };
+    let skip_strict_qc = parameter_source_decision.parameter_source != "synthetic_pdb";
+    let salvage_qc = matches!(qc_policy(&req), Ok("salvage"));
     let n_repeat = prepared.compiled_sequence.len();
     emit(
         &RunEvent::ChainGrowthStarted {
@@ -7624,11 +8205,15 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     let source_coordinates = resolved.source_coordinates.clone();
     let source_charge_manifest = resolved.source_charge_manifest.clone();
     let source_topology_ref = resolved.source_topology_ref.clone();
+    let source_forcefield_ref = resolved.source_forcefield_ref.clone();
     let inpcrd_path = resolved.artifacts.inpcrd.clone();
     let topology_graph_path = resolved.artifacts.topology_graph.clone();
     let raw_coordinates_path = resolved.artifacts.raw_coordinates.clone();
     let ensemble_manifest_path = resolved.artifacts.ensemble_manifest.clone();
     let topology_path = resolved.artifacts.topology.clone();
+    let forcefield_output_path = resolved.artifacts.forcefield_ref.clone();
+    let mut runtime_warnings = resolved.warnings.clone();
+    let mut any_salvaged = false;
     let ensemble_size = if req.realization.conformation_mode == "ensemble" {
         req.realization.ensemble_size.unwrap_or(4)
     } else {
@@ -7661,6 +8246,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             &prepared.base_mode,
             tacticity,
             member_seed,
+            !skip_strict_qc,
             &member_target_path,
         );
         timings_ms.build_graph = timings_ms
@@ -7670,62 +8256,90 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             Ok(built) => built,
             Err(err) => {
                 let detail = to_error("E_RUNTIME_BUILD", None, err.to_string());
+                let diagnostics = failure_diagnostics(
+                    "build_graph",
+                    None,
+                    Some(&prepared.token_junctions),
+                    overlap_status_summary(None, None, None),
+                    None,
+                    member_raw_path.clone(),
+                );
                 emit(
-                    &RunEvent::RunFailed {
-                        request_id: req.request_id.clone(),
-                        error: detail.clone(),
-                    },
+                    &run_failed_event(&req.request_id, detail.clone(), Some(diagnostics.clone())),
                     stream_ndjson,
                 );
                 return (
                     4,
-                    json!(ErrorEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "error".into(),
-                        request_id: req.request_id,
-                        errors: vec![detail],
-                        warnings: vec![],
-                    }),
+                    json!(error_envelope(
+                        &req.request_id,
+                        vec![detail],
+                        vec![],
+                        Some(diagnostics),
+                    )),
                 );
             }
         };
-        let internal_cleanup_report = if matches!(
-            req.realization.conformation_mode.as_str(),
-            "random_walk" | "ensemble"
-        ) {
-            let cleanup_started = Instant::now();
-            let report = relax_built_output(
-                &mut built.output,
-                &prepared.compiled_plan,
-                built.step_length_angstrom,
-                &internal_solver_relax_spec(),
-                None,
+        let (internal_cleanup_report, cleanup_elapsed_ms, cleanup_warning) =
+            run_internal_cleanup_pipeline(
+                &mut built,
+                &prepared,
+                &req.realization.conformation_mode,
+                &parameter_source_decision.parameter_source,
+                &source_coordinates,
+                source_charge_manifest.as_deref(),
             );
-            timings_ms.solver_cleanup = timings_ms
-                .solver_cleanup
-                .saturating_add(elapsed_ms(cleanup_started));
-            Some(report)
-        } else {
-            None
-        };
+        timings_ms.solver_cleanup = timings_ms.solver_cleanup.saturating_add(cleanup_elapsed_ms);
+        if let Some(message) = cleanup_warning {
+            runtime_warnings.push(to_warning("W_SYNTHETIC_CLEANUP", None, message));
+        }
         if internal_cleanup_report.is_some() {
-            built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
             if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
                 if let Some(report) = built.solver_report.as_mut() {
                     report.termination_reason = "qc_failed".into();
                     report.hard_fail_reason = Some(err.to_string());
                 }
                 let detail = to_error("E_RUNTIME_BUILD", None, err.to_string());
-                return (
-                    4,
-                    json!(ErrorEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "error".into(),
-                        request_id: req.request_id,
-                        errors: vec![detail],
-                        warnings: qc_failure_warnings(&built.path, member_raw_path.as_deref(),),
-                    }),
+                let diagnostics = failure_diagnostics(
+                    "solver_cleanup",
+                    Some(&built.qc_report),
+                    Some(&prepared.token_junctions),
+                    overlap_status_summary(
+                        Some(&built.output),
+                        internal_cleanup_report.as_ref(),
+                        None,
+                    ),
+                    Some(built.path.to_string_lossy().to_string()),
+                    member_raw_path.clone(),
                 );
+                if req.realization.relax.is_none() {
+                    if skip_strict_qc {
+                        runtime_warnings.push(source_fallback_qc_warning(
+                            &parameter_source_decision.parameter_source,
+                            &detail,
+                        ));
+                    } else if salvage_qc {
+                        any_salvaged = true;
+                        runtime_warnings.push(salvage_warning(&detail));
+                    } else {
+                        emit(
+                            &run_failed_event(
+                                &req.request_id,
+                                detail.clone(),
+                                Some(diagnostics.clone()),
+                            ),
+                            stream_ndjson,
+                        );
+                        return (
+                            4,
+                            json!(error_envelope(
+                                &req.request_id,
+                                vec![detail],
+                                qc_failure_warnings(&built.path, member_raw_path.as_deref()),
+                                Some(diagnostics),
+                            )),
+                        );
+                    }
+                }
             }
         }
         let relax_report = if let Some(relax) = req.realization.relax.as_ref() {
@@ -7735,13 +8349,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     let detail = to_error("E_OUTPUT_WRITE", None, err.to_string());
                     return (
                         4,
-                        json!(ErrorEnvelope {
-                            schema_version: BUILD_SCHEMA_VERSION.into(),
-                            status: "error".into(),
-                            request_id: req.request_id,
-                            errors: vec![detail],
-                            warnings: vec![],
-                        }),
+                        json!(error_envelope(&req.request_id, vec![detail], vec![], None)),
                     );
                 }
             }
@@ -7764,16 +8372,45 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
             if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
                 let detail = to_error("E_RUNTIME_BUILD", None, err.to_string());
-                return (
-                    4,
-                    json!(ErrorEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "error".into(),
-                        request_id: req.request_id,
-                        errors: vec![detail],
-                        warnings: qc_failure_warnings(&built.path, member_raw_path.as_deref(),),
-                    }),
+                let diagnostics = failure_diagnostics(
+                    "user_relax",
+                    Some(&built.qc_report),
+                    Some(&prepared.token_junctions),
+                    overlap_status_summary(
+                        Some(&built.output),
+                        internal_cleanup_report.as_ref(),
+                        relax_report.as_ref(),
+                    ),
+                    Some(built.path.to_string_lossy().to_string()),
+                    member_raw_path.clone(),
                 );
+                if skip_strict_qc {
+                    runtime_warnings.push(source_fallback_qc_warning(
+                        &parameter_source_decision.parameter_source,
+                        &detail,
+                    ));
+                } else if salvage_qc {
+                    any_salvaged = true;
+                    runtime_warnings.push(salvage_warning(&detail));
+                } else {
+                    emit(
+                        &run_failed_event(
+                            &req.request_id,
+                            detail.clone(),
+                            Some(diagnostics.clone()),
+                        ),
+                        stream_ndjson,
+                    );
+                    return (
+                        4,
+                        json!(error_envelope(
+                            &req.request_id,
+                            vec![detail],
+                            qc_failure_warnings(&built.path, member_raw_path.as_deref()),
+                            Some(diagnostics),
+                        )),
+                    );
+                }
             }
         }
         if req.realization.conformation_mode == "aligned" {
@@ -7806,13 +8443,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 let detail = to_error("E_OUTPUT_WRITE", None, err.to_string());
                 return (
                     4,
-                    json!(ErrorEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "error".into(),
-                        request_id: req.request_id,
-                        errors: vec![detail],
-                        warnings: vec![],
-                    }),
+                    json!(error_envelope(&req.request_id, vec![detail], vec![], None)),
                 );
             }
             timings_ms.artifact_write = timings_ms
@@ -7837,13 +8468,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         if let Err(err) = fs::copy(&primary_coordinates, &resolved.artifacts.coordinates) {
             return (
                 4,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: req.request_id,
-                    errors: vec![to_error("E_OUTPUT_WRITE", None, err.to_string())],
-                    warnings: vec![],
-                }),
+                json!(error_envelope(
+                    &req.request_id,
+                    vec![to_error("E_OUTPUT_WRITE", None, err.to_string())],
+                    vec![],
+                    None,
+                )),
             );
         }
         timings_ms.artifact_write = timings_ms
@@ -7888,17 +8518,16 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     ) {
         return (
             4,
-            json!(ErrorEnvelope {
-                schema_version: BUILD_SCHEMA_VERSION.into(),
-                status: "error".into(),
-                request_id: req.request_id,
-                errors: vec![to_error(
+            json!(error_envelope(
+                &req.request_id,
+                vec![to_error(
                     "E_OUTPUT_WRITE",
                     Some("/artifacts/topology_graph".into()),
                     err.to_string()
                 )],
-                warnings: vec![],
-            }),
+                vec![],
+                None,
+            )),
         );
     }
     timings_ms.artifact_write = timings_ms
@@ -7934,17 +8563,16 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         ) {
             return (
                 4,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: req.request_id,
-                    errors: vec![to_error(
+                json!(error_envelope(
+                    &req.request_id,
+                    vec![to_error(
                         "E_OUTPUT_WRITE",
                         Some("/artifacts/ensemble_manifest".into()),
                         err.to_string()
                     )],
-                    warnings: vec![],
-                }),
+                    vec![],
+                    None,
+                )),
             );
         }
         timings_ms.artifact_write = timings_ms
@@ -7956,44 +8584,117 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     if let Err(err) = write_amber_inpcrd(&built.output, &inpcrd_path, 1.0) {
         return (
             4,
-            json!(ErrorEnvelope {
-                schema_version: BUILD_SCHEMA_VERSION.into(),
-                status: "error".into(),
-                request_id: req.request_id,
-                errors: vec![to_error("E_OUTPUT_WRITE", None, err.to_string())],
-                warnings: vec![],
-            }),
+            json!(error_envelope(
+                &req.request_id,
+                vec![to_error("E_OUTPUT_WRITE", None, err.to_string())],
+                vec![],
+                None,
+            )),
         );
     }
     timings_ms.artifact_write = timings_ms
         .artifact_write
         .saturating_add(elapsed_ms(write_started));
-    if let (Some(source_topology_ref), Some(topology_path)) = (
-        bundle.artifacts.source_topology_ref.as_ref(),
-        topology_path.as_ref(),
-    ) {
-        let source_topology_path =
-            resolve_relative_path(Path::new(&req.source_ref.bundle_path), source_topology_ref);
+    let mut topology_mode = TopologyArtifactMode::None;
+    let mut ffxml_topology_charge = None;
+    if let Some(topology_path) = topology_path.as_ref() {
         ensure_parent(topology_path).ok();
         let write_started = Instant::now();
-        if let Err(err) = write_polymer_prmtop_from_source(
-            &built,
-            Path::new(&source_topology_path),
-            topology_path,
-        ) {
+        let topology_result = match parameter_source_decision.parameter_source.as_str() {
+            "source_topology_ref" => {
+                let Some(source_topology_path) = source_topology_ref.as_ref() else {
+                    return (
+                        4,
+                        json!(error_envelope(
+                            &req.request_id,
+                            vec![to_error(
+                                "E_OUTPUT_WRITE",
+                                Some("/artifacts/topology".into()),
+                                "source topology fallback was selected but no source_topology_ref is resolved",
+                            )],
+                            vec![],
+                            None,
+                        )),
+                    );
+                };
+                topology_mode = TopologyArtifactMode::SourceTransfer;
+                write_polymer_prmtop_from_source(
+                    &built,
+                    Path::new(source_topology_path),
+                    topology_path,
+                )
+                .map(|_| None)
+            }
+            "forcefield_ref" => {
+                let Some(source_forcefield_path) = source_forcefield_ref.as_ref() else {
+                    return (
+                        4,
+                        json!(error_envelope(
+                            &req.request_id,
+                            vec![to_error(
+                                "E_OUTPUT_WRITE",
+                                Some("/artifacts/topology".into()),
+                                "forcefield fallback was selected but no forcefield_ref is resolved",
+                            )],
+                            vec![],
+                            None,
+                        )),
+                    );
+                };
+                topology_mode = TopologyArtifactMode::ForcefieldRef;
+                write_polymer_prmtop_from_ffxml(
+                    &built,
+                    Path::new(&source_coordinates),
+                    source_charge_manifest.as_ref().map(Path::new),
+                    Path::new(source_forcefield_path),
+                    topology_path,
+                )
+                .map(|summary| Some(summary.net_charge_e))
+            }
+            _ => {
+                topology_mode = TopologyArtifactMode::SyntheticUffLike;
+                write_polymer_prmtop_synthetic_uff_like(
+                    &built,
+                    Path::new(&source_coordinates),
+                    source_charge_manifest.as_ref().map(Path::new),
+                    topology_path,
+                )
+                .map(|_| None)
+            }
+        };
+        match topology_result {
+            Ok(net_charge) => {
+                ffxml_topology_charge = net_charge;
+            }
+            Err(err) => {
+                return (
+                    4,
+                    json!(error_envelope(
+                        &req.request_id,
+                        vec![to_error(
+                            "E_OUTPUT_WRITE",
+                            Some("/artifacts/topology".into()),
+                            err.to_string(),
+                        )],
+                        vec![],
+                        None,
+                    )),
+                );
+            }
+        }
+        timings_ms.artifact_write = timings_ms
+            .artifact_write
+            .saturating_add(elapsed_ms(write_started));
+    }
+    if let (Some(source_forcefield_ref), Some(forcefield_output_path)) = (
+        source_forcefield_ref.as_ref(),
+        forcefield_output_path.as_ref(),
+    ) {
+        let write_started = Instant::now();
+        if let Err(err) = copy_forcefield_artifact(source_forcefield_ref, forcefield_output_path) {
             return (
                 4,
-                json!(ErrorEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "error".into(),
-                    request_id: req.request_id,
-                    errors: vec![to_error(
-                        "E_OUTPUT_WRITE",
-                        Some("/artifacts/topology".into()),
-                        err.to_string(),
-                    )],
-                    warnings: vec![],
-                }),
+                json!(error_envelope(&req.request_id, vec![err], vec![], None)),
             );
         }
         timings_ms.artifact_write = timings_ms
@@ -8024,17 +8725,16 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             Err(_) => {
                 return (
                     4,
-                    json!(ErrorEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "error".into(),
-                        request_id: req.request_id,
-                        errors: vec![to_error(
+                    json!(error_envelope(
+                        &req.request_id,
+                        vec![to_error(
                             "E_CHARGE_HANDOFF",
                             None,
                             "failed to load source charge manifest"
                         )],
-                        warnings: vec![],
-                    }),
+                        vec![],
+                        None,
+                    )),
                 )
             }
         };
@@ -8054,13 +8754,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             Err(err) => {
                 return (
                     4,
-                    json!(ErrorEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "error".into(),
-                        request_id: req.request_id,
-                        errors: vec![to_error("E_CHARGE_HANDOFF", None, err.to_string())],
-                        warnings: vec![],
-                    }),
+                    json!(error_envelope(
+                        &req.request_id,
+                        vec![to_error("E_CHARGE_HANDOFF", None, err.to_string())],
+                        vec![],
+                        None,
+                    )),
                 )
             }
         }
@@ -8082,19 +8781,27 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             Err(err) => {
                 return (
                     4,
-                    json!(ErrorEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "error".into(),
-                        request_id: req.request_id,
-                        errors: vec![to_error("E_CHARGE_HANDOFF", None, err.to_string())],
-                        warnings: vec![],
-                    }),
+                    json!(error_envelope(
+                        &req.request_id,
+                        vec![to_error("E_CHARGE_HANDOFF", None, err.to_string())],
+                        vec![],
+                        None,
+                    )),
                 )
             }
         }
+    } else if let Some(net_charge) = ffxml_topology_charge {
+        (Some(net_charge), "forcefield_ref.atom_charges".to_string())
     } else {
         (None, "unavailable".to_string())
     };
+    let acceptance_state = acceptance_state(any_salvaged);
+    let (handoff_level, limitations) = handoff_level_and_limitations(
+        topology_mode,
+        net_charge,
+        any_salvaged,
+        &parameter_source_decision,
+    );
 
     ensure_parent(&resolved.artifacts.charge_manifest).ok();
     let charge_manifest = json!({
@@ -8102,7 +8809,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         "solute_path": resolved.artifacts.coordinates,
         "source_topology_ref": bundle.artifacts.source_topology_ref,
         "target_topology_ref": topology_path,
-        "forcefield_ref": bundle.artifacts.forcefield_ref,
+        "forcefield_ref": forcefield_output_path,
         "charge_derivation": charge_derivation,
         "net_charge_e": net_charge,
         "atom_count": built.output.atoms.len(),
@@ -8116,13 +8823,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     ) {
         return (
             4,
-            json!(ErrorEnvelope {
-                schema_version: BUILD_SCHEMA_VERSION.into(),
-                status: "error".into(),
-                request_id: req.request_id,
-                errors: vec![to_error("E_OUTPUT_WRITE", None, err.to_string())],
-                warnings: vec![],
-            }),
+            json!(error_envelope(
+                &req.request_id,
+                vec![to_error("E_OUTPUT_WRITE", None, err.to_string())],
+                vec![],
+                None,
+            )),
         );
     }
 
@@ -8153,6 +8859,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         ensemble_manifest: ensemble_manifest_path
             .as_ref()
             .and_then(|path| sha256_file(Path::new(path)).ok()),
+        forcefield_ref: forcefield_output_path
+            .as_ref()
+            .and_then(|path| sha256_file(Path::new(path)).ok()),
     };
     let md_ready_handoff = MdReadyHandoff {
         version: "warp-md.polymer-md-handoff.v1".into(),
@@ -8166,6 +8875,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         topology_graph: topology_graph_path.clone(),
         topology: topology_path.clone(),
         charge_manifest: resolved.artifacts.charge_manifest.clone(),
+        acceptance_state: acceptance_state.clone(),
+        handoff_level: handoff_level.clone(),
+        limitations: limitations.clone(),
         source_structure_path: source_coordinates.clone(),
         source_topology_path: source_topology_ref.clone(),
         source_charge_manifest_path: source_charge_manifest.clone(),
@@ -8178,7 +8890,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             source_chain_indices: vec![1],
             packed_chain_indices: vec![1],
         }],
-        forcefield_ref: bundle.artifacts.forcefield_ref.clone(),
+        forcefield_ref: forcefield_output_path.clone(),
     };
     let manifest = BuildManifestSchema {
         schema_version: BUILD_MANIFEST_VERSION.into(),
@@ -8198,6 +8910,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             seed,
             seed_policy: resolved.seed_policy.clone(),
             relax: req.realization.relax.clone(),
+            qc_policy: req.realization.qc_policy.clone(),
         },
         artifacts: BuildManifestArtifacts {
             coordinates: resolved.artifacts.coordinates.clone(),
@@ -8207,7 +8920,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             topology: topology_path.clone(),
             topology_graph: topology_graph_path.clone(),
             ensemble_manifest: ensemble_manifest_path.clone(),
-            forcefield_ref: bundle.artifacts.forcefield_ref.clone(),
+            forcefield_ref: forcefield_output_path.clone(),
         },
         artifact_digests,
         md_ready_handoff,
@@ -8253,23 +8966,29 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 primary_internal_cleanup_report.as_ref(),
                 primary_relax_report.as_ref(),
             ),
+            acceptance_state: acceptance_state.clone(),
+            handoff_level: handoff_level.clone(),
+            limitations: limitations.clone(),
+            parameter_source_decision: parameter_source_decision.clone(),
         },
         provenance: BuildManifestProvenance {
             schema_version: BUILD_MANIFEST_VERSION.into(),
             builder_version: env!("CARGO_PKG_VERSION").into(),
             binary_version: env!("CARGO_PKG_VERSION").into(),
             algorithm_version: format!("{}.v1", req.realization.conformation_mode),
-            topology_transfer_mode: if topology_path.is_some() {
-                "residue_filtered_with_bonds".into()
-            } else {
-                "none".into()
+            topology_transfer_mode: match topology_mode {
+                TopologyArtifactMode::SourceTransfer => "residue_filtered_with_bonds".into(),
+                TopologyArtifactMode::ForcefieldRef => "forcefield_ref".into(),
+                TopologyArtifactMode::SyntheticUffLike => "synthetic_uff_like".into(),
+                TopologyArtifactMode::None => "none".into(),
             },
             source_bundle_path: req.source_ref.bundle_path.clone(),
             source_bundle_digest: resolved.bundle_digest.clone(),
             target_normalization: resolved.normalization.clone(),
+            parameter_source_decision: parameter_source_decision.clone(),
             build_metadata: build_metadata_summary(),
         },
-        warnings: resolved.warnings.clone(),
+        warnings: runtime_warnings.clone(),
     };
     let write_started = Instant::now();
     if let Err(err) = fs::write(
@@ -8281,13 +9000,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     ) {
         return (
             4,
-            json!(ErrorEnvelope {
-                schema_version: BUILD_SCHEMA_VERSION.into(),
-                status: "error".into(),
-                request_id: req.request_id,
-                errors: vec![to_error("E_OUTPUT_WRITE", None, err.to_string())],
-                warnings: vec![],
-            }),
+            json!(error_envelope(
+                &req.request_id,
+                vec![to_error("E_OUTPUT_WRITE", None, err.to_string())],
+                vec![],
+                None,
+            )),
         );
     }
     timings_ms.artifact_write = timings_ms
@@ -8320,6 +9038,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 topology: topology_path.clone(),
                 topology_graph: Some(topology_graph_path.clone()),
                 ensemble_manifest: ensemble_manifest_path.clone(),
+                forcefield_ref: forcefield_output_path.clone(),
             },
         },
         stream_ndjson,
@@ -8340,6 +9059,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 topology: topology_path,
                 topology_graph: Some(topology_graph_path),
                 ensemble_manifest: ensemble_manifest_path,
+                forcefield_ref: forcefield_output_path,
             },
             summary: RunSummary {
                 build_mode: req.target.mode.clone(),
@@ -8361,8 +9081,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     primary_internal_cleanup_report.as_ref(),
                     primary_relax_report.as_ref(),
                 ),
+                acceptance_state,
+                handoff_level,
+                limitations,
+                parameter_source_decision,
             },
-            warnings: resolved.warnings,
+            warnings: runtime_warnings,
         }),
     )
 }
@@ -8411,6 +9135,56 @@ mod tests {
             arm_count: 1,
             max_branch_depth: 0,
             graph_has_cycle: false,
+        }
+    }
+
+    fn test_synthetic_topology() -> AmberTopology {
+        AmberTopology {
+            atom_names: vec!["C1".into(), "C2".into(), "C3".into(), "C4".into()],
+            residue_labels: vec!["TST".into()],
+            residue_pointers: vec![1],
+            atomic_numbers: vec![6, 6, 6, 6],
+            masses: vec![12.011; 4],
+            charges: vec![0.0; 4],
+            atom_type_indices: vec![1; 4],
+            amber_atom_types: vec!["CT".into(); 4],
+            radii: vec![1.7; 4],
+            screen: vec![0.72; 4],
+            bonds: vec![(0, 1), (1, 2), (2, 3)],
+            bond_type_indices: vec![1, 1, 1],
+            bond_force_constants: vec![320.0],
+            bond_equil_values: vec![1.54],
+            angles: vec![[0, 1, 2], [1, 2, 3]],
+            angle_type_indices: vec![1, 1],
+            angle_force_constants: vec![70.0],
+            angle_equil_values: vec![1.9106332],
+            dihedrals: vec![[0, 1, 2, 3]],
+            dihedral_type_indices: vec![1],
+            dihedral_force_constants: vec![1.0],
+            dihedral_periodicities: vec![3.0],
+            dihedral_phases: vec![0.0],
+            scee_scale_factors: vec![1.2],
+            scnb_scale_factors: vec![2.0],
+            solty: vec![0.0],
+            impropers: Vec::new(),
+            improper_type_indices: Vec::new(),
+            excluded_atoms: vec![Vec::new(); 4],
+            nonbonded_parm_index: vec![1],
+            lennard_jones_acoef: vec![1.0],
+            lennard_jones_bcoef: vec![1.0],
+            lennard_jones_14_acoef: vec![1.0],
+            lennard_jones_14_bcoef: vec![1.0],
+            hbond_acoef: vec![0.0],
+            hbond_bcoef: vec![0.0],
+            hbcut: vec![0.0],
+            tree_chain_classification: vec!["M".into(); 4],
+            join_array: vec![0; 4],
+            irotat: vec![0; 4],
+            solvent_pointers: Vec::new(),
+            atoms_per_molecule: vec![4],
+            box_dimensions: Vec::new(),
+            radius_set: Some("modified Bondi radii".into()),
+            ipol: 0,
         }
     }
 
@@ -8485,6 +9259,85 @@ mod tests {
         assert!(
             report.fallback_steps_executed.unwrap_or(0) > 0,
             "{report:#?}"
+        );
+    }
+
+    #[test]
+    fn synthetic_bonded_cleanup_reduces_bond_error_and_clash() {
+        let mut output = PackOutput {
+            atoms: vec![
+                test_atom("C1", "C", 1, Vec3::new(0.0, 0.0, 0.0)),
+                test_atom("C2", "C", 1, Vec3::new(1.54, 0.0, 0.0)),
+                test_atom("C3", "C", 2, Vec3::new(3.08, 0.0, 0.0)),
+                test_atom("C4", "C", 2, Vec3::new(0.2, 0.2, 0.0)),
+            ],
+            bonds: vec![(0, 1), (1, 2), (2, 3)],
+            box_size: [0.0, 0.0, 0.0],
+            ter_after: vec![3],
+            box_vectors: None,
+        };
+        let qc_context = crate::polymer::BuildQcContext {
+            inter_residue_bond_count: 1,
+            terminal_connectivity_consistent: true,
+            sequence_token_template_consistent: true,
+            bond_expectations: vec![crate::polymer::BuildBondExpectation {
+                edge_id: "edge_2_3".into(),
+                parent_resid: 2,
+                child_resid: 3,
+                parent_atom: "C3".into(),
+                child_atom: "C4".into(),
+                parent_idx: 2,
+                child_idx: 3,
+                expected_distance_angstrom: 1.54,
+            }],
+        };
+        let topology = test_synthetic_topology();
+        let initial_report = recompute_build_qc_report(&output, &qc_context);
+        let initial_bond_error = (output.atoms[3]
+            .position
+            .sub(output.atoms[2].position)
+            .norm()
+            - 1.54)
+            .abs();
+        assert!(initial_report.severe_nonbonded_clash_count > 0);
+
+        let report = relax_synthetic_topology_output(&mut output, &topology, &qc_context, None);
+        let final_report = recompute_build_qc_report(&output, &qc_context);
+        let final_bond_error = (output.atoms[3]
+            .position
+            .sub(output.atoms[2].position)
+            .norm()
+            - 1.54)
+            .abs();
+
+        assert_eq!(report.mode, "synthetic_bonded");
+        assert!(report.steps_executed > 0, "{report:#?}");
+        assert!(report.max_atom_displacement_angstrom > 0.0, "{report:#?}");
+        assert!(
+            report.final_energy_kcal_mol.unwrap_or(f32::INFINITY)
+                < report.initial_energy_kcal_mol.unwrap_or(f32::INFINITY),
+            "{report:#?}"
+        );
+        assert!(
+            report.final_max_force.unwrap_or(f32::INFINITY)
+                < report.initial_max_force.unwrap_or(f32::INFINITY),
+            "{report:#?}"
+        );
+        assert!(
+            report.accepted_line_search_steps.unwrap_or(0) > 0,
+            "{report:#?}"
+        );
+        assert!(report.termination_reason.is_some(), "{report:#?}");
+        assert!(final_bond_error < initial_bond_error, "{final_report:#?}");
+        assert!(
+            final_report.severe_nonbonded_clash_count < initial_report.severe_nonbonded_clash_count,
+            "{final_report:#?}"
+        );
+        assert!(
+            final_report.min_nonbonded_distance_angstrom.unwrap_or(0.0)
+                > initial_report
+                    .min_nonbonded_distance_angstrom
+                    .unwrap_or(0.0)
         );
     }
 }

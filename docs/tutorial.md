@@ -87,9 +87,9 @@ Use PDB or GRO to load topology and a reference frame.
 ```python
 from warp_md import System
 
-system = System.from_pdb("example.pdb")
+system = System.from_file("example.pdb")
 # or
-system = System.from_gro("example.gro")
+system = System.from_file("example.gro")
 ```
 
 Notes:

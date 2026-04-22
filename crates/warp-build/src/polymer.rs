@@ -2,10 +2,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
+use roxmltree::{Document, Node};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use traj_core::{
-    center_of_geometry, normalize_vec3 as normalize, rotate_about_axis_vec3 as rotate_about_axis,
+    center_of_geometry,
+    elements::{mass_for_element, normalize_element},
+    normalize_vec3 as normalize, rotate_about_axis_vec3 as rotate_about_axis,
     rotate_from_to_vec3 as rotate_from_to, Vec3,
 };
 use warp_pack::{PackError, PackResult};
@@ -93,6 +96,49 @@ pub struct PolymerBuiltArtifact {
     pub qc_context: BuildQcContext,
     pub qc_report: BuildQcReport,
     pub solver_report: Option<BuildSolverReport>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TrainingSourceMetrics {
+    pub min_nonbonded_distance_angstrom: Option<f32>,
+    pub max_local_bond_ratio: Option<f32>,
+    pub impossible_valence_count: usize,
+    pub ambiguous_assignment_count: usize,
+    pub junction_consistency_ok: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TrainingSourceAssessment {
+    pub quality: String,
+    pub parameter_source: String,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    pub metrics: TrainingSourceMetrics,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrainingSourceQuality {
+    Trusted,
+    Risky,
+    Unreliable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParameterSourceChoice {
+    SyntheticPdb,
+    SourceTopologyRef,
+    ForcefieldRef,
+    Rejected,
+}
+
+#[derive(Clone, Debug)]
+struct TrainingAssessmentThresholds {
+    min_nonbonded_distance: Option<f32>,
+    max_local_bond_ratio: Option<f32>,
+    max_local_bond_delta: Option<f32>,
+    impossible_valence_count: usize,
+    ambiguous_assignment_count: usize,
+    junction_consistency_ok: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -360,6 +406,330 @@ fn infer_local_bonds(atoms: &[AtomRecord]) -> Vec<(usize, usize)> {
     bonds
 }
 
+fn infer_global_bonds(atoms: &[AtomRecord]) -> Vec<(usize, usize)> {
+    let mut bonds = Vec::new();
+    for i in 0..atoms.len() {
+        for j in (i + 1)..atoms.len() {
+            let max_distance = (covalent_radius_angstrom(&atoms[i].element)
+                + covalent_radius_angstrom(&atoms[j].element)
+                + 0.45)
+                .clamp(0.9, 2.2);
+            let distance = atoms[i].position.sub(atoms[j].position).norm();
+            if distance >= 0.35 && distance <= max_distance {
+                bonds.push((i, j));
+            }
+        }
+    }
+    bonds
+}
+
+fn dedup_bonds(mut bonds: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    for bond in &mut bonds {
+        if bond.0 > bond.1 {
+            *bond = (bond.1, bond.0);
+        }
+    }
+    bonds.sort_unstable();
+    bonds.dedup();
+    bonds
+}
+
+fn heavy_atom(element: &str) -> bool {
+    normalize_element(element)
+        .map(|value| value != "H")
+        .unwrap_or(true)
+}
+
+fn element_max_valence(element: &str) -> usize {
+    match normalize_element(element).as_deref() {
+        Some("H") => 1,
+        Some("B") => 4,
+        Some("C") => 4,
+        Some("N") => 4,
+        Some("O") => 2,
+        Some("F") => 1,
+        Some("P") => 6,
+        Some("S") => 6,
+        Some("Cl") => 1,
+        Some("Br") => 1,
+        Some("I") => 1,
+        Some("Si") => 4,
+        _ => 6,
+    }
+}
+
+fn atom_assignment_ambiguous(
+    atoms: &[AtomRecord],
+    adjacency: &[Vec<usize>],
+    atom_idx: usize,
+) -> bool {
+    let Some(atom) = atoms.get(atom_idx) else {
+        return false;
+    };
+    if !heavy_atom(&atom.element) {
+        return false;
+    }
+    let element = normalize_element(&atom.element).unwrap_or_else(|| atom.element.clone());
+    let degree = adjacency
+        .get(atom_idx)
+        .map(|items| items.len())
+        .unwrap_or(0);
+    if degree == 0 {
+        return false;
+    }
+    let mean_angle = average_neighbor_angle(atoms, adjacency, atom_idx).unwrap_or(109.5);
+    match element.as_str() {
+        "C" | "N" => {
+            (degree == 2 && (112.0..160.0).contains(&mean_angle))
+                || (degree == 3 && (111.0..119.0).contains(&mean_angle))
+        }
+        "O" | "S" => {
+            degree == 1
+                && adjacency
+                    .get(atom_idx)
+                    .into_iter()
+                    .flatten()
+                    .any(|neighbor| {
+                        let distance = atoms[atom_idx]
+                            .position
+                            .sub(atoms[*neighbor].position)
+                            .norm();
+                        distance > 1.28 && distance < 1.42
+                    })
+        }
+        _ => false,
+    }
+}
+
+fn collect_training_thresholds(
+    atoms: &[AtomRecord],
+    bonds: &[(usize, usize)],
+    graph_node_specs: &[GraphNodeSpec],
+    token_junctions: &BTreeMap<String, TokenJunctionSpec>,
+    templates: &[ResidueTemplate],
+) -> TrainingAssessmentThresholds {
+    let adjacency = rebuild_bond_adjacency(atoms.len(), bonds);
+    let typings = (0..atoms.len())
+        .map(|atom_idx| infer_uff_like_typing(atoms, &adjacency, atom_idx))
+        .collect::<Vec<_>>();
+    let bonded = bonds
+        .iter()
+        .copied()
+        .map(|(a, b)| ordered_pair(a, b))
+        .collect::<BTreeSet<_>>();
+    let mut one_three = BTreeSet::new();
+    for (center, neighbors) in adjacency.iter().enumerate() {
+        for left in neighbors {
+            for right in neighbors {
+                if left >= right {
+                    continue;
+                }
+                one_three.insert(ordered_pair(*left, *right));
+            }
+        }
+        for neighbor in neighbors {
+            for outer in adjacency.get(*neighbor).into_iter().flatten() {
+                if *outer == center {
+                    continue;
+                }
+                one_three.insert(ordered_pair(center, *outer));
+            }
+        }
+    }
+
+    let mut min_nonbonded_distance: Option<f32> = None;
+    for left in 0..atoms.len() {
+        for right in (left + 1)..atoms.len() {
+            let pair = ordered_pair(left, right);
+            if bonded.contains(&pair) || one_three.contains(&pair) {
+                continue;
+            }
+            let distance = atoms[left].position.sub(atoms[right].position).norm();
+            min_nonbonded_distance = Some(match min_nonbonded_distance {
+                Some(current) => current.min(distance),
+                None => distance,
+            });
+        }
+    }
+
+    let mut max_local_bond_ratio: Option<f32> = None;
+    let mut max_local_bond_delta: Option<f32> = None;
+    for &(left, right) in bonds {
+        let measured = atoms[left].position.sub(atoms[right].position).norm();
+        let left_typing = typings
+            .get(left)
+            .map(|item| item.params)
+            .unwrap_or_else(|| uff_params_for_label("C_3"));
+        let right_typing = typings
+            .get(right)
+            .map(|item| item.params)
+            .unwrap_or_else(|| uff_params_for_label("C_3"));
+        let order = guess_bond_order(atoms, &adjacency, &typings, left, right);
+        let ideal = uff_bond_rest_length(order, left_typing, right_typing).max(0.8);
+        let ratio = measured / ideal.max(1.0e-3);
+        let delta = (measured - ideal).max(0.0);
+        max_local_bond_ratio = Some(match max_local_bond_ratio {
+            Some(current) => current.max(ratio),
+            None => ratio,
+        });
+        max_local_bond_delta = Some(match max_local_bond_delta {
+            Some(current) => current.max(delta),
+            None => delta,
+        });
+    }
+
+    let mut impossible_valence_count = 0usize;
+    let mut ambiguous_assignment_count = 0usize;
+    for atom_idx in 0..atoms.len() {
+        let Some(atom) = atoms.get(atom_idx) else {
+            continue;
+        };
+        if !heavy_atom(&atom.element) {
+            continue;
+        }
+        let degree = adjacency
+            .get(atom_idx)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        if degree > element_max_valence(&atom.element) {
+            impossible_valence_count += 1;
+            continue;
+        }
+        if atom_assignment_ambiguous(atoms, &adjacency, atom_idx) {
+            ambiguous_assignment_count += 1;
+        }
+    }
+
+    let mut critical_atoms = BTreeMap::<String, BTreeSet<String>>::new();
+    for spec in graph_node_specs {
+        if let Some(junction) = token_junctions.get(&spec.sequence_label) {
+            let entry = critical_atoms
+                .entry(spec.template_resname.clone())
+                .or_default();
+            if let Some(atom) = junction.head_attach_atom.as_ref() {
+                entry.insert(atom.trim().to_string());
+            }
+            if let Some(atom) = junction.tail_attach_atom.as_ref() {
+                entry.insert(atom.trim().to_string());
+            }
+            entry.extend(
+                junction
+                    .head_leaving_atoms
+                    .iter()
+                    .map(|item| item.trim().to_string()),
+            );
+            entry.extend(
+                junction
+                    .tail_leaving_atoms
+                    .iter()
+                    .map(|item| item.trim().to_string()),
+            );
+        }
+    }
+    let mut junction_consistency_ok = true;
+    for template in templates {
+        let Some(required) = critical_atoms.get(&template.resname) else {
+            continue;
+        };
+        let local_adjacency = rebuild_bond_adjacency(template.atoms.len(), &template.local_bonds);
+        let mut critical_indices = BTreeSet::new();
+        for atom_name in required {
+            let Some(atom_idx) = template
+                .atoms
+                .iter()
+                .position(|atom| atom.name.trim() == atom_name.trim())
+            else {
+                junction_consistency_ok = false;
+                continue;
+            };
+            critical_indices.insert(atom_idx);
+            critical_indices.extend(local_adjacency.get(atom_idx).into_iter().flatten().copied());
+        }
+        for atom_idx in critical_indices {
+            let degree = local_adjacency
+                .get(atom_idx)
+                .map(|items| items.len())
+                .unwrap_or(0);
+            let atom = &template.atoms[atom_idx];
+            if degree > element_max_valence(&atom.element) {
+                junction_consistency_ok = false;
+                break;
+            }
+            if atom_assignment_ambiguous(&template.atoms, &local_adjacency, atom_idx) {
+                junction_consistency_ok = false;
+                break;
+            }
+        }
+        if !junction_consistency_ok {
+            break;
+        }
+    }
+
+    TrainingAssessmentThresholds {
+        min_nonbonded_distance,
+        max_local_bond_ratio,
+        max_local_bond_delta,
+        impossible_valence_count,
+        ambiguous_assignment_count,
+        junction_consistency_ok,
+    }
+}
+
+fn training_source_quality(thresholds: &TrainingAssessmentThresholds) -> TrainingSourceQuality {
+    let severe_overlap = thresholds
+        .min_nonbonded_distance
+        .map(|value| value < 0.60)
+        .unwrap_or(false);
+    let risky_overlap = thresholds
+        .min_nonbonded_distance
+        .map(|value| value < 0.90)
+        .unwrap_or(false);
+    let severe_bond = thresholds
+        .max_local_bond_ratio
+        .map(|value| value > 1.30)
+        .unwrap_or(false)
+        || thresholds
+            .max_local_bond_delta
+            .map(|value| value > 0.25)
+            .unwrap_or(false);
+    let risky_bond = thresholds
+        .max_local_bond_ratio
+        .map(|value| value > 1.15)
+        .unwrap_or(false)
+        || thresholds
+            .max_local_bond_delta
+            .map(|value| value > 0.10)
+            .unwrap_or(false);
+    if thresholds.impossible_valence_count > 0 || severe_overlap || severe_bond {
+        TrainingSourceQuality::Unreliable
+    } else if !thresholds.junction_consistency_ok
+        || risky_overlap
+        || risky_bond
+        || thresholds.ambiguous_assignment_count > 0
+    {
+        TrainingSourceQuality::Risky
+    } else {
+        TrainingSourceQuality::Trusted
+    }
+}
+
+fn training_source_quality_label(quality: TrainingSourceQuality) -> String {
+    match quality {
+        TrainingSourceQuality::Trusted => "trusted".into(),
+        TrainingSourceQuality::Risky => "risky".into(),
+        TrainingSourceQuality::Unreliable => "unreliable".into(),
+    }
+}
+
+fn parameter_source_label(choice: ParameterSourceChoice) -> String {
+    match choice {
+        ParameterSourceChoice::SyntheticPdb => "synthetic_pdb".into(),
+        ParameterSourceChoice::SourceTopologyRef => "source_topology_ref".into(),
+        ParameterSourceChoice::ForcefieldRef => "forcefield_ref".into(),
+        ParameterSourceChoice::Rejected => "rejected".into(),
+    }
+}
+
 fn atoms_len_from_grouped(grouped: &[ResidueTemplate]) -> usize {
     grouped.iter().map(|template| template.atoms.len()).sum()
 }
@@ -517,6 +887,1523 @@ fn covalent_radius_angstrom(element: &str) -> f32 {
         "I" => 1.39,
         "SI" => 1.11,
         _ => 0.80,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct UffAtomParams {
+    label: &'static str,
+    r1: f32,
+    theta0_rad: f32,
+    x1: f32,
+    d1: f32,
+    z1: f32,
+    v1: f32,
+    u1: f32,
+    xi: f32,
+}
+
+#[derive(Clone, Debug)]
+struct SyntheticAtomTyping {
+    params: UffAtomParams,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AtomGeometryClass {
+    Sp1,
+    Sp2,
+    Sp3,
+}
+
+#[derive(Clone, Debug)]
+struct SyntheticBondSpec {
+    bond: (usize, usize),
+    rest_length: f32,
+    force_constant: f32,
+}
+
+#[derive(Clone, Debug)]
+struct SyntheticDihedralParam {
+    force_constant: f32,
+    periodicity: f32,
+    phase_rad: f32,
+}
+
+fn deg_to_rad(value: f32) -> f32 {
+    value * std::f32::consts::PI / 180.0
+}
+
+fn atomic_number_for_element(element: &str) -> i32 {
+    match normalize_element(element).as_deref().unwrap_or(element) {
+        "H" => 1,
+        "B" => 5,
+        "C" => 6,
+        "N" => 7,
+        "O" => 8,
+        "F" => 9,
+        "P" => 15,
+        "S" => 16,
+        "Cl" => 17,
+        "Si" => 14,
+        "Br" => 35,
+        "I" => 53,
+        _ => 0,
+    }
+}
+
+fn element_mass_amu(element: &str) -> f32 {
+    let normalized = normalize_element(element).unwrap_or_else(|| element.trim().to_string());
+    let mass = mass_for_element(&normalized);
+    if mass > 0.0 {
+        mass
+    } else {
+        12.0
+    }
+}
+
+fn average_neighbor_angle(
+    atoms: &[AtomRecord],
+    adjacency: &[Vec<usize>],
+    atom_idx: usize,
+) -> Option<f32> {
+    let neighbors = adjacency.get(atom_idx)?;
+    if neighbors.len() < 2 {
+        return None;
+    }
+    let center = atoms.get(atom_idx)?.position;
+    let mut total = 0.0f32;
+    let mut count = 0usize;
+    for left_idx in 0..neighbors.len() {
+        for right_idx in (left_idx + 1)..neighbors.len() {
+            let left = atoms.get(neighbors[left_idx])?.position.sub(center);
+            let right = atoms.get(neighbors[right_idx])?.position.sub(center);
+            let left_norm = left.norm();
+            let right_norm = right.norm();
+            if left_norm <= 1.0e-6 || right_norm <= 1.0e-6 {
+                continue;
+            }
+            let cos_theta = (left.dot(right) / (left_norm * right_norm)).clamp(-1.0, 1.0);
+            total += cos_theta.acos() * 180.0 / std::f32::consts::PI;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        None
+    } else {
+        Some(total / count as f32)
+    }
+}
+
+fn infer_geometry_class(
+    atoms: &[AtomRecord],
+    adjacency: &[Vec<usize>],
+    atom_idx: usize,
+) -> AtomGeometryClass {
+    let degree = adjacency
+        .get(atom_idx)
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let mean_angle = average_neighbor_angle(atoms, adjacency, atom_idx).unwrap_or(109.5);
+    if degree <= 2 && mean_angle >= 155.0 {
+        AtomGeometryClass::Sp1
+    } else if mean_angle >= 116.0 || degree <= 2 {
+        AtomGeometryClass::Sp2
+    } else {
+        AtomGeometryClass::Sp3
+    }
+}
+
+fn uff_params_for_label(label: &'static str) -> UffAtomParams {
+    match label {
+        "H_" => UffAtomParams {
+            label,
+            r1: 0.354,
+            theta0_rad: deg_to_rad(180.0),
+            x1: 2.886,
+            d1: 0.044,
+            z1: 0.712,
+            v1: 0.0,
+            u1: 0.0,
+            xi: 4.528,
+        },
+        "C_1" => UffAtomParams {
+            label,
+            r1: 0.706,
+            theta0_rad: deg_to_rad(180.0),
+            x1: 3.851,
+            d1: 0.105,
+            z1: 1.912,
+            v1: 0.0,
+            u1: 2.0,
+            xi: 5.343,
+        },
+        "C_2" => UffAtomParams {
+            label,
+            r1: 0.732,
+            theta0_rad: deg_to_rad(120.0),
+            x1: 3.851,
+            d1: 0.105,
+            z1: 1.912,
+            v1: 0.0,
+            u1: 2.0,
+            xi: 5.343,
+        },
+        "C_3" => UffAtomParams {
+            label,
+            r1: 0.757,
+            theta0_rad: deg_to_rad(109.47),
+            x1: 3.851,
+            d1: 0.105,
+            z1: 1.912,
+            v1: 2.119,
+            u1: 2.0,
+            xi: 5.343,
+        },
+        "N_1" => UffAtomParams {
+            label,
+            r1: 0.656,
+            theta0_rad: deg_to_rad(180.0),
+            x1: 3.66,
+            d1: 0.069,
+            z1: 2.544,
+            v1: 0.0,
+            u1: 2.0,
+            xi: 6.899,
+        },
+        "N_2" => UffAtomParams {
+            label,
+            r1: 0.685,
+            theta0_rad: deg_to_rad(111.2),
+            x1: 3.66,
+            d1: 0.069,
+            z1: 2.544,
+            v1: 0.0,
+            u1: 2.0,
+            xi: 6.899,
+        },
+        "N_3" => UffAtomParams {
+            label,
+            r1: 0.7,
+            theta0_rad: deg_to_rad(106.7),
+            x1: 3.66,
+            d1: 0.069,
+            z1: 2.544,
+            v1: 0.45,
+            u1: 2.0,
+            xi: 6.899,
+        },
+        "O_1" => UffAtomParams {
+            label,
+            r1: 0.639,
+            theta0_rad: deg_to_rad(180.0),
+            x1: 3.5,
+            d1: 0.06,
+            z1: 2.3,
+            v1: 0.0,
+            u1: 2.0,
+            xi: 8.741,
+        },
+        "O_2" => UffAtomParams {
+            label,
+            r1: 0.634,
+            theta0_rad: deg_to_rad(120.0),
+            x1: 3.5,
+            d1: 0.06,
+            z1: 2.3,
+            v1: 0.0,
+            u1: 2.0,
+            xi: 8.741,
+        },
+        "O_3" => UffAtomParams {
+            label,
+            r1: 0.658,
+            theta0_rad: deg_to_rad(104.51),
+            x1: 3.5,
+            d1: 0.06,
+            z1: 2.3,
+            v1: 0.018,
+            u1: 2.0,
+            xi: 8.741,
+        },
+        "F_" => UffAtomParams {
+            label,
+            r1: 0.668,
+            theta0_rad: deg_to_rad(180.0),
+            x1: 3.364,
+            d1: 0.05,
+            z1: 1.735,
+            v1: 0.0,
+            u1: 2.0,
+            xi: 10.874,
+        },
+        "Si3" => UffAtomParams {
+            label,
+            r1: 1.117,
+            theta0_rad: deg_to_rad(109.47),
+            x1: 4.295,
+            d1: 0.402,
+            z1: 2.323,
+            v1: 1.225,
+            u1: 1.25,
+            xi: 4.168,
+        },
+        "P_3+5" => UffAtomParams {
+            label,
+            r1: 1.056,
+            theta0_rad: deg_to_rad(109.47),
+            x1: 4.147,
+            d1: 0.305,
+            z1: 2.863,
+            v1: 2.4,
+            u1: 1.25,
+            xi: 5.463,
+        },
+        "S_2" => UffAtomParams {
+            label,
+            r1: 0.854,
+            theta0_rad: deg_to_rad(120.0),
+            x1: 4.035,
+            d1: 0.274,
+            z1: 2.703,
+            v1: 0.0,
+            u1: 1.25,
+            xi: 6.928,
+        },
+        "S_3+6" => UffAtomParams {
+            label,
+            r1: 1.027,
+            theta0_rad: deg_to_rad(109.47),
+            x1: 4.035,
+            d1: 0.274,
+            z1: 2.703,
+            v1: 0.484,
+            u1: 1.25,
+            xi: 6.928,
+        },
+        "Cl" => UffAtomParams {
+            label,
+            r1: 1.044,
+            theta0_rad: deg_to_rad(180.0),
+            x1: 3.947,
+            d1: 0.227,
+            z1: 2.348,
+            v1: 0.0,
+            u1: 1.25,
+            xi: 8.564,
+        },
+        "Br" => UffAtomParams {
+            label,
+            r1: 1.192,
+            theta0_rad: deg_to_rad(180.0),
+            x1: 4.189,
+            d1: 0.251,
+            z1: 2.519,
+            v1: 0.0,
+            u1: 0.7,
+            xi: 7.79,
+        },
+        "I_" => UffAtomParams {
+            label,
+            r1: 1.382,
+            theta0_rad: deg_to_rad(180.0),
+            x1: 4.5,
+            d1: 0.339,
+            z1: 2.65,
+            v1: 0.0,
+            u1: 0.2,
+            xi: 6.822,
+        },
+        _ => uff_params_for_label("C_3"),
+    }
+}
+
+fn infer_uff_like_typing(
+    atoms: &[AtomRecord],
+    adjacency: &[Vec<usize>],
+    atom_idx: usize,
+) -> SyntheticAtomTyping {
+    let atom = atoms.get(atom_idx);
+    let normalized = atom
+        .and_then(|item| normalize_element(&item.element))
+        .unwrap_or_else(|| "C".to_string());
+    let geometry = infer_geometry_class(atoms, adjacency, atom_idx);
+    let label = match normalized.as_str() {
+        "H" => "H_",
+        "C" => match geometry {
+            AtomGeometryClass::Sp1 => "C_1",
+            AtomGeometryClass::Sp2 => "C_2",
+            AtomGeometryClass::Sp3 => "C_3",
+        },
+        "N" => match geometry {
+            AtomGeometryClass::Sp1 => "N_1",
+            AtomGeometryClass::Sp2 => "N_2",
+            AtomGeometryClass::Sp3 => "N_3",
+        },
+        "O" => {
+            let degree = adjacency
+                .get(atom_idx)
+                .map(|items| items.len())
+                .unwrap_or(0);
+            if degree <= 1 {
+                "O_2"
+            } else {
+                "O_3"
+            }
+        }
+        "F" => "F_",
+        "Si" => "Si3",
+        "P" => "P_3+5",
+        "S" => {
+            let degree = adjacency
+                .get(atom_idx)
+                .map(|items| items.len())
+                .unwrap_or(0);
+            if degree <= 2 && geometry != AtomGeometryClass::Sp3 {
+                "S_2"
+            } else {
+                "S_3+6"
+            }
+        }
+        "Cl" => "Cl",
+        "Br" => "Br",
+        "I" => "I_",
+        _ => "C_3",
+    };
+    SyntheticAtomTyping {
+        params: uff_params_for_label(label),
+    }
+}
+
+fn template_bond_length_map(
+    templates: &[ResidueTemplate],
+) -> BTreeMap<(String, String, String), f32> {
+    let mut totals = BTreeMap::<(String, String, String), (f32, usize)>::new();
+    for template in templates {
+        for &(left, right) in &template.local_bonds {
+            let Some(atom_left) = template.atoms.get(left) else {
+                continue;
+            };
+            let Some(atom_right) = template.atoms.get(right) else {
+                continue;
+            };
+            let distance = atom_left.position.sub(atom_right.position).norm();
+            let name_left = atom_left.name.trim().to_string();
+            let name_right = atom_right.name.trim().to_string();
+            let (a, b) = if name_left <= name_right {
+                (name_left, name_right)
+            } else {
+                (name_right, name_left)
+            };
+            let entry = totals
+                .entry((template.resname.clone(), a, b))
+                .or_insert((0.0, 0));
+            entry.0 += distance;
+            entry.1 += 1;
+        }
+    }
+    totals
+        .into_iter()
+        .map(|(key, (total, count))| (key, total / count.max(1) as f32))
+        .collect()
+}
+
+fn template_angle_key(
+    resname: &str,
+    a: &str,
+    b: &str,
+    c: &str,
+) -> (String, String, String, String) {
+    let left = (a.trim().to_string(), c.trim().to_string());
+    let right = (c.trim().to_string(), a.trim().to_string());
+    let (outer_a, outer_c) = if left <= right { left } else { right };
+    (resname.to_string(), outer_a, b.trim().to_string(), outer_c)
+}
+
+fn template_angle_map(
+    templates: &[ResidueTemplate],
+) -> BTreeMap<(String, String, String, String), f32> {
+    let mut totals = BTreeMap::<(String, String, String, String), (f32, usize)>::new();
+    for template in templates {
+        let adjacency = rebuild_bond_adjacency(template.atoms.len(), &template.local_bonds);
+        for angle in rebuild_angles(&adjacency) {
+            let Some(atom_a) = template.atoms.get(angle[0]) else {
+                continue;
+            };
+            let Some(atom_b) = template.atoms.get(angle[1]) else {
+                continue;
+            };
+            let Some(atom_c) = template.atoms.get(angle[2]) else {
+                continue;
+            };
+            let ab = atom_a.position.sub(atom_b.position);
+            let cb = atom_c.position.sub(atom_b.position);
+            let ab_norm = ab.norm();
+            let cb_norm = cb.norm();
+            if ab_norm <= 1.0e-6 || cb_norm <= 1.0e-6 {
+                continue;
+            }
+            let theta = (ab.dot(cb) / (ab_norm * cb_norm)).clamp(-1.0, 1.0).acos();
+            let entry = totals
+                .entry(template_angle_key(
+                    &template.resname,
+                    &atom_a.name,
+                    &atom_b.name,
+                    &atom_c.name,
+                ))
+                .or_insert((0.0, 0));
+            entry.0 += theta;
+            entry.1 += 1;
+        }
+    }
+    totals
+        .into_iter()
+        .map(|(key, (total, count))| (key, total / count.max(1) as f32))
+        .collect()
+}
+
+fn template_atom_charge_map(
+    templates: &[ResidueTemplate],
+    atom_charges: &[f32],
+) -> BTreeMap<(String, String), f32> {
+    let mut totals = BTreeMap::<(String, String), (f32, usize)>::new();
+    let mut cursor = 0usize;
+    for template in templates {
+        for atom in &template.atoms {
+            let Some(charge) = atom_charges.get(cursor) else {
+                break;
+            };
+            let entry = totals
+                .entry((template.resname.clone(), atom.name.trim().to_string()))
+                .or_insert((0.0, 0));
+            entry.0 += *charge;
+            entry.1 += 1;
+            cursor += 1;
+        }
+    }
+    totals
+        .into_iter()
+        .map(|(key, (total, count))| (key, total / count.max(1) as f32))
+        .collect()
+}
+
+fn build_template_charge_map_from_manifest(
+    training_structure_path: &Path,
+    manifest_path: &Path,
+) -> PackResult<BTreeMap<(String, String), f32>> {
+    let manifest = load_charge_manifest(manifest_path)?;
+    let atom_charges = manifest
+        .atom_charges
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.charge_e)
+        .collect::<Vec<_>>();
+    if atom_charges.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let templates = load_training_templates(training_structure_path)?;
+    Ok(template_atom_charge_map(&templates, &atom_charges))
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlAtomTypeDef {
+    class_name: String,
+    element: String,
+    mass: f32,
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlResidueAtomDef {
+    name: String,
+    type_name: String,
+    charge_e: Option<f32>,
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlResidueDef {
+    atoms: BTreeMap<String, FfxmlResidueAtomDef>,
+}
+
+#[derive(Clone, Debug)]
+enum FfxmlAtomSelector {
+    Any,
+    Type(String),
+    Class(String),
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlBondParam {
+    left: FfxmlAtomSelector,
+    right: FfxmlAtomSelector,
+    length_angstrom: f32,
+    force_constant: f32,
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlAngleParam {
+    left: FfxmlAtomSelector,
+    center: FfxmlAtomSelector,
+    right: FfxmlAtomSelector,
+    theta0_rad: f32,
+    force_constant: f32,
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlTorsionTerm {
+    periodicity: f32,
+    phase_rad: f32,
+    force_constant: f32,
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlTorsionParam {
+    atoms: [FfxmlAtomSelector; 4],
+    terms: Vec<FfxmlTorsionTerm>,
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlNonbondedParam {
+    charge_e: Option<f32>,
+    sigma_angstrom: f32,
+    epsilon_kcal: f32,
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlForcefield {
+    atom_types: BTreeMap<String, FfxmlAtomTypeDef>,
+    residues: BTreeMap<String, FfxmlResidueDef>,
+    bond_params: Vec<FfxmlBondParam>,
+    angle_params: Vec<FfxmlAngleParam>,
+    proper_torsions: Vec<FfxmlTorsionParam>,
+    improper_torsions: Vec<FfxmlTorsionParam>,
+    nonbonded_by_type: BTreeMap<String, FfxmlNonbondedParam>,
+    nonbonded_by_class: BTreeMap<String, FfxmlNonbondedParam>,
+    nonbonded_charge_from_residue: bool,
+    scee_scale: f32,
+    scnb_scale: f32,
+}
+
+#[derive(Clone, Debug)]
+struct FfxmlAssignedAtom {
+    type_name: String,
+    class_name: String,
+    element: String,
+    mass: f32,
+    charge_e: f32,
+    sigma_angstrom: f32,
+    epsilon_kcal: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct FfxmlTopologySummary {
+    pub net_charge_e: f32,
+}
+
+fn xml_attr<'input>(node: Node<'input, 'input>, name: &str) -> PackResult<&'input str> {
+    node.attribute(name).ok_or_else(|| {
+        PackError::Invalid(format!(
+            "ffxml element '{}' is missing required attribute '{}'",
+            node.tag_name().name(),
+            name
+        ))
+    })
+}
+
+fn xml_opt_attr<'input>(node: Node<'input, 'input>, name: &str) -> Option<&'input str> {
+    node.attribute(name)
+}
+
+fn xml_attr_f32<'input>(node: Node<'input, 'input>, name: &str) -> PackResult<f32> {
+    let value = xml_attr(node, name)?;
+    value.parse::<f32>().map_err(|_| {
+        PackError::Invalid(format!(
+            "ffxml attribute '{}.{}' must be numeric",
+            node.tag_name().name(),
+            name
+        ))
+    })
+}
+
+fn parse_ffxml_selector<'a, 'input>(node: Node<'a, 'input>, idx: usize) -> FfxmlAtomSelector {
+    let type_attr = format!("type{idx}");
+    if let Some(value) = node.attribute(type_attr.as_str()) {
+        return if value.trim().is_empty() || value.trim() == "*" {
+            FfxmlAtomSelector::Any
+        } else {
+            FfxmlAtomSelector::Type(value.trim().to_string())
+        };
+    }
+    let class_attr = format!("class{idx}");
+    if let Some(value) = node.attribute(class_attr.as_str()) {
+        return if value.trim().is_empty() || value.trim() == "*" {
+            FfxmlAtomSelector::Any
+        } else {
+            FfxmlAtomSelector::Class(value.trim().to_string())
+        };
+    }
+    FfxmlAtomSelector::Any
+}
+
+fn ffxml_selector_matches(selector: &FfxmlAtomSelector, atom: &FfxmlAssignedAtom) -> bool {
+    match selector {
+        FfxmlAtomSelector::Any => true,
+        FfxmlAtomSelector::Type(value) => atom.type_name == *value,
+        FfxmlAtomSelector::Class(value) => atom.class_name == *value,
+    }
+}
+
+fn ffxml_selector_specificity(selector: &FfxmlAtomSelector) -> usize {
+    match selector {
+        FfxmlAtomSelector::Any => 0,
+        FfxmlAtomSelector::Class(_) => 1,
+        FfxmlAtomSelector::Type(_) => 2,
+    }
+}
+
+fn parse_ffxml_forcefield(ffxml_path: &Path) -> PackResult<FfxmlForcefield> {
+    let text = std::fs::read_to_string(ffxml_path)?;
+    let doc = Document::parse(&text)
+        .map_err(|err| PackError::Invalid(format!("failed to parse ffxml: {err}")))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "ForceField" {
+        return Err(PackError::Invalid(
+            "ffxml root element must be <ForceField>".into(),
+        ));
+    }
+
+    let mut atom_types = BTreeMap::new();
+    let mut residues = BTreeMap::new();
+    let mut bond_params = Vec::new();
+    let mut angle_params = Vec::new();
+    let mut proper_torsions = Vec::new();
+    let mut improper_torsions = Vec::new();
+    let mut nonbonded_by_type = BTreeMap::new();
+    let mut nonbonded_by_class = BTreeMap::new();
+    let mut nonbonded_charge_from_residue = false;
+    let mut scee_scale = 1.2f32;
+    let mut scnb_scale = 2.0f32;
+
+    for section in root.children().filter(|node| node.is_element()) {
+        match section.tag_name().name() {
+            "Info" => {}
+            "AtomTypes" => {
+                for node in section.children().filter(|node| node.is_element()) {
+                    if node.tag_name().name() != "Type" {
+                        return Err(PackError::Invalid(format!(
+                            "unsupported ffxml AtomTypes entry '{}'",
+                            node.tag_name().name()
+                        )));
+                    }
+                    let name = xml_attr(node, "name")?.trim().to_string();
+                    atom_types.insert(
+                        name.clone(),
+                        FfxmlAtomTypeDef {
+                            class_name: xml_opt_attr(node, "class")
+                                .unwrap_or("")
+                                .trim()
+                                .to_string(),
+                            element: xml_attr(node, "element")?.trim().to_string(),
+                            mass: xml_attr_f32(node, "mass")?,
+                        },
+                    );
+                }
+            }
+            "Residues" => {
+                for residue in section.children().filter(|node| node.is_element()) {
+                    if residue.tag_name().name() != "Residue" {
+                        return Err(PackError::Invalid(format!(
+                            "unsupported ffxml Residues entry '{}'",
+                            residue.tag_name().name()
+                        )));
+                    }
+                    let mut atoms = BTreeMap::new();
+                    for node in residue.children().filter(|node| node.is_element()) {
+                        match node.tag_name().name() {
+                            "Atom" => {
+                                let name = xml_attr(node, "name")?.trim().to_string();
+                                atoms.insert(
+                                    name.clone(),
+                                    FfxmlResidueAtomDef {
+                                        name,
+                                        type_name: xml_attr(node, "type")?.trim().to_string(),
+                                        charge_e: xml_opt_attr(node, "charge")
+                                            .map(|value| value.parse::<f32>())
+                                            .transpose()
+                                            .map_err(|_| {
+                                                PackError::Invalid(
+                                                    "ffxml residue atom charge must be numeric"
+                                                        .into(),
+                                                )
+                                            })?,
+                                    },
+                                );
+                            }
+                            "Bond" | "ExternalBond" | "AllowPatch" => {}
+                            other => {
+                                return Err(PackError::Invalid(format!(
+                                    "unsupported ffxml Residue entry '{}'",
+                                    other
+                                )))
+                            }
+                        }
+                    }
+                    let name = xml_attr(residue, "name")?.trim().to_string();
+                    residues.insert(name.clone(), FfxmlResidueDef { atoms });
+                }
+            }
+            "Patches" => {}
+            "HarmonicBondForce" => {
+                for node in section.children().filter(|node| node.is_element()) {
+                    if node.tag_name().name() != "Bond" {
+                        return Err(PackError::Invalid(format!(
+                            "unsupported ffxml HarmonicBondForce entry '{}'",
+                            node.tag_name().name()
+                        )));
+                    }
+                    bond_params.push(FfxmlBondParam {
+                        left: parse_ffxml_selector(node, 1),
+                        right: parse_ffxml_selector(node, 2),
+                        length_angstrom: xml_attr_f32(node, "length")? * 10.0,
+                        force_constant: xml_attr_f32(node, "k")? * 0.239_005_74 / 100.0,
+                    });
+                }
+            }
+            "HarmonicAngleForce" => {
+                for node in section.children().filter(|node| node.is_element()) {
+                    if node.tag_name().name() != "Angle" {
+                        return Err(PackError::Invalid(format!(
+                            "unsupported ffxml HarmonicAngleForce entry '{}'",
+                            node.tag_name().name()
+                        )));
+                    }
+                    angle_params.push(FfxmlAngleParam {
+                        left: parse_ffxml_selector(node, 1),
+                        center: parse_ffxml_selector(node, 2),
+                        right: parse_ffxml_selector(node, 3),
+                        theta0_rad: xml_attr_f32(node, "angle")?,
+                        force_constant: xml_attr_f32(node, "k")? * 0.239_005_74,
+                    });
+                }
+            }
+            "PeriodicTorsionForce" => {
+                for node in section.children().filter(|node| node.is_element()) {
+                    let target = match node.tag_name().name() {
+                        "Proper" => &mut proper_torsions,
+                        "Improper" => &mut improper_torsions,
+                        other => {
+                            return Err(PackError::Invalid(format!(
+                                "unsupported ffxml PeriodicTorsionForce entry '{}'",
+                                other
+                            )))
+                        }
+                    };
+                    let mut terms = Vec::new();
+                    for idx in 1..=6 {
+                        let periodicity_key = format!("periodicity{idx}");
+                        let Some(periodicity) = node.attribute(periodicity_key.as_str()) else {
+                            continue;
+                        };
+                        let phase_key = format!("phase{idx}");
+                        let force_key = format!("k{idx}");
+                        terms.push(FfxmlTorsionTerm {
+                            periodicity: periodicity.parse::<f32>().map_err(|_| {
+                                PackError::Invalid(
+                                    "ffxml torsion periodicity must be numeric".into(),
+                                )
+                            })?,
+                            phase_rad: xml_attr(node, phase_key.as_str())?.parse::<f32>().map_err(
+                                |_| {
+                                    PackError::Invalid("ffxml torsion phase must be numeric".into())
+                                },
+                            )?,
+                            force_constant: xml_attr(node, force_key.as_str())?
+                                .parse::<f32>()
+                                .map_err(|_| {
+                                    PackError::Invalid("ffxml torsion k must be numeric".into())
+                                })?
+                                * 0.239_005_74,
+                        });
+                    }
+                    if terms.is_empty() {
+                        return Err(PackError::Invalid(
+                            "ffxml torsion entry must provide at least one periodicity/phase/k term"
+                                .into(),
+                        ));
+                    }
+                    target.push(FfxmlTorsionParam {
+                        atoms: [
+                            parse_ffxml_selector(node, 1),
+                            parse_ffxml_selector(node, 2),
+                            parse_ffxml_selector(node, 3),
+                            parse_ffxml_selector(node, 4),
+                        ],
+                        terms,
+                    });
+                }
+            }
+            "NonbondedForce" => {
+                if let Some(value) = xml_opt_attr(section, "coulomb14scale") {
+                    let parsed = value.parse::<f32>().map_err(|_| {
+                        PackError::Invalid(
+                            "ffxml NonbondedForce coulomb14scale must be numeric".into(),
+                        )
+                    })?;
+                    if parsed > 0.0 {
+                        scee_scale = 1.0 / parsed;
+                    }
+                }
+                if let Some(value) = xml_opt_attr(section, "lj14scale") {
+                    let parsed = value.parse::<f32>().map_err(|_| {
+                        PackError::Invalid("ffxml NonbondedForce lj14scale must be numeric".into())
+                    })?;
+                    if parsed > 0.0 {
+                        scnb_scale = 1.0 / parsed;
+                    }
+                }
+                for node in section.children().filter(|node| node.is_element()) {
+                    match node.tag_name().name() {
+                        "UseAttributeFromResidue" => {
+                            let attr_name = xml_attr(node, "name")?;
+                            if attr_name == "charge" {
+                                nonbonded_charge_from_residue = true;
+                            } else {
+                                return Err(PackError::Invalid(format!(
+                                    "unsupported ffxml UseAttributeFromResidue '{}'",
+                                    attr_name
+                                )));
+                            }
+                            continue;
+                        }
+                        "Atom" => {}
+                        other => {
+                            return Err(PackError::Invalid(format!(
+                                "unsupported ffxml NonbondedForce entry '{}'",
+                                other
+                            )));
+                        }
+                    }
+                    let param = FfxmlNonbondedParam {
+                        charge_e: xml_opt_attr(node, "charge")
+                            .map(|value| {
+                                value.parse::<f32>().map_err(|_| {
+                                    PackError::Invalid(
+                                        "ffxml NonbondedForce atom charge must be numeric".into(),
+                                    )
+                                })
+                            })
+                            .transpose()?,
+                        sigma_angstrom: xml_attr_f32(node, "sigma")? * 10.0,
+                        epsilon_kcal: xml_attr_f32(node, "epsilon")? * 0.239_005_74,
+                    };
+                    if let Some(value) = xml_opt_attr(node, "type") {
+                        nonbonded_by_type.insert(value.trim().to_string(), param.clone());
+                    }
+                    if let Some(value) = xml_opt_attr(node, "class") {
+                        nonbonded_by_class.insert(value.trim().to_string(), param.clone());
+                    }
+                }
+            }
+            other => {
+                return Err(PackError::Invalid(format!(
+                    "unsupported ffxml section '{}'",
+                    other
+                )))
+            }
+        }
+    }
+
+    Ok(FfxmlForcefield {
+        atom_types,
+        residues,
+        bond_params,
+        angle_params,
+        proper_torsions,
+        improper_torsions,
+        nonbonded_by_type,
+        nonbonded_by_class,
+        nonbonded_charge_from_residue,
+        scee_scale,
+        scnb_scale,
+    })
+}
+
+fn ffxml_assign_training_atom(
+    forcefield: &FfxmlForcefield,
+    residue_name: &str,
+    atom_name: &str,
+    override_charge_e: Option<f32>,
+) -> PackResult<FfxmlAssignedAtom> {
+    let residue = forcefield.residues.get(residue_name).ok_or_else(|| {
+        PackError::Invalid(format!(
+            "ffxml is missing residue template '{}'",
+            residue_name
+        ))
+    })?;
+    let atom = residue.atoms.get(atom_name.trim()).ok_or_else(|| {
+        PackError::Invalid(format!(
+            "ffxml residue '{}' is missing atom '{}'",
+            residue_name, atom_name
+        ))
+    })?;
+    let atom_type = forcefield.atom_types.get(&atom.type_name).ok_or_else(|| {
+        PackError::Invalid(format!(
+            "ffxml atom type '{}' referenced by '{}:{}' is missing",
+            atom.type_name, residue_name, atom.name
+        ))
+    })?;
+    let nonbonded = forcefield
+        .nonbonded_by_type
+        .get(&atom.type_name)
+        .or_else(|| {
+            if atom_type.class_name.is_empty() {
+                None
+            } else {
+                forcefield.nonbonded_by_class.get(&atom_type.class_name)
+            }
+        })
+        .ok_or_else(|| {
+            PackError::Invalid(format!(
+                "ffxml nonbonded parameters are missing for atom type '{}'",
+                atom.type_name
+            ))
+        })?;
+    Ok(FfxmlAssignedAtom {
+        type_name: atom.type_name.clone(),
+        class_name: atom_type.class_name.clone(),
+        element: atom_type.element.clone(),
+        mass: atom_type.mass,
+        charge_e: override_charge_e
+            .or(atom.charge_e)
+            .or(nonbonded.charge_e)
+            .ok_or_else(|| {
+                if forcefield.nonbonded_charge_from_residue {
+                    PackError::Invalid(format!(
+                        "ffxml residue '{}' atom '{}' is missing charge data",
+                        residue_name, atom.name
+                    ))
+                } else {
+                    PackError::Invalid(format!(
+                        "ffxml nonbonded parameters are missing charge for atom type '{}'",
+                        atom.type_name
+                    ))
+                }
+            })?,
+        sigma_angstrom: nonbonded.sigma_angstrom,
+        epsilon_kcal: nonbonded.epsilon_kcal,
+    })
+}
+
+fn ffxml_match_bond_param<'a>(
+    params: &'a [FfxmlBondParam],
+    left: &FfxmlAssignedAtom,
+    right: &FfxmlAssignedAtom,
+) -> Option<&'a FfxmlBondParam> {
+    params
+        .iter()
+        .filter(|param| {
+            (ffxml_selector_matches(&param.left, left)
+                && ffxml_selector_matches(&param.right, right))
+                || (ffxml_selector_matches(&param.left, right)
+                    && ffxml_selector_matches(&param.right, left))
+        })
+        .max_by_key(|param| {
+            ffxml_selector_specificity(&param.left) + ffxml_selector_specificity(&param.right)
+        })
+}
+
+fn ffxml_match_angle_param<'a>(
+    params: &'a [FfxmlAngleParam],
+    left: &FfxmlAssignedAtom,
+    center: &FfxmlAssignedAtom,
+    right: &FfxmlAssignedAtom,
+) -> Option<&'a FfxmlAngleParam> {
+    params
+        .iter()
+        .filter(|param| {
+            (ffxml_selector_matches(&param.left, left)
+                && ffxml_selector_matches(&param.center, center)
+                && ffxml_selector_matches(&param.right, right))
+                || (ffxml_selector_matches(&param.left, right)
+                    && ffxml_selector_matches(&param.center, center)
+                    && ffxml_selector_matches(&param.right, left))
+        })
+        .max_by_key(|param| {
+            ffxml_selector_specificity(&param.left)
+                + ffxml_selector_specificity(&param.center)
+                + ffxml_selector_specificity(&param.right)
+        })
+}
+
+fn ffxml_match_torsion_param<'a>(
+    params: &'a [FfxmlTorsionParam],
+    atoms: [&FfxmlAssignedAtom; 4],
+    improper: bool,
+) -> Option<&'a FfxmlTorsionParam> {
+    params
+        .iter()
+        .filter(|param| {
+            let forward = param
+                .atoms
+                .iter()
+                .zip(atoms.iter())
+                .all(|(selector, atom)| ffxml_selector_matches(selector, atom));
+            if forward {
+                return true;
+            }
+            if improper {
+                let reverse = [&atoms[0], &atoms[1], &atoms[3], &atoms[2]];
+                return param
+                    .atoms
+                    .iter()
+                    .zip(reverse.iter())
+                    .all(|(selector, atom)| ffxml_selector_matches(selector, atom));
+            }
+            let reverse = [&atoms[3], &atoms[2], &atoms[1], &atoms[0]];
+            param
+                .atoms
+                .iter()
+                .zip(reverse.iter())
+                .all(|(selector, atom)| ffxml_selector_matches(selector, atom))
+        })
+        .max_by_key(|param| {
+            param
+                .atoms
+                .iter()
+                .map(ffxml_selector_specificity)
+                .sum::<usize>()
+        })
+}
+
+fn build_nonbonded_tables_from_sigma_epsilon(
+    params: &[(f32, f32)],
+) -> (Vec<usize>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut nonbonded_index = Vec::with_capacity(params.len() * params.len());
+    let mut acoef = Vec::with_capacity(params.len() * params.len());
+    let mut bcoef = Vec::with_capacity(params.len() * params.len());
+    for &(sigma_left, epsilon_left) in params {
+        for &(sigma_right, epsilon_right) in params {
+            nonbonded_index.push(acoef.len() + 1);
+            let sigma = 0.5 * (sigma_left + sigma_right);
+            let epsilon = (epsilon_left * epsilon_right).sqrt().max(1.0e-6);
+            let rmin = (sigma * 2.0_f32.powf(1.0 / 6.0)).max(1.0e-3);
+            let b = 2.0 * epsilon * rmin.powi(6);
+            let a = epsilon * rmin.powi(12);
+            acoef.push(a);
+            bcoef.push(b);
+        }
+    }
+    (nonbonded_index, acoef.clone(), bcoef.clone(), acoef, bcoef)
+}
+
+fn validate_ffxml_forcefield_support(
+    training_structure_path: &Path,
+    source_charge_manifest_path: Option<&Path>,
+    ffxml_path: &Path,
+    graph_node_specs: &[GraphNodeSpec],
+) -> PackResult<()> {
+    let forcefield = parse_ffxml_forcefield(ffxml_path)?;
+    let templates = load_training_templates(training_structure_path)?;
+    let template_charge_map = if let Some(path) = source_charge_manifest_path {
+        build_template_charge_map_from_manifest(training_structure_path, path)?
+    } else {
+        BTreeMap::new()
+    };
+    let required_templates = graph_node_specs
+        .iter()
+        .map(|spec| spec.template_resname.clone())
+        .collect::<BTreeSet<_>>();
+    for template in templates
+        .iter()
+        .filter(|template| required_templates.contains(&template.resname))
+    {
+        for atom in &template.atoms {
+            ffxml_assign_training_atom(
+                &forcefield,
+                &template.resname,
+                atom.name.trim(),
+                template_charge_map
+                    .get(&(template.resname.clone(), atom.name.trim().to_string()))
+                    .copied(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub fn assess_training_source(
+    training_structure_path: &Path,
+    source_charge_manifest_path: Option<&Path>,
+    source_topology_path: Option<&Path>,
+    source_forcefield_path: Option<&Path>,
+    graph_node_specs: &[GraphNodeSpec],
+    token_junctions: &BTreeMap<String, TokenJunctionSpec>,
+) -> PackResult<TrainingSourceAssessment> {
+    let molecule = read_molecule(training_structure_path, None, false, true, None)?;
+    let templates = group_residues(molecule.clone())?;
+    let bonds = dedup_bonds(if molecule.bonds.is_empty() {
+        infer_global_bonds(&molecule.atoms)
+    } else {
+        molecule.bonds.clone()
+    });
+    let thresholds = collect_training_thresholds(
+        &molecule.atoms,
+        &bonds,
+        graph_node_specs,
+        token_junctions,
+        &templates,
+    );
+    let quality = training_source_quality(&thresholds);
+    let mut reasons = Vec::new();
+    if thresholds.impossible_valence_count > 0 {
+        reasons.push("impossible_valence_detected".into());
+    }
+    if !thresholds.junction_consistency_ok {
+        reasons.push("junction_geometry_inconsistent".into());
+    }
+    if thresholds
+        .min_nonbonded_distance
+        .map(|value| value < 0.60)
+        .unwrap_or(false)
+    {
+        reasons.push("severe_nonbonded_overlap".into());
+    } else if thresholds
+        .min_nonbonded_distance
+        .map(|value| value < 0.90)
+        .unwrap_or(false)
+    {
+        reasons.push("tight_nonbonded_contacts".into());
+    }
+    if thresholds
+        .max_local_bond_ratio
+        .map(|value| value > 1.30)
+        .unwrap_or(false)
+        || thresholds
+            .max_local_bond_delta
+            .map(|value| value > 0.25)
+            .unwrap_or(false)
+    {
+        reasons.push("severely_stretched_local_bonds".into());
+    } else if thresholds
+        .max_local_bond_ratio
+        .map(|value| value > 1.15)
+        .unwrap_or(false)
+        || thresholds
+            .max_local_bond_delta
+            .map(|value| value > 0.10)
+            .unwrap_or(false)
+    {
+        reasons.push("stretched_local_bonds".into());
+    }
+    if thresholds.ambiguous_assignment_count > 0 {
+        reasons.push("heuristic_assignment_required".into());
+    }
+
+    let mut parameter_source = match quality {
+        TrainingSourceQuality::Trusted | TrainingSourceQuality::Risky => {
+            ParameterSourceChoice::SyntheticPdb
+        }
+        TrainingSourceQuality::Unreliable => ParameterSourceChoice::Rejected,
+    };
+    if quality == TrainingSourceQuality::Unreliable {
+        let topology_available = source_topology_path
+            .filter(|path| path.exists())
+            .and_then(|path| path.extension().and_then(|value| value.to_str()))
+            .map(|ext| ext.eq_ignore_ascii_case("prmtop"))
+            .unwrap_or(false);
+        if topology_available {
+            parameter_source = ParameterSourceChoice::SourceTopologyRef;
+            reasons.push("switched_to_source_topology_ref".into());
+        } else if let Some(ffxml_path) = source_forcefield_path.filter(|path| path.exists()) {
+            match validate_ffxml_forcefield_support(
+                training_structure_path,
+                source_charge_manifest_path,
+                ffxml_path,
+                graph_node_specs,
+            ) {
+                Ok(()) => {
+                    parameter_source = ParameterSourceChoice::ForcefieldRef;
+                    reasons.push("switched_to_forcefield_ref".into());
+                }
+                Err(err) => {
+                    reasons.push("ffxml_unsupported_feature".into());
+                    reasons.push(format!("ffxml_validation_failed:{err}"));
+                }
+            }
+        } else {
+            reasons.push("no_strong_parameter_source_available".into());
+        }
+    }
+
+    Ok(TrainingSourceAssessment {
+        quality: training_source_quality_label(quality),
+        parameter_source: parameter_source_label(parameter_source),
+        reasons,
+        metrics: TrainingSourceMetrics {
+            min_nonbonded_distance_angstrom: thresholds.min_nonbonded_distance,
+            max_local_bond_ratio: thresholds.max_local_bond_ratio,
+            impossible_valence_count: thresholds.impossible_valence_count,
+            ambiguous_assignment_count: thresholds.ambiguous_assignment_count,
+            junction_consistency_ok: thresholds.junction_consistency_ok,
+        },
+    })
+}
+
+fn group6_atomic_number(atomic_number: i32) -> bool {
+    matches!(atomic_number, 8 | 16 | 34 | 52 | 84)
+}
+
+fn guess_bond_order(
+    atoms: &[AtomRecord],
+    adjacency: &[Vec<usize>],
+    typings: &[SyntheticAtomTyping],
+    left: usize,
+    right: usize,
+) -> f32 {
+    let Some(atom_left) = atoms.get(left) else {
+        return 1.0;
+    };
+    let Some(atom_right) = atoms.get(right) else {
+        return 1.0;
+    };
+    if atom_left.resid != atom_right.resid {
+        return 1.0;
+    }
+    let element_left =
+        normalize_element(&atom_left.element).unwrap_or_else(|| atom_left.element.clone());
+    let element_right =
+        normalize_element(&atom_right.element).unwrap_or_else(|| atom_right.element.clone());
+    if matches!(element_left.as_str(), "H" | "F" | "Cl" | "Br" | "I")
+        || matches!(element_right.as_str(), "H" | "F" | "Cl" | "Br" | "I")
+    {
+        return 1.0;
+    }
+    let distance = atom_left.position.sub(atom_right.position).norm();
+    let left_geom = infer_geometry_class(atoms, adjacency, left);
+    let right_geom = infer_geometry_class(atoms, adjacency, right);
+    if matches!(
+        (element_left.as_str(), element_right.as_str()),
+        ("C", "C") | ("C", "N") | ("N", "C") | ("N", "N")
+    ) && distance <= 1.24
+    {
+        return 3.0;
+    }
+    if matches!(
+        (element_left.as_str(), element_right.as_str()),
+        ("C", "O") | ("O", "C") | ("C", "N") | ("N", "C") | ("N", "O") | ("O", "N")
+    ) && distance <= 1.34
+    {
+        return 2.0;
+    }
+    if matches!(
+        (element_left.as_str(), element_right.as_str()),
+        ("S", "O") | ("O", "S") | ("P", "O") | ("O", "P")
+    ) && distance <= 1.58
+    {
+        return 2.0;
+    }
+    if left_geom == AtomGeometryClass::Sp2
+        && right_geom == AtomGeometryClass::Sp2
+        && distance <= 1.47
+        && typings
+            .get(left)
+            .map(|item| item.params.label.starts_with('C') || item.params.label.starts_with('N'))
+            .unwrap_or(false)
+        && typings
+            .get(right)
+            .map(|item| item.params.label.starts_with('C') || item.params.label.starts_with('N'))
+            .unwrap_or(false)
+    {
+        return 1.5;
+    }
+    if left_geom != AtomGeometryClass::Sp3
+        && right_geom != AtomGeometryClass::Sp3
+        && distance
+            <= covalent_radius_angstrom(&element_left) + covalent_radius_angstrom(&element_right)
+                - 0.08
+    {
+        return 2.0;
+    }
+    1.0
+}
+
+fn uff_bond_rest_length(order: f32, left: UffAtomParams, right: UffAtomParams) -> f32 {
+    let r_bo = -0.1332 * (left.r1 + right.r1) * order.max(1.0e-3).ln();
+    let sqrt_xi_left = left.xi.sqrt();
+    let sqrt_xi_right = right.xi.sqrt();
+    let r_en = left.r1 * right.r1 * (sqrt_xi_left - sqrt_xi_right).powi(2)
+        / ((left.xi * left.r1) + (right.xi * right.r1)).max(1.0e-6);
+    left.r1 + right.r1 + r_bo - r_en
+}
+
+fn uff_bond_force_constant(rest_length: f32, left: UffAtomParams, right: UffAtomParams) -> f32 {
+    2.0 * 332.06 * left.z1 * right.z1 / rest_length.max(1.0e-4).powi(3)
+}
+
+fn approx_bond_length_from_training(
+    bond_map: &BTreeMap<(String, String, String), f32>,
+    template_resname: &str,
+    atom_left: &str,
+    atom_right: &str,
+) -> Option<f32> {
+    let left = atom_left.trim().to_string();
+    let right = atom_right.trim().to_string();
+    let (a, b) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    bond_map.get(&(template_resname.to_string(), a, b)).copied()
+}
+
+fn uff_angle_force_constant(
+    theta0_rad: f32,
+    bond_order_left: f32,
+    bond_order_right: f32,
+    left: UffAtomParams,
+    center: UffAtomParams,
+    right: UffAtomParams,
+) -> f32 {
+    let r12 = uff_bond_rest_length(bond_order_left, left, center);
+    let r23 = uff_bond_rest_length(bond_order_right, center, right);
+    let cos_theta0 = theta0_rad.cos();
+    let r13 = (r12 * r12 + r23 * r23 - 2.0 * r12 * r23 * cos_theta0)
+        .max(1.0e-6)
+        .sqrt();
+    let beta = 2.0 * 332.06 / (r12 * r23).max(1.0e-6);
+    let pre_factor = beta * left.z1 * right.z1 / r13.powi(5).max(1.0e-6);
+    let r_term = r12 * r23;
+    let inner = 3.0 * r_term * (1.0 - cos_theta0 * cos_theta0) - r13 * r13 * cos_theta0;
+    (pre_factor * r_term * inner).max(1.0)
+}
+
+fn synthetic_improper_force_constant(
+    center_atomic_number: i32,
+    carbon_bound_to_oxygen: bool,
+) -> f32 {
+    match center_atomic_number {
+        6 | 7 | 8 => {
+            if carbon_bound_to_oxygen && center_atomic_number == 6 {
+                50.0 / 3.0
+            } else {
+                6.0 / 3.0
+            }
+        }
+        15 | 33 | 51 | 83 => 22.0 / 3.0,
+        _ => 2.0,
+    }
+}
+
+fn synthetic_torsion_params(
+    atoms: &[AtomRecord],
+    adjacency: &[Vec<usize>],
+    typings: &[SyntheticAtomTyping],
+    bond_orders: &BTreeMap<(usize, usize), f32>,
+    dihedral: [usize; 4],
+) -> SyntheticDihedralParam {
+    let central_order = bond_orders
+        .get(&ordered_pair(dihedral[1], dihedral[2]))
+        .copied()
+        .unwrap_or(1.0);
+    let type_b = typings
+        .get(dihedral[1])
+        .map(|item| item.params)
+        .unwrap_or_else(|| uff_params_for_label("C_3"));
+    let type_c = typings
+        .get(dihedral[2])
+        .map(|item| item.params)
+        .unwrap_or_else(|| uff_params_for_label("C_3"));
+    let geom_b = infer_geometry_class(atoms, adjacency, dihedral[1]);
+    let geom_c = infer_geometry_class(atoms, adjacency, dihedral[2]);
+    if geom_b == AtomGeometryClass::Sp3 && geom_c == AtomGeometryClass::Sp3 {
+        let atomic_b = atomic_number_for_element(&atoms[dihedral[1]].element);
+        let atomic_c = atomic_number_for_element(&atoms[dihedral[2]].element);
+        if (central_order - 1.0).abs() <= 1.0e-3
+            && group6_atomic_number(atomic_b)
+            && group6_atomic_number(atomic_c)
+        {
+            let v2: f32 = if atomic_b == 8 { 2.0 } else { 6.8 };
+            let v3: f32 = if atomic_c == 8 { 2.0 } else { 6.8 };
+            return SyntheticDihedralParam {
+                force_constant: (v2 * v3).sqrt(),
+                periodicity: 2.0,
+                phase_rad: 0.0,
+            };
+        }
+        return SyntheticDihedralParam {
+            force_constant: (type_b.v1 * type_c.v1).sqrt().max(0.5),
+            periodicity: 3.0,
+            phase_rad: 0.0,
+        };
+    }
+    if geom_b == AtomGeometryClass::Sp2 && geom_c == AtomGeometryClass::Sp2 {
+        let force_constant =
+            5.0 * (type_b.u1 * type_c.u1).sqrt() * (1.0 + 4.18 * central_order.max(1.0e-3).ln());
+        return SyntheticDihedralParam {
+            force_constant: force_constant.max(1.0),
+            periodicity: 2.0,
+            phase_rad: std::f32::consts::PI,
+        };
+    }
+    let atomic_b = atomic_number_for_element(&atoms[dihedral[1]].element);
+    let atomic_c = atomic_number_for_element(&atoms[dihedral[2]].element);
+    let end_sp2 = infer_geometry_class(atoms, adjacency, dihedral[0]) == AtomGeometryClass::Sp2
+        || infer_geometry_class(atoms, adjacency, dihedral[3]) == AtomGeometryClass::Sp2;
+    if (central_order - 1.0).abs() <= 1.0e-3
+        && ((geom_b == AtomGeometryClass::Sp3
+            && group6_atomic_number(atomic_b)
+            && geom_c == AtomGeometryClass::Sp2
+            && !group6_atomic_number(atomic_c))
+            || (geom_c == AtomGeometryClass::Sp3
+                && group6_atomic_number(atomic_c)
+                && geom_b == AtomGeometryClass::Sp2
+                && !group6_atomic_number(atomic_b)))
+    {
+        let force_constant =
+            5.0 * (type_b.u1 * type_c.u1).sqrt() * (1.0 + 4.18 * central_order.max(1.0e-3).ln());
+        return SyntheticDihedralParam {
+            force_constant: force_constant.max(1.0),
+            periodicity: 2.0,
+            phase_rad: 0.0,
+        };
+    }
+    if (central_order - 1.0).abs() <= 1.0e-3 && end_sp2 {
+        return SyntheticDihedralParam {
+            force_constant: 2.0,
+            periodicity: 3.0,
+            phase_rad: std::f32::consts::PI,
+        };
+    }
+    SyntheticDihedralParam {
+        force_constant: 1.0,
+        periodicity: 6.0,
+        phase_rad: std::f32::consts::PI,
+    }
+}
+
+fn build_nonbonded_tables(
+    unique_types: &[UffAtomParams],
+) -> (Vec<usize>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut nonbonded_index = Vec::with_capacity(unique_types.len() * unique_types.len());
+    let mut acoef = Vec::with_capacity(unique_types.len() * unique_types.len());
+    let mut bcoef = Vec::with_capacity(unique_types.len() * unique_types.len());
+    for left in unique_types {
+        for right in unique_types {
+            nonbonded_index.push(acoef.len() + 1);
+            let rmin = (left.x1 * right.x1).sqrt().max(1.0e-3);
+            let epsilon = (left.d1 * right.d1).sqrt().max(1.0e-4);
+            let b = 2.0 * epsilon * rmin.powi(6);
+            let a = epsilon * rmin.powi(12);
+            acoef.push(a);
+            bcoef.push(b);
+        }
+    }
+    (nonbonded_index, acoef.clone(), bcoef.clone(), acoef, bcoef)
+}
+
+fn ordered_pair(a: usize, b: usize) -> (usize, usize) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
     }
 }
 
@@ -2191,6 +4078,633 @@ pub fn write_polymer_prmtop_from_source(
     )?)
 }
 
+pub fn write_polymer_prmtop_from_ffxml(
+    built: &PolymerBuiltArtifact,
+    training_structure_path: &Path,
+    source_charge_manifest_path: Option<&Path>,
+    ffxml_path: &Path,
+    out_path: &str,
+) -> PackResult<FfxmlTopologySummary> {
+    let forcefield = parse_ffxml_forcefield(ffxml_path)?;
+    let template_charge_map = if let Some(path) = source_charge_manifest_path {
+        build_template_charge_map_from_manifest(training_structure_path, path)?
+    } else {
+        BTreeMap::new()
+    };
+    if built.template_sequence_resnames.len() != built.residue_resnames.len() {
+        return Err(PackError::Invalid(
+            "built polymer residue metadata is inconsistent".into(),
+        ));
+    }
+
+    let atom_count = built.output.atoms.len();
+    let bonds = built.output.bonds.clone();
+    let adjacency = rebuild_bond_adjacency(atom_count, &bonds);
+
+    let mut residue_pointers = Vec::new();
+    let residue_labels = built.residue_resnames.clone();
+    let mut next_resid = 1usize;
+    for (idx, atom) in built.output.atoms.iter().enumerate() {
+        let resid = atom.resid.max(1) as usize;
+        while next_resid <= resid {
+            residue_pointers.push(idx + 1);
+            next_resid += 1;
+        }
+    }
+    while residue_pointers.len() < residue_labels.len() {
+        residue_pointers.push(atom_count + 1);
+    }
+
+    let assigned_atoms = built
+        .output
+        .atoms
+        .iter()
+        .map(|atom| {
+            let resid = atom.resid.max(1) as usize;
+            let template_resname = built
+                .template_sequence_resnames
+                .get(resid.saturating_sub(1))
+                .cloned()
+                .unwrap_or_else(|| atom.resname.clone());
+            ffxml_assign_training_atom(
+                &forcefield,
+                &template_resname,
+                atom.name.trim(),
+                template_charge_map
+                    .get(&(template_resname.clone(), atom.name.trim().to_string()))
+                    .copied(),
+            )
+        })
+        .collect::<PackResult<Vec<_>>>()?;
+
+    let atom_names = built
+        .output
+        .atoms
+        .iter()
+        .map(|atom| atom.name.clone())
+        .collect::<Vec<_>>();
+    let atomic_numbers = assigned_atoms
+        .iter()
+        .map(|atom| atomic_number_for_element(&atom.element))
+        .collect::<Vec<_>>();
+    let masses = assigned_atoms
+        .iter()
+        .map(|atom| atom.mass)
+        .collect::<Vec<_>>();
+    let charges = assigned_atoms
+        .iter()
+        .map(|atom| atom.charge_e)
+        .collect::<Vec<_>>();
+    let net_charge_e = charges.iter().sum::<f32>();
+
+    let mut unique_type_indices = BTreeMap::<String, usize>::new();
+    let mut unique_nonbonded = Vec::<(f32, f32)>::new();
+    let atom_type_indices = assigned_atoms
+        .iter()
+        .map(|atom| {
+            if let Some(idx) = unique_type_indices.get(&atom.type_name) {
+                *idx
+            } else {
+                let next = unique_nonbonded.len() + 1;
+                unique_type_indices.insert(atom.type_name.clone(), next);
+                unique_nonbonded.push((atom.sigma_angstrom, atom.epsilon_kcal));
+                next
+            }
+        })
+        .collect::<Vec<_>>();
+    let amber_atom_types = assigned_atoms
+        .iter()
+        .map(|atom| atom.type_name.clone())
+        .collect::<Vec<_>>();
+    let radii = assigned_atoms
+        .iter()
+        .map(|atom| (atom.sigma_angstrom * 0.5 * 2.0_f32.powf(1.0 / 6.0)).max(0.5))
+        .collect::<Vec<_>>();
+    let screen = vec![0.8; atom_count];
+
+    let mut bond_force_constants = Vec::with_capacity(bonds.len());
+    let mut bond_equil_values = Vec::with_capacity(bonds.len());
+    let mut bond_type_indices = Vec::with_capacity(bonds.len());
+    for &(left, right) in &bonds {
+        let param = ffxml_match_bond_param(
+            &forcefield.bond_params,
+            &assigned_atoms[left],
+            &assigned_atoms[right],
+        )
+        .ok_or_else(|| {
+            PackError::Invalid(format!(
+                "ffxml is missing bond parameters for '{}:{}' and '{}:{}'",
+                built.output.atoms[left].resname,
+                built.output.atoms[left].name.trim(),
+                built.output.atoms[right].resname,
+                built.output.atoms[right].name.trim(),
+            ))
+        })?;
+        bond_type_indices.push(bond_force_constants.len() + 1);
+        bond_force_constants.push(param.force_constant);
+        bond_equil_values.push(param.length_angstrom);
+    }
+
+    let angles = rebuild_angles(&adjacency);
+    let mut angle_force_constants = Vec::with_capacity(angles.len());
+    let mut angle_equil_values = Vec::with_capacity(angles.len());
+    let mut angle_type_indices = Vec::with_capacity(angles.len());
+    for angle in &angles {
+        let param = ffxml_match_angle_param(
+            &forcefield.angle_params,
+            &assigned_atoms[angle[0]],
+            &assigned_atoms[angle[1]],
+            &assigned_atoms[angle[2]],
+        )
+        .ok_or_else(|| {
+            PackError::Invalid(format!(
+                "ffxml is missing angle parameters for '{}'-'{}'-'{}'",
+                built.output.atoms[angle[0]].name.trim(),
+                built.output.atoms[angle[1]].name.trim(),
+                built.output.atoms[angle[2]].name.trim(),
+            ))
+        })?;
+        angle_type_indices.push(angle_force_constants.len() + 1);
+        angle_force_constants.push(param.force_constant);
+        angle_equil_values.push(param.theta0_rad);
+    }
+
+    let dihedral_terms = rebuild_dihedrals(&adjacency, &bonds);
+    let mut dihedrals = Vec::new();
+    let mut dihedral_type_indices = Vec::new();
+    let mut dihedral_force_constants = Vec::new();
+    let mut dihedral_periodicities = Vec::new();
+    let mut dihedral_phases = Vec::new();
+    let mut scee_scale_factors = Vec::new();
+    let mut scnb_scale_factors = Vec::new();
+    for dihedral in &dihedral_terms {
+        let param = ffxml_match_torsion_param(
+            &forcefield.proper_torsions,
+            [
+                &assigned_atoms[dihedral[0]],
+                &assigned_atoms[dihedral[1]],
+                &assigned_atoms[dihedral[2]],
+                &assigned_atoms[dihedral[3]],
+            ],
+            false,
+        )
+        .ok_or_else(|| {
+            PackError::Invalid(format!(
+                "ffxml is missing torsion parameters for '{}'-'{}'-'{}'-'{}'",
+                built.output.atoms[dihedral[0]].name.trim(),
+                built.output.atoms[dihedral[1]].name.trim(),
+                built.output.atoms[dihedral[2]].name.trim(),
+                built.output.atoms[dihedral[3]].name.trim(),
+            ))
+        })?;
+        for term in &param.terms {
+            dihedrals.push(*dihedral);
+            dihedral_type_indices.push(dihedral_force_constants.len() + 1);
+            dihedral_force_constants.push(term.force_constant);
+            dihedral_periodicities.push(term.periodicity);
+            dihedral_phases.push(term.phase_rad);
+            scee_scale_factors.push(forcefield.scee_scale);
+            scnb_scale_factors.push(forcefield.scnb_scale);
+        }
+    }
+
+    let improper_terms = rebuild_impropers(&adjacency);
+    let mut impropers = Vec::new();
+    let mut improper_type_indices = Vec::new();
+    for improper in &improper_terms {
+        let param = ffxml_match_torsion_param(
+            &forcefield.improper_torsions,
+            [
+                &assigned_atoms[improper[0]],
+                &assigned_atoms[improper[1]],
+                &assigned_atoms[improper[2]],
+                &assigned_atoms[improper[3]],
+            ],
+            true,
+        )
+        .ok_or_else(|| {
+            PackError::Invalid(format!(
+                "ffxml is missing improper parameters for '{}'-'{}'-'{}'-'{}'",
+                built.output.atoms[improper[0]].name.trim(),
+                built.output.atoms[improper[1]].name.trim(),
+                built.output.atoms[improper[2]].name.trim(),
+                built.output.atoms[improper[3]].name.trim(),
+            ))
+        })?;
+        for term in &param.terms {
+            impropers.push(*improper);
+            improper_type_indices.push(dihedral_force_constants.len() + 1);
+            dihedral_force_constants.push(term.force_constant);
+            dihedral_periodicities.push(term.periodicity);
+            dihedral_phases.push(term.phase_rad);
+            scee_scale_factors.push(forcefield.scee_scale);
+            scnb_scale_factors.push(forcefield.scnb_scale);
+        }
+    }
+
+    let (
+        nonbonded_parm_index,
+        lennard_jones_acoef,
+        lennard_jones_bcoef,
+        lennard_jones_14_acoef,
+        lennard_jones_14_bcoef,
+    ) = build_nonbonded_tables_from_sigma_epsilon(&unique_nonbonded);
+
+    write_minimal_prmtop(
+        out_path,
+        &AmberTopology {
+            atom_names,
+            residue_labels,
+            residue_pointers,
+            atomic_numbers,
+            masses,
+            charges,
+            atom_type_indices,
+            amber_atom_types,
+            radii,
+            screen,
+            bonds,
+            bond_type_indices,
+            bond_force_constants,
+            bond_equil_values,
+            angles,
+            angle_type_indices,
+            angle_force_constants,
+            angle_equil_values,
+            dihedrals,
+            dihedral_type_indices,
+            dihedral_force_constants,
+            dihedral_periodicities,
+            dihedral_phases,
+            scee_scale_factors,
+            scnb_scale_factors,
+            solty: vec![0.0; unique_nonbonded.len().max(1)],
+            impropers,
+            improper_type_indices,
+            excluded_atoms: Vec::new(),
+            nonbonded_parm_index,
+            lennard_jones_acoef,
+            lennard_jones_bcoef,
+            lennard_jones_14_acoef,
+            lennard_jones_14_bcoef,
+            hbond_acoef: Vec::new(),
+            hbond_bcoef: Vec::new(),
+            hbcut: Vec::new(),
+            tree_chain_classification: vec!["M".into(); atom_count],
+            join_array: vec![0; atom_count],
+            irotat: vec![0; atom_count],
+            solvent_pointers: Vec::new(),
+            atoms_per_molecule: vec![atom_count],
+            box_dimensions: Vec::new(),
+            radius_set: Some("forcefield-ref radii".into()),
+            ipol: 0,
+        },
+    )?;
+
+    Ok(FfxmlTopologySummary { net_charge_e })
+}
+
+pub fn build_polymer_synthetic_uff_topology(
+    built: &PolymerBuiltArtifact,
+    training_structure_path: &Path,
+    source_charge_manifest_path: Option<&Path>,
+) -> PackResult<AmberTopology> {
+    let templates = load_training_templates(training_structure_path)?;
+    if built.template_sequence_resnames.len() != built.residue_resnames.len() {
+        return Err(PackError::Invalid(
+            "built polymer residue metadata is inconsistent".into(),
+        ));
+    }
+    let atom_count = built.output.atoms.len();
+    let bonds = built.output.bonds.clone();
+    let adjacency = rebuild_bond_adjacency(atom_count, &bonds);
+    let typings = (0..atom_count)
+        .map(|atom_idx| infer_uff_like_typing(&built.output.atoms, &adjacency, atom_idx))
+        .collect::<Vec<_>>();
+    let bond_length_map = template_bond_length_map(&templates);
+    let angle_map = template_angle_map(&templates);
+    let template_charge_map = if let Some(path) = source_charge_manifest_path {
+        build_template_charge_map_from_manifest(training_structure_path, path)?
+    } else {
+        BTreeMap::new()
+    };
+
+    let mut residue_pointers = Vec::new();
+    let residue_labels = built.residue_resnames.clone();
+    let mut next_resid = 1usize;
+    for (idx, atom) in built.output.atoms.iter().enumerate() {
+        let resid = atom.resid.max(1) as usize;
+        while next_resid <= resid {
+            residue_pointers.push(idx + 1);
+            next_resid += 1;
+        }
+    }
+    while residue_pointers.len() < residue_labels.len() {
+        residue_pointers.push(atom_count + 1);
+    }
+
+    let atom_names = built
+        .output
+        .atoms
+        .iter()
+        .map(|atom| atom.name.clone())
+        .collect::<Vec<_>>();
+    let atomic_numbers = built
+        .output
+        .atoms
+        .iter()
+        .map(|atom| atomic_number_for_element(&atom.element))
+        .collect::<Vec<_>>();
+    let masses = built
+        .output
+        .atoms
+        .iter()
+        .map(|atom| element_mass_amu(&atom.element))
+        .collect::<Vec<_>>();
+
+    let mut unique_type_indices = BTreeMap::<&'static str, usize>::new();
+    let mut unique_types = Vec::<UffAtomParams>::new();
+    let atom_type_indices = typings
+        .iter()
+        .map(|typing| {
+            if let Some(idx) = unique_type_indices.get(typing.params.label) {
+                *idx
+            } else {
+                let next = unique_types.len() + 1;
+                unique_type_indices.insert(typing.params.label, next);
+                unique_types.push(typing.params);
+                next
+            }
+        })
+        .collect::<Vec<_>>();
+    let amber_atom_types = typings
+        .iter()
+        .map(|typing| typing.params.label.to_string())
+        .collect::<Vec<_>>();
+    let radii = typings
+        .iter()
+        .map(|typing| (typing.params.x1 * 0.5).max(0.5))
+        .collect::<Vec<_>>();
+    let screen = vec![0.8; atom_count];
+    let charges = built
+        .output
+        .atoms
+        .iter()
+        .map(|atom| {
+            let resid = atom.resid.max(1) as usize;
+            let template_resname = built
+                .template_sequence_resnames
+                .get(resid.saturating_sub(1))
+                .cloned()
+                .unwrap_or_else(|| atom.resname.clone());
+            template_charge_map
+                .get(&(template_resname, atom.name.trim().to_string()))
+                .copied()
+                .unwrap_or(0.0)
+        })
+        .collect::<Vec<_>>();
+
+    let mut bond_specs = Vec::with_capacity(bonds.len());
+    let mut bond_orders = BTreeMap::<(usize, usize), f32>::new();
+    for &(left, right) in &bonds {
+        let order = guess_bond_order(&built.output.atoms, &adjacency, &typings, left, right);
+        let left_typing = typings
+            .get(left)
+            .map(|item| item.params)
+            .unwrap_or_else(|| uff_params_for_label("C_3"));
+        let right_typing = typings
+            .get(right)
+            .map(|item| item.params)
+            .unwrap_or_else(|| uff_params_for_label("C_3"));
+        let uff_rest = uff_bond_rest_length(order, left_typing, right_typing).clamp(0.8, 2.4);
+        let observed_rest = if built.output.atoms[left].resid == built.output.atoms[right].resid {
+            let resid = built.output.atoms[left].resid.max(1) as usize;
+            let template_resname = built
+                .template_sequence_resnames
+                .get(resid.saturating_sub(1))
+                .map(String::as_str)
+                .unwrap_or(built.output.atoms[left].resname.as_str());
+            approx_bond_length_from_training(
+                &bond_length_map,
+                template_resname,
+                &built.output.atoms[left].name,
+                &built.output.atoms[right].name,
+            )
+        } else {
+            let left_resid = built.output.atoms[left].resid.max(1) as usize;
+            let right_resid = built.output.atoms[right].resid.max(1) as usize;
+            let left_template = built
+                .template_sequence_resnames
+                .get(left_resid.saturating_sub(1))
+                .map(String::as_str)
+                .unwrap_or(built.output.atoms[left].resname.as_str());
+            let right_template = built
+                .template_sequence_resnames
+                .get(right_resid.saturating_sub(1))
+                .map(String::as_str)
+                .unwrap_or(built.output.atoms[right].resname.as_str());
+            observed_attach_distance(
+                &templates,
+                left_template,
+                right_template,
+                &built.output.atoms[left].name,
+                &built.output.atoms[right].name,
+            )
+        };
+        let rest_length = observed_rest
+            .filter(|value| (*value - uff_rest).abs() <= 0.35)
+            .unwrap_or(uff_rest);
+        let force_constant =
+            uff_bond_force_constant(rest_length, left_typing, right_typing).clamp(120.0, 1200.0);
+        bond_orders.insert(ordered_pair(left, right), order);
+        bond_specs.push(SyntheticBondSpec {
+            bond: (left, right),
+            rest_length,
+            force_constant,
+        });
+    }
+
+    let angles = rebuild_angles(&adjacency);
+    let angle_type_indices = (1..=angles.len()).collect::<Vec<_>>();
+    let mut angle_force_constants = Vec::with_capacity(angles.len());
+    let mut angle_equil_values = Vec::with_capacity(angles.len());
+    for angle in &angles {
+        let left = angle[0];
+        let center = angle[1];
+        let right = angle[2];
+        let center_typing = typings
+            .get(center)
+            .map(|item| item.params)
+            .unwrap_or_else(|| uff_params_for_label("C_3"));
+        let left_typing = typings
+            .get(left)
+            .map(|item| item.params)
+            .unwrap_or_else(|| uff_params_for_label("C_3"));
+        let right_typing = typings
+            .get(right)
+            .map(|item| item.params)
+            .unwrap_or_else(|| uff_params_for_label("C_3"));
+        let bond_order_left = bond_orders
+            .get(&ordered_pair(left, center))
+            .copied()
+            .unwrap_or(1.0);
+        let bond_order_right = bond_orders
+            .get(&ordered_pair(center, right))
+            .copied()
+            .unwrap_or(1.0);
+        let theta0 = if built.output.atoms[left].resid == built.output.atoms[center].resid
+            && built.output.atoms[center].resid == built.output.atoms[right].resid
+        {
+            let resid = built.output.atoms[center].resid.max(1) as usize;
+            let template_resname = built
+                .template_sequence_resnames
+                .get(resid.saturating_sub(1))
+                .map(String::as_str)
+                .unwrap_or(built.output.atoms[center].resname.as_str());
+            angle_map
+                .get(&template_angle_key(
+                    template_resname,
+                    &built.output.atoms[left].name,
+                    &built.output.atoms[center].name,
+                    &built.output.atoms[right].name,
+                ))
+                .copied()
+                .unwrap_or(center_typing.theta0_rad)
+        } else {
+            center_typing.theta0_rad
+        };
+        let force_constant = uff_angle_force_constant(
+            theta0,
+            bond_order_left,
+            bond_order_right,
+            left_typing,
+            center_typing,
+            right_typing,
+        )
+        .clamp(10.0, 500.0);
+        angle_equil_values.push(theta0);
+        angle_force_constants.push(force_constant);
+    }
+
+    let dihedrals = rebuild_dihedrals(&adjacency, &bonds);
+    let mut dihedral_type_indices = Vec::with_capacity(dihedrals.len());
+    let mut dihedral_force_constants = Vec::new();
+    let mut dihedral_periodicities = Vec::new();
+    let mut dihedral_phases = Vec::new();
+    let mut scee_scale_factors = Vec::new();
+    let mut scnb_scale_factors = Vec::new();
+    for dihedral in &dihedrals {
+        let params = synthetic_torsion_params(
+            &built.output.atoms,
+            &adjacency,
+            &typings,
+            &bond_orders,
+            *dihedral,
+        );
+        dihedral_type_indices.push(dihedral_force_constants.len() + 1);
+        dihedral_force_constants.push(params.force_constant);
+        dihedral_periodicities.push(params.periodicity);
+        dihedral_phases.push(params.phase_rad);
+        scee_scale_factors.push(1.2);
+        scnb_scale_factors.push(2.0);
+    }
+
+    let impropers = rebuild_impropers(&adjacency);
+    let mut improper_type_indices = Vec::with_capacity(impropers.len());
+    for improper in &impropers {
+        let center = improper[1];
+        let center_atomic_number = atomic_numbers.get(center).copied().unwrap_or_default();
+        let carbon_bound_to_oxygen = center_atomic_number == 6
+            && adjacency.get(center).into_iter().flatten().any(|neighbor| {
+                atomic_numbers.get(*neighbor).copied().unwrap_or_default() == 8
+                    && bond_orders
+                        .get(&ordered_pair(center, *neighbor))
+                        .copied()
+                        .unwrap_or(1.0)
+                        >= 1.8
+            });
+        improper_type_indices.push(dihedral_force_constants.len() + 1);
+        dihedral_force_constants.push(synthetic_improper_force_constant(
+            center_atomic_number,
+            carbon_bound_to_oxygen,
+        ));
+        dihedral_periodicities.push(2.0);
+        dihedral_phases.push(std::f32::consts::PI);
+        scee_scale_factors.push(1.2);
+        scnb_scale_factors.push(2.0);
+    }
+
+    let (
+        nonbonded_parm_index,
+        lennard_jones_acoef,
+        lennard_jones_bcoef,
+        lennard_jones_14_acoef,
+        lennard_jones_14_bcoef,
+    ) = build_nonbonded_tables(&unique_types);
+
+    Ok(AmberTopology {
+        atom_names,
+        residue_labels,
+        residue_pointers,
+        atomic_numbers,
+        masses,
+        charges,
+        atom_type_indices,
+        amber_atom_types,
+        radii,
+        screen,
+        bonds: bond_specs.iter().map(|spec| spec.bond).collect(),
+        bond_type_indices: (1..=bond_specs.len()).collect(),
+        bond_force_constants: bond_specs.iter().map(|spec| spec.force_constant).collect(),
+        bond_equil_values: bond_specs.iter().map(|spec| spec.rest_length).collect(),
+        angles,
+        angle_type_indices,
+        angle_force_constants,
+        angle_equil_values,
+        dihedrals,
+        dihedral_type_indices,
+        dihedral_force_constants,
+        dihedral_periodicities,
+        dihedral_phases,
+        scee_scale_factors,
+        scnb_scale_factors,
+        solty: vec![0.0; unique_types.len().max(1)],
+        impropers,
+        improper_type_indices,
+        excluded_atoms: Vec::new(),
+        nonbonded_parm_index,
+        lennard_jones_acoef,
+        lennard_jones_bcoef,
+        lennard_jones_14_acoef,
+        lennard_jones_14_bcoef,
+        hbond_acoef: Vec::new(),
+        hbond_bcoef: Vec::new(),
+        hbcut: Vec::new(),
+        tree_chain_classification: vec!["M".into(); atom_count],
+        join_array: vec![0; atom_count],
+        irotat: vec![0; atom_count],
+        solvent_pointers: Vec::new(),
+        atoms_per_molecule: vec![atom_count],
+        box_dimensions: Vec::new(),
+        radius_set: Some("synthetic UFF-like radii".into()),
+        ipol: 0,
+    })
+}
+
+pub fn write_polymer_prmtop_synthetic_uff_like(
+    built: &PolymerBuiltArtifact,
+    training_structure_path: &Path,
+    source_charge_manifest_path: Option<&Path>,
+    out_path: &str,
+) -> PackResult<()> {
+    let topology = build_polymer_synthetic_uff_topology(
+        built,
+        training_structure_path,
+        source_charge_manifest_path,
+    )?;
+    Ok(write_minimal_prmtop(out_path, &topology)?)
+}
+
 fn stage_polymer_output_path(final_coordinates_path: &str) -> PathBuf {
     let final_path = PathBuf::from(final_coordinates_path);
     let parent = final_path.parent().unwrap_or_else(|| Path::new("."));
@@ -2617,6 +5131,7 @@ pub fn build_polymer_graph(
     conformation_mode: &str,
     tacticity_mode: &str,
     build_seed: u64,
+    strict_qc: bool,
     final_coordinates_path: &str,
 ) -> PackResult<PolymerBuiltArtifact> {
     if source_nmer < 3 {
@@ -2930,7 +5445,7 @@ pub fn build_polymer_graph(
         None
     };
     let qc_report = recompute_build_qc_report(&output, &qc_context);
-    if conformation_mode != "random_walk" {
+    if strict_qc && conformation_mode != "random_walk" {
         ensure_build_qc_passes(&qc_report)?;
     }
     let path = stage_polymer_output_path(final_coordinates_path);

@@ -336,7 +336,7 @@ from warp_md import (
     StripPlan, RmsdPlan
 )
 
-system = System.from_pdb("raw_simulation.pdb")
+system = System.from_file("raw_simulation.pdb")
 traj = Trajectory.open_xtc("raw_simulation.xtc", system)
 protein = system.select("protein")
 

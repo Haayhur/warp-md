@@ -181,7 +181,7 @@ Set `CUDA_HOME` or `CUDA_PATH` to your CUDA installation. The `cudarc` crate nee
 <details>
 <summary>Atom count does not match system</summary>
 
-Your topology and trajectory are having a disagreement. Make sure `System.from_pdb()` and `Trajectory.open_*()` are looking at the same molecular system.
+Your topology and trajectory are having a disagreement. Make sure `System.from_file()` and `Trajectory.open_*()` are looking at the same molecular system.
 </details>
 
 ---

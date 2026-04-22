@@ -7,6 +7,7 @@ license = "MIT"
 [dependencies]
 traj-core = { path = "../traj-core" }
 traj-io = { path = "../traj-io" }
+warp-structure = { path = "../warp-structure" }
 nalgebra = "0.32"
 traj-gpu = { path = "../traj-gpu" }
 rustfft = "6.2"

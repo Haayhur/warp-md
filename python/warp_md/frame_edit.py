@@ -30,7 +30,7 @@ def add_frame_edit_args(parser: argparse.ArgumentParser) -> None:
         "--pdbfile",
         dest="topology",
         required=True,
-        help="Topology file (.pdb or .gro)",
+        help="Topology file (.pdb, .pdbqt, or .gro)",
     )
     parser.add_argument(
         "-t",
@@ -55,7 +55,11 @@ def add_frame_edit_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="Single frame index to extract; overrides begin/end/step",
     )
-    parser.add_argument("--topology-format", choices=["pdb", "gro"], help="Override topology format")
+    parser.add_argument(
+        "--topology-format",
+        choices=["pdb", "pdbqt", "gro"],
+        help="Override topology format",
+    )
     parser.add_argument(
         "--traj-format",
         choices=_INPUT_TRAJECTORY_FORMATS,

@@ -366,7 +366,7 @@ from warp_md import (
 )
 from warp_md.analysis import dssp
 
-system = System.from_pdb("protein.pdb")
+system = System.from_file("protein.pdb")
 traj = Trajectory.open_xtc("protein.xtc", system)
 ca = system.select("name CA")
 backbone = system.select("backbone")

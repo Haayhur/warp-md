@@ -158,7 +158,7 @@ from warp_md import (
     BondLengthDistributionPlan, PersistenceLengthPlan
 )
 
-system = System.from_pdb("polymer.pdb")
+system = System.from_file("polymer.pdb")
 traj = Trajectory.open_xtc("polymer.xtc", system)
 chain = system.select("chain A")
 

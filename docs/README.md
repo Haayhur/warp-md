@@ -159,7 +159,7 @@ cargo build --release --all-features
 ```python
 from warp_md import System, Trajectory, RgPlan
 
-system = System.from_pdb("topology.pdb")
+system = System.from_file("topology.pdb")
 traj = Trajectory.open_xtc("trajectory.xtc", system)
 rg = RgPlan(system.select("protein")).run(traj, system)
 print(f"Mean Rg: {rg.mean():.2f} Å")  # Done. That was easy.

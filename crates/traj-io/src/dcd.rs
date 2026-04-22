@@ -33,6 +33,7 @@ pub struct DcdReader {
 }
 
 const DCD_IO_BUFFER_BYTES: usize = 1024 * 1024;
+const DCD_CHARMM_VERSION: i32 = 24;
 
 #[derive(Debug, Clone, Copy)]
 enum UnitCellLayout {
@@ -655,7 +656,10 @@ fn write_dcd_header(file: &mut impl Write, n_atoms: usize, n_frames: usize) -> T
     let mut icntrl = [0i32; 20];
     icntrl[0] = i32::try_from(n_frames)
         .map_err(|_| TrajError::Invalid("too many frames for DCD header".into()))?;
+    // VMD/MDTraj key off the CHARMM extra-block flag and version slot to decide
+    // whether per-frame unit-cell records are present.
     icntrl[10] = 1;
+    icntrl[19] = DCD_CHARMM_VERSION;
     for value in icntrl {
         header.extend_from_slice(&value.to_le_bytes());
     }
@@ -1476,6 +1480,24 @@ mod tests {
                 lz: 30.0,
             }
         );
+    }
+
+    #[test]
+    fn write_dcd_header_marks_charmm_unitcell_layout() {
+        let tempfile = NamedTempFile::new().unwrap();
+        let path = tempfile.path();
+
+        let mut writer = DcdWriter::create(path, 1, 1).unwrap();
+        writer.write_frame(&[[1.0, 2.0, 3.0]], Box3::None).unwrap();
+        writer.flush().unwrap();
+
+        let bytes = std::fs::read(path).unwrap();
+        let icntrl = std::array::from_fn::<_, 20, _>(|i| {
+            let start = 8 + i * 4;
+            i32::from_le_bytes(bytes[start..start + 4].try_into().unwrap())
+        });
+        assert_eq!(icntrl[10], 1);
+        assert_eq!(icntrl[19], DCD_CHARMM_VERSION);
     }
 
     #[test]

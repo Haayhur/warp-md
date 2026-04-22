@@ -1617,11 +1617,9 @@ fn bit_is_set(flags: i32, entry: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
-    use std::io::BufReader;
     use std::process::Command;
     use tempfile::{NamedTempFile, TempDir};
-    use traj_core::pdb_gro::parse_gro_reader;
+    use warp_structure::io::read_gro;
 
     fn read_single_frame<R: TrajReader>(
         reader: &mut R,
@@ -1767,7 +1765,7 @@ mod tests {
             return;
         };
         let mut cpt = CptReader::open(&cpt_path).unwrap();
-        let gro = parse_gro_reader(BufReader::new(File::open(&gro_path).unwrap()), true).unwrap();
+        let gro = read_gro(&gro_path).unwrap();
 
         let cpt_chunk = read_single_frame(&mut cpt, true, true);
 
@@ -1778,9 +1776,9 @@ mod tests {
         if let Some(box_vectors) = gro.box_vectors {
             match cpt_chunk.box_[0] {
                 Box3::Orthorhombic { lx, ly, lz } => {
-                    assert!((lx - box_vectors[0][0] * NM_TO_ANGSTROM).abs() < 1.0e-3);
-                    assert!((ly - box_vectors[1][1] * NM_TO_ANGSTROM).abs() < 1.0e-3);
-                    assert!((lz - box_vectors[2][2] * NM_TO_ANGSTROM).abs() < 1.0e-3);
+                    assert!((lx - box_vectors[0][0]).abs() < 1.0e-3);
+                    assert!((ly - box_vectors[1][1]).abs() < 1.0e-3);
+                    assert!((lz - box_vectors[2][2]).abs() < 1.0e-3);
                 }
                 other => panic!("unexpected checkpoint box shape: {other:?}"),
             }

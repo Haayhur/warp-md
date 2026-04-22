@@ -10,11 +10,10 @@ use traj_core::frame::{FrameChunk, FrameChunkBuilder};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 use traj_io::dcd::DcdReader;
-use traj_io::gro::GroReader;
-use traj_io::pdb::{PdbReader, PdbqtReader};
 use traj_io::pdb_traj::PdbTrajReader;
 use traj_io::xtc::XtcReader;
-use traj_io::{TopologyReader, TrajReader};
+use traj_io::TrajReader;
+use warp_structure::io::read_system_auto;
 
 #[derive(Debug, Clone)]
 struct Args {
@@ -224,24 +223,7 @@ fn extension_lower(path: &Path) -> Option<String> {
 }
 
 fn load_system(top: &Path) -> TrajResult<System> {
-    match extension_lower(top).as_deref() {
-        Some("pdb") => {
-            let mut reader = PdbReader::new(top);
-            reader.read_system()
-        }
-        Some("pdbqt") => {
-            let mut reader = PdbqtReader::new(top);
-            reader.read_system()
-        }
-        Some("gro") => {
-            let mut reader = GroReader::new(top);
-            reader.read_system()
-        }
-        _ => Err(TrajError::Unsupported(format!(
-            "unsupported topology format for '{}'",
-            top.display()
-        ))),
-    }
+    read_system_auto(top, None).map_err(Into::into)
 }
 
 fn open_reader(traj: &Path, dcd_length_scale: f32) -> TrajResult<Box<dyn TrajReader>> {

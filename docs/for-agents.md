@@ -53,7 +53,7 @@ warp-pep build -s ACDEFG --preset alpha-helix --output helix.pdb --stream
 ```python
 from warp_md import System, Trajectory, RgPlan
 
-system = System.from_pdb("protein.pdb")
+system = System.from_file("protein.pdb")
 traj = Trajectory.open_xtc("traj.xtc", system)
 rg = RgPlan(system.select("protein")).run(traj)
 print(f"Mean Rg: {rg.mean():.2f} Å")

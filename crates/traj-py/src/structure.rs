@@ -1,5 +1,8 @@
 use super::*;
 
+use crate::io::{
+    open_trajectory_auto, resolve_system_format_token, resolve_trajectory_format_token,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use warp_structure::io::{read_molecule, write_output, OutputWriteResult};
@@ -622,42 +625,13 @@ fn resolve_frame_edit_topology_format(
     topology_path: &str,
     topology_format: Option<&str>,
 ) -> PyResult<String> {
-    let format = topology_format
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_else(|| infer_topology_format(topology_path, None));
-    if matches!(format.as_str(), "pdb" | "gro") {
-        Ok(format)
-    } else {
-        Err(pyo3::exceptions::PyValueError::new_err(
-            "topology format must be pdb or gro",
-        ))
-    }
+    resolve_system_format_token(topology_path, topology_format).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err("topology format must be pdb, pdbqt, or gro")
+    })
 }
 
 fn resolve_frame_edit_traj_format(traj_path: &str, traj_format: Option<&str>) -> PyResult<String> {
-    let format = traj_format
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_else(|| {
-            Path::new(traj_path)
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase()
-        });
-    if matches!(
-        format.as_str(),
-        "dcd" | "xtc" | "gro" | "g96" | "cpt" | "h5md" | "tng" | "trr" | "pdb" | "pdbqt"
-    ) {
-        Ok(format)
-    } else {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unsupported trajectory format '{format}'; expected one of: dcd, xtc, gro, g96, cpt, h5md, tng, trr, pdb, pdbqt"
-        )))
-    }
+    resolve_trajectory_format_token(traj_path, traj_format)
 }
 
 fn infer_frame_edit_output_format(path: &str) -> PyResult<FrameEditOutputFormat> {
@@ -683,26 +657,7 @@ fn infer_frame_edit_output_format(path: &str) -> PyResult<FrameEditOutputFormat>
 }
 
 fn load_frame_edit_system(topology_path: &str, topology_format: &str) -> PyResult<PySystem> {
-    match topology_format {
-        "pdb" => match PySystem::from_pdb(topology_path) {
-            Ok(system) => Ok(system),
-            Err(err) => {
-                if err
-                    .to_string()
-                    .to_ascii_lowercase()
-                    .contains("invalid resid")
-                {
-                    PySystem::from_pdb_permissive(topology_path)
-                } else {
-                    Err(err)
-                }
-            }
-        },
-        "gro" => PySystem::from_gro(topology_path),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(
-            "topology format must be pdb or gro",
-        )),
-    }
+    PySystem::from_file(topology_path, Some(topology_format))
 }
 
 fn open_frame_edit_trajectory(
@@ -711,21 +666,7 @@ fn open_frame_edit_trajectory(
     system: &PySystem,
     traj_length_scale: Option<f32>,
 ) -> PyResult<PyTrajectory> {
-    match traj_format {
-        "dcd" => PyTrajectory::open_dcd(traj_path, system, traj_length_scale),
-        "xtc" => PyTrajectory::open_xtc(traj_path, system),
-        "gro" => PyTrajectory::open_gro(traj_path, system),
-        "g96" => PyTrajectory::open_g96(traj_path, system),
-        "cpt" => PyTrajectory::open_cpt(traj_path, system),
-        "h5md" => PyTrajectory::open_h5md(traj_path, system),
-        "tng" => PyTrajectory::open_tng(traj_path, system),
-        "trr" => PyTrajectory::open_trr(traj_path, system),
-        "pdb" => PyTrajectory::open_pdb(traj_path, system),
-        "pdbqt" => PyTrajectory::open_pdbqt(traj_path, system),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unsupported trajectory format '{traj_format}'"
-        ))),
-    }
+    open_trajectory_auto(traj_path, system, Some(traj_format), traj_length_scale)
 }
 
 fn resolve_frame_edit_chunk_frames(

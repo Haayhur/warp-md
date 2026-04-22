@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .io import open_trajectory_auto
@@ -73,19 +72,7 @@ def _load_system(spec: Dict[str, Any]) -> System:
     if not path:
         raise ValueError("system.path is required")
     fmt = spec.get("format")
-    if fmt is None:
-        fmt = Path(path).suffix.lower().lstrip(".")
-    if fmt == "pdb":
-        try:
-            return System.from_pdb(path)
-        except RuntimeError as exc:
-            permissive_loader = getattr(System, "from_pdb_permissive", None)
-            if callable(permissive_loader) and "invalid resid" in str(exc).lower():
-                return permissive_loader(path)
-            raise
-    if fmt == "gro":
-        return System.from_gro(path)
-    raise ValueError("system.format must be pdb or gro")
+    return System.from_file(path, format=fmt)
 
 
 def _load_trajectory(spec: Dict[str, Any], system: System) -> Trajectory:
@@ -98,7 +85,6 @@ def _load_trajectory(spec: Dict[str, Any], system: System) -> Trajectory:
         system,
         format=spec.get("format"),
         length_scale=spec.get("length_scale"),
-        trajectory_cls=Trajectory,
     )
 
 

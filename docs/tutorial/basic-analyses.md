@@ -149,7 +149,7 @@ from warp_md import System, Trajectory
 from warp_md import RgPlan, RmsdPlan, MsdPlan, RdfPlan
 
 # Load
-system = System.from_pdb("solvated_protein.pdb")
+system = System.from_file("solvated_protein.pdb")
 traj = Trajectory.open_xtc("production.xtc", system)
 
 # Selections

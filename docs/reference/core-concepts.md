@@ -19,10 +19,10 @@ Your molecular topology — the cast of characters your agent will analyze.
 from warp_md import System
 
 # From PDB (Angstrom)
-system = System.from_pdb("topology.pdb")
+system = System.from_file("topology.pdb")
 
 # From GRO (nm → auto-converted to Angstrom)
-system = System.from_gro("topology.gro")
+system = System.from_file("topology.gro")
 ```
 
 ### Methods

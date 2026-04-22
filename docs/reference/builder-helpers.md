@@ -145,7 +145,7 @@ from warp_md import (
 )
 
 # Load system
-system = System.from_pdb("ionic_liquid.pdb")
+system = System.from_file("ionic_liquid.pdb")
 traj = Trajectory.open_xtc("ionic_liquid.xtc", system)
 
 # Define selection

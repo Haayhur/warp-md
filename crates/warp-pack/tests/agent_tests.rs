@@ -6,6 +6,7 @@ mod test_support;
 use test_support::{temp_path, write_text};
 
 use serde_json::{json, Value};
+use serial_test::serial;
 
 fn fixture_bundle_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -690,6 +691,7 @@ fn write_polymer_build_manifest_with_md_ready_handoff_only(
 }
 
 #[test]
+#[serial]
 fn agent_schema_includes_default_version() {
     let schema_text = warp_pack::agent::schema_json("request").expect("request schema");
     let schema: Value = serde_json::from_str(&schema_text).expect("parse schema");
@@ -700,6 +702,7 @@ fn agent_schema_includes_default_version() {
 }
 
 #[test]
+#[serial]
 fn capabilities_advertise_components_and_prmtop() {
     let caps = warp_pack::agent::capabilities();
     assert_eq!(caps["preferred_solute_input"], "components");
@@ -744,6 +747,7 @@ fn capabilities_advertise_components_and_prmtop() {
 }
 
 #[test]
+#[serial]
 fn validate_without_ions_does_not_require_registry_files() {
     let solute = write_solute("no_ions_solute.pdb");
     let previous_ion = env::var_os("WARP_MD_ION_REGISTRY");
@@ -801,6 +805,7 @@ fn validate_without_ions_does_not_require_registry_files() {
 }
 
 #[test]
+#[serial]
 fn chemistry_resolver_reports_counts_templates_and_molarity() {
     let payload = json!({
         "box_size_angstrom": 40.0,
@@ -825,6 +830,7 @@ fn chemistry_resolver_reports_counts_templates_and_molarity() {
 }
 
 #[test]
+#[serial]
 fn chemistry_resolver_supports_neutralization_preview() {
     let payload = json!({
         "box_size_angstrom": 30.0,
@@ -844,6 +850,7 @@ fn chemistry_resolver_supports_neutralization_preview() {
 }
 
 #[test]
+#[serial]
 fn agent_validate_rejects_removed_inline_polymer_request() {
     let training = write_training_oligomer("polymer_validate_training.pdb");
     let payload = json!({
@@ -883,6 +890,7 @@ fn agent_validate_rejects_removed_inline_polymer_request() {
 }
 
 #[test]
+#[serial]
 fn agent_validate_rejects_removed_inline_polymer_sequence_request() {
     let training = write_training_oligomer("polymer_invalid_sequence_training.pdb");
     let payload = json!({
@@ -920,6 +928,7 @@ fn agent_validate_rejects_removed_inline_polymer_sequence_request() {
 }
 
 #[test]
+#[serial]
 fn agent_validate_rejects_inline_polymer_without_sequence_token() {
     let training = write_training_oligomer("polymer_missing_sequence_training.pdb");
     let payload = json!({
@@ -956,6 +965,7 @@ fn agent_validate_rejects_inline_polymer_without_sequence_token() {
 }
 
 #[test]
+#[serial]
 fn agent_validate_rejects_mixed_components_and_legacy_input() {
     let solute = write_solute("components_mixed_solute.pdb");
     let payload = json!({
@@ -997,6 +1007,7 @@ fn agent_validate_rejects_mixed_components_and_legacy_input() {
 }
 
 #[test]
+#[serial]
 fn agent_run_solute_writes_manifest_and_outputs() {
     let solute = write_solute("agent_solute.pdb");
     let charges = write_charge_manifest(
@@ -1067,6 +1078,7 @@ fn agent_run_solute_writes_manifest_and_outputs() {
 }
 
 #[test]
+#[serial]
 fn agent_run_supports_builtin_polyatomic_salt_and_preserves_conect() {
     let solute = write_solute("agent_polyatomic_solute.pdb");
     let coords = temp_path("agent_polyatomic_out.pdb");
@@ -1118,6 +1130,7 @@ fn agent_run_supports_builtin_polyatomic_salt_and_preserves_conect() {
 }
 
 #[test]
+#[serial]
 fn agent_validate_rejects_polyatomic_formula_without_named_salt() {
     let solute = write_solute("agent_polyatomic_formula_solute.pdb");
     let tfa = temp_path("agent_polyatomic_formula_tfa.pdb");
@@ -1167,6 +1180,7 @@ fn agent_validate_rejects_polyatomic_formula_without_named_salt() {
 }
 
 #[test]
+#[serial]
 fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
     let coords_in = write_training_oligomer("agent_polymer_handoff_coords.pdb");
     let charge = write_charge_manifest(
@@ -1308,6 +1322,7 @@ fn agent_run_polymer_build_handoff_uses_manifest_artifacts() {
 }
 
 #[test]
+#[serial]
 fn agent_run_components_bulk_uses_prmtop_charge_fallback() {
     let solute = write_solute("components_bulk_solute.pdb");
     let prmtop = write_prmtop("components_bulk_solute.prmtop", 1.0);
@@ -1384,6 +1399,7 @@ fn agent_run_components_bulk_uses_prmtop_charge_fallback() {
 }
 
 #[test]
+#[serial]
 fn agent_run_components_bulk_resolves_box_from_density_target() {
     let solute = write_solute("components_density_solute.pdb");
     let prmtop = write_prmtop("components_density_solute.prmtop", 0.0);
@@ -1447,6 +1463,7 @@ fn agent_run_components_bulk_resolves_box_from_density_target() {
 }
 
 #[test]
+#[serial]
 fn agent_run_backbone_aligned_bulk_records_alignment() {
     let solute = write_solute("components_aligned_solute.pdb");
     let prmtop = write_prmtop("components_aligned_solute.prmtop", 0.0);
@@ -1509,6 +1526,7 @@ fn agent_run_backbone_aligned_bulk_records_alignment() {
 }
 
 #[test]
+#[serial]
 fn agent_run_polymer_build_handoff_uses_manifest_topology_fallback() {
     let coords_in = write_training_oligomer("agent_polymer_handoff_topology_coords.pdb");
     let topology = write_prmtop("agent_polymer_handoff_topology.prmtop", 1.0);
@@ -1573,6 +1591,7 @@ fn agent_run_polymer_build_handoff_uses_manifest_topology_fallback() {
 }
 
 #[test]
+#[serial]
 fn agent_run_amorphous_bulk_records_typed_graph_packing_hints() {
     let coords_in = write_training_oligomer("agent_polymer_graph_handoff_coords.pdb");
     let topology = write_prmtop("agent_polymer_graph_handoff.prmtop", 1.0);
@@ -1657,6 +1676,7 @@ fn agent_run_amorphous_bulk_records_typed_graph_packing_hints() {
 }
 
 #[test]
+#[serial]
 fn agent_run_polymer_build_handoff_reads_md_ready_handoff_fallbacks() {
     let coords_in = write_training_oligomer("agent_polymer_md_ready_coords.pdb");
     let topology = write_prmtop("agent_polymer_md_ready.prmtop", 1.0);
@@ -1725,6 +1745,7 @@ fn agent_run_polymer_build_handoff_reads_md_ready_handoff_fallbacks() {
 }
 
 #[test]
+#[serial]
 fn agent_run_amorphous_bulk_records_port_class_bias() {
     let coords_in = write_training_oligomer("agent_polymer_port_class_coords.pdb");
     let topology = write_prmtop("agent_polymer_port_class.prmtop", 1.0);
@@ -1792,6 +1813,7 @@ fn agent_run_amorphous_bulk_records_port_class_bias() {
 }
 
 #[test]
+#[serial]
 fn agent_run_amorphous_bulk_records_mixed_architecture_cohort() {
     let linear_coords = write_training_oligomer("agent_mixed_linear_coords.pdb");
     let linear_topology = write_prmtop("agent_mixed_linear.prmtop", 1.0);
@@ -1896,6 +1918,7 @@ fn agent_run_amorphous_bulk_records_mixed_architecture_cohort() {
 }
 
 #[test]
+#[serial]
 fn agent_run_fixture_port_caps_handoff_records_applied_caps() {
     let (_coords_in, build_manifest, _charge_manifest, _topology_graph) = run_fixture_polymer_build(
         "pmma_port_caps",
@@ -1970,6 +1993,7 @@ fn agent_run_fixture_port_caps_handoff_records_applied_caps() {
 }
 
 #[test]
+#[serial]
 fn agent_run_fixture_branched_mix_handoff_records_mixed_fixture_architecture() {
     let (_linear_coords, linear_manifest, _linear_charge, _linear_graph) =
         run_fixture_polymer_build(

@@ -23,8 +23,8 @@ This guide assumes you've completed [Installation](installation.md). If not, go 
 from warp_md import System
 
 # Load topology from PDB or GRO
-system = System.from_pdb("example.pdb")
-# Or: system = System.from_gro("example.gro")
+system = System.from_file("example.pdb")
+# Or: system = System.from_file("example.gro")
 
 print(f"Loaded {system.n_atoms()} atoms")
 ```
@@ -93,7 +93,7 @@ That's it. Your agent just computed the radius of gyration across an entire traj
 from warp_md import System, Trajectory, RgPlan, RmsdPlan
 
 # 1. Load the system
-system = System.from_pdb("protein.pdb")
+system = System.from_file("protein.pdb")
 
 # 2. Select what matters
 backbone = system.select("backbone")

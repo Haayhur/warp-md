@@ -88,8 +88,10 @@ enum Command {
     },
     Validate {
         request: PathBuf,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "shallow")]
         deep: bool,
+        #[arg(long, conflicts_with = "deep")]
+        shallow: bool,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
         #[arg(long)]
@@ -209,12 +211,15 @@ fn run() -> Result<u8, String> {
         Command::Validate {
             request,
             deep,
+            shallow,
             format,
             json,
         } => {
             let mut text = fs::read_to_string(request).map_err(|err| err.to_string())?;
             if deep {
                 text = with_validation_depth(&text, "deep")?;
+            } else if shallow {
+                text = with_validation_depth(&text, "shallow")?;
             }
             let (code, value) = warp_build::validate_request_json(&text);
             print_value(&value, selected_format(format, json))?;

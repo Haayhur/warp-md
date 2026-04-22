@@ -12,8 +12,10 @@ mod gromos96;
 mod lammps;
 mod mol2;
 mod pdb;
+mod pdbqt;
 mod pdbx;
 mod pqr;
+mod projection;
 mod tinker;
 mod xyz;
 
@@ -34,10 +36,14 @@ pub use lammps::read_lammps_data;
 pub use lammps::write_lammps;
 pub use mol2::write_mol2;
 pub use pdb::write_pdb;
+pub use pdbqt::read_pdbqt;
 pub use pdbx::read_pdbx;
 pub use pdbx::write_pdbx;
 pub use pqr::read_pqr;
 pub use pqr::write_pqr;
+pub use projection::{
+    read_gro_system, read_pdb_system, read_pdbqt_system, read_system_auto, system_from_molecule,
+};
 pub use tinker::read_tinker_xyz;
 pub use xyz::write_xyz;
 
@@ -96,6 +102,7 @@ pub fn read_molecule(
     let fmt = format.unwrap_or(&ext).to_lowercase();
     match fmt.as_str() {
         "pdb" | "brk" | "ent" => pdb::read_pdb(path, ignore_conect, non_standard_conect),
+        "pdbqt" => pdbqt::read_pdbqt(path),
         "pqr" => pqr::read_pqr(path),
         "xyz" => xyz::read_xyz(path),
         "mol2" => mol2::read_mol2(path),
@@ -224,5 +231,31 @@ pub fn write_output(
         _ => Err(PackError::Invalid(format!(
             "unsupported output format: {format}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+    use std::io::Write;
+
+    use tempfile::tempdir;
+
+    use super::read_molecule;
+
+    #[test]
+    fn read_molecule_parses_pdbqt() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("ligand.pdbqt");
+        let mut file = File::create(&path).expect("create pdbqt");
+        file.write_all(
+            b"ATOM      1  C1  LIG A   1       1.500   2.500   3.500  0.00  0.00           C\n",
+        )
+        .expect("write pdbqt");
+
+        let molecule =
+            read_molecule(&path, Some("pdbqt"), false, false, None).expect("read pdbqt molecule");
+        assert_eq!(molecule.atoms.len(), 1);
+        assert!((molecule.atoms[0].position.z - 3.5).abs() < 1.0e-6);
     }
 }

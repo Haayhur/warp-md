@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use warp_structure::io::{write_minimal_prmtop, AmberTopology};
+use warp_structure::io::{read_prmtop_topology, write_minimal_prmtop, AmberTopology};
 
 fn temp_path(label: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -102,9 +102,11 @@ fn make_bundle_dir(label: &str) -> (PathBuf, PathBuf) {
     let training = dir.join("training.pdb");
     let prmtop = dir.join("training.prmtop");
     let charges = dir.join("training_charge.json");
+    let forcefield = dir.join("training.ffxml");
     let bundle = dir.join("bundle.json");
     write_training_oligomer(&training);
     write_prmtop(&prmtop);
+    write_text(&forcefield, "<ForceField/>\n");
     write_json(
         &charges,
         &json!({
@@ -213,6 +215,287 @@ fn make_bundle_dir(label: &str) -> (PathBuf, PathBuf) {
     (dir, bundle)
 }
 
+fn make_structure_only_bundle_dir(label: &str) -> (PathBuf, PathBuf) {
+    let (dir, bundle) = make_bundle_dir(label);
+    let mut payload: Value =
+        serde_json::from_str(&fs::read_to_string(&bundle).expect("read bundle"))
+            .expect("bundle json");
+    let artifacts = payload["artifacts"]
+        .as_object_mut()
+        .expect("bundle artifacts object");
+    artifacts.remove("source_topology_ref");
+    artifacts.remove("source_charge_manifest");
+    write_json(&bundle, &payload);
+    fs::remove_file(dir.join("training.prmtop")).ok();
+    fs::remove_file(dir.join("training_charge.json")).ok();
+    (dir, bundle)
+}
+
+fn write_bad_valence_training_oligomer(path: &Path) {
+    write_text(
+        path,
+        "ATOM      1  C1  HDA A   1       0.000   0.000   0.000  1.00  0.00           C\n\
+ATOM      2 H11  HDA A   1       0.000   1.090   0.000  1.00  0.00           H\n\
+ATOM      3 H12  HDA A   1       0.000  -1.090   0.000  1.00  0.00           H\n\
+ATOM      4 H13  HDA A   1       0.000   0.000   1.090  1.00  0.00           H\n\
+ATOM      5 H14  HDA A   1       0.000   0.000  -1.090  1.00  0.00           H\n\
+ATOM      6 CL1  HDA A   1      -1.800   0.000   0.000  1.00  0.00          CL\n\
+ATOM      7  C2  RPT A   2       4.000   0.000   0.000  1.00  0.00           C\n\
+ATOM      8 H21  RPT A   2       4.000   1.090   0.000  1.00  0.00           H\n\
+ATOM      9 H22  RPT A   2       4.000  -1.090   0.000  1.00  0.00           H\n\
+ATOM     10 H23  RPT A   2       4.000   0.000   1.090  1.00  0.00           H\n\
+ATOM     11 H24  RPT A   2       4.000   0.000  -1.090  1.00  0.00           H\n\
+ATOM     12 CL2  RPT A   2       2.200   0.000   0.000  1.00  0.00          CL\n\
+ATOM     13  C3  TLA A   3       8.000   0.000   0.000  1.00  0.00           C\n\
+ATOM     14 H31  TLA A   3       8.000   1.090   0.000  1.00  0.00           H\n\
+ATOM     15 H32  TLA A   3       8.000  -1.090   0.000  1.00  0.00           H\n\
+ATOM     16 H33  TLA A   3       8.000   0.000   1.090  1.00  0.00           H\n\
+ATOM     17 H34  TLA A   3       8.000   0.000  -1.090  1.00  0.00           H\n\
+ATOM     18 CL3  TLA A   3       6.200   0.000   0.000  1.00  0.00          CL\n\
+END\n",
+    );
+}
+
+fn write_bad_valence_prmtop(path: &Path) {
+    let atom_names = vec![
+        "C1", "H11", "H12", "H13", "H14", "CL1", "C2", "H21", "H22", "H23", "H24", "CL2", "C3",
+        "H31", "H32", "H33", "H34", "CL3",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    let atomic_numbers = vec![6, 1, 1, 1, 1, 17, 6, 1, 1, 1, 1, 17, 6, 1, 1, 1, 1, 17];
+    let masses = atomic_numbers
+        .iter()
+        .map(|z| match *z {
+            6 => 12.01,
+            17 => 35.45,
+            _ => 1.008,
+        })
+        .collect::<Vec<_>>();
+    let bonds = vec![
+        (0, 1),
+        (0, 2),
+        (0, 3),
+        (0, 4),
+        (0, 5),
+        (6, 7),
+        (6, 8),
+        (6, 9),
+        (6, 10),
+        (6, 11),
+        (12, 13),
+        (12, 14),
+        (12, 15),
+        (12, 16),
+        (12, 17),
+    ];
+    let topology = AmberTopology {
+        atom_names,
+        residue_labels: vec!["HDA".into(), "RPT".into(), "TLA".into()],
+        residue_pointers: vec![1, 7, 13],
+        atomic_numbers,
+        masses,
+        charges: vec![0.0; 18],
+        atom_type_indices: vec![1; 18],
+        amber_atom_types: vec!["DU".into(); 18],
+        radii: vec![1.5; 18],
+        screen: vec![0.8; 18],
+        bonds,
+        bond_type_indices: vec![1; 15],
+        bond_force_constants: vec![310.0],
+        bond_equil_values: vec![1.09],
+        angles: Vec::new(),
+        angle_type_indices: Vec::new(),
+        angle_force_constants: Vec::new(),
+        angle_equil_values: Vec::new(),
+        dihedrals: Vec::new(),
+        dihedral_type_indices: Vec::new(),
+        dihedral_force_constants: Vec::new(),
+        dihedral_periodicities: Vec::new(),
+        dihedral_phases: Vec::new(),
+        scee_scale_factors: Vec::new(),
+        scnb_scale_factors: Vec::new(),
+        solty: vec![0.0],
+        impropers: Vec::new(),
+        improper_type_indices: Vec::new(),
+        excluded_atoms: vec![Vec::new(); 18],
+        nonbonded_parm_index: vec![1],
+        lennard_jones_acoef: vec![1.0],
+        lennard_jones_bcoef: vec![0.5],
+        lennard_jones_14_acoef: vec![0.8],
+        lennard_jones_14_bcoef: vec![0.4],
+        hbond_acoef: vec![0.0],
+        hbond_bcoef: vec![0.0],
+        hbcut: vec![0.0],
+        tree_chain_classification: vec!["M".into(); 18],
+        join_array: vec![0; 18],
+        irotat: vec![0; 18],
+        solvent_pointers: Vec::new(),
+        atoms_per_molecule: vec![18],
+        box_dimensions: Vec::new(),
+        radius_set: Some("modified Bondi radii".into()),
+        ipol: 0,
+    };
+    write_minimal_prmtop(path.to_string_lossy().as_ref(), &topology).expect("write bad prmtop");
+}
+
+fn write_generic_forcefield_ffxml(path: &Path) {
+    write_text(
+        path,
+        "<ForceField>\n\
+  <AtomTypes>\n\
+    <Type name=\"CT\" class=\"C\" element=\"C\" mass=\"12.011\"/>\n\
+    <Type name=\"HC\" class=\"H\" element=\"H\" mass=\"1.008\"/>\n\
+    <Type name=\"CL\" class=\"Cl\" element=\"Cl\" mass=\"35.45\"/>\n\
+  </AtomTypes>\n\
+  <Residues>\n\
+    <Residue name=\"HDA\">\n\
+      <Atom name=\"C1\" type=\"CT\" charge=\"0.25\"/>\n\
+      <Atom name=\"H11\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"H12\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"H13\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"H14\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"CL1\" type=\"CL\" charge=\"-0.45\"/>\n\
+      <AllowPatch name=\"GENERIC_POLYMER_PATCH\"/>\n\
+    </Residue>\n\
+    <Residue name=\"RPT\">\n\
+      <Atom name=\"C2\" type=\"CT\" charge=\"0.25\"/>\n\
+      <Atom name=\"H21\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"H22\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"H23\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"H24\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"CL2\" type=\"CL\" charge=\"-0.45\"/>\n\
+      <AllowPatch name=\"GENERIC_POLYMER_PATCH\"/>\n\
+    </Residue>\n\
+    <Residue name=\"TLA\">\n\
+      <Atom name=\"C3\" type=\"CT\" charge=\"0.25\"/>\n\
+      <Atom name=\"H31\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"H32\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"H33\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"H34\" type=\"HC\" charge=\"0.05\"/>\n\
+      <Atom name=\"CL3\" type=\"CL\" charge=\"-0.45\"/>\n\
+      <AllowPatch name=\"GENERIC_POLYMER_PATCH\"/>\n\
+    </Residue>\n\
+  </Residues>\n\
+  <Patches>\n\
+    <Patch name=\"GENERIC_POLYMER_PATCH\"/>\n\
+  </Patches>\n\
+  <HarmonicBondForce>\n\
+    <Bond length=\"0.109\" k=\"265000.0\"/>\n\
+  </HarmonicBondForce>\n\
+  <HarmonicAngleForce>\n\
+    <Angle angle=\"1.9111355\" k=\"520.0\"/>\n\
+  </HarmonicAngleForce>\n\
+  <PeriodicTorsionForce>\n\
+    <Proper periodicity1=\"3\" phase1=\"0.0\" k1=\"1.0\"/>\n\
+    <Improper periodicity1=\"2\" phase1=\"3.14159265\" k1=\"1.0\"/>\n\
+  </PeriodicTorsionForce>\n\
+  <NonbondedForce coulomb14scale=\"0.8333333333\" lj14scale=\"0.5\">\n\
+    <UseAttributeFromResidue name=\"charge\"/>\n\
+    <Atom type=\"CT\" sigma=\"0.339967\" epsilon=\"0.4577296\"/>\n\
+    <Atom type=\"HC\" sigma=\"0.247135\" epsilon=\"0.0656888\"/>\n\
+    <Atom type=\"CL\" sigma=\"0.399000\" epsilon=\"1.108800\"/>\n\
+  </NonbondedForce>\n\
+</ForceField>\n",
+    );
+}
+
+fn make_bad_training_bundle_dir(
+    label: &str,
+    include_prmtop: bool,
+    include_ffxml: bool,
+) -> (PathBuf, PathBuf) {
+    let dir = temp_path(label);
+    fs::create_dir_all(&dir).expect("create bad training dir");
+    let training = dir.join("training.pdb");
+    let prmtop = dir.join("training.prmtop");
+    let forcefield = dir.join("training.ffxml");
+    let bundle = dir.join("bundle.json");
+    write_bad_valence_training_oligomer(&training);
+    if include_prmtop {
+        write_bad_valence_prmtop(&prmtop);
+    }
+    if include_ffxml {
+        write_generic_forcefield_ffxml(&forcefield);
+    }
+    write_json(
+        &bundle,
+        &json!({
+            "schema_version": "polymer-param-source.bundle.v1",
+            "bundle_id": "pmma_param_bundle_v1",
+            "training_context": {
+                "mode": "oligomer_training",
+                "training_oligomer_n": 3,
+                "notes": "bad training"
+            },
+            "provenance": {},
+            "unit_library": {
+                "H": {
+                    "display_name": "head_cap",
+                    "junctions": {"head": "pmma_head_cap", "tail": "pmma_head_cap"},
+                    "template_resname": "HDA"
+                },
+                "A": {
+                    "display_name": "repeat",
+                    "junctions": {"head": "pmma_head", "tail": "pmma_tail"},
+                    "template_resname": "RPT"
+                },
+                "T": {
+                    "display_name": "tail_cap",
+                    "junctions": {"head": "pmma_tail_cap", "tail": "pmma_tail_cap"},
+                    "template_resname": "TLA"
+                }
+            },
+            "motif_library": {},
+            "junction_library": {
+                "pmma_head_cap": {
+                    "attach_atom": {"scope": "unit", "selector": "name C1"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name C1"}]
+                },
+                "pmma_head": {
+                    "attach_atom": {"scope": "unit", "selector": "name C2"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name C2"}]
+                },
+                "pmma_tail": {
+                    "attach_atom": {"scope": "unit", "selector": "name C2"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name C2"}]
+                },
+                "pmma_tail_cap": {
+                    "attach_atom": {"scope": "unit", "selector": "name C3"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name C3"}]
+                }
+            },
+            "capabilities": {
+                "supported_target_modes": ["linear_homopolymer", "linear_sequence_polymer"],
+                "supported_conformation_modes": ["extended", "random_walk"],
+                "supported_tacticity_modes": ["inherit", "isotactic", "syndiotactic", "atactic"],
+                "supported_termini_policies": ["default", "source_default"],
+                "sequence_token_support": {
+                    "tokens": ["H", "A", "T"],
+                    "allowed_adjacencies": [["H", "A"], ["A", "A"], ["A", "T"]]
+                },
+                "charge_transfer_supported": include_prmtop
+            },
+            "artifacts": {
+                "source_coordinates": "training.pdb",
+                "source_topology_ref": if include_prmtop { Value::String("training.prmtop".into()) } else { Value::Null },
+                "forcefield_ref": if include_ffxml { Value::String("training.ffxml".into()) } else { Value::Null }
+            },
+            "charge_model": {}
+        }),
+    );
+    (dir, bundle)
+}
+
 fn copy_fixture_dir(name: &str, label: &str) -> (PathBuf, PathBuf) {
     let dir = temp_path(label);
     fs::create_dir_all(&dir).expect("create fixture dir");
@@ -224,6 +507,19 @@ fn copy_fixture_dir(name: &str, label: &str) -> (PathBuf, PathBuf) {
         let entry = entry.expect("fixture entry");
         let target = dir.join(entry.file_name());
         fs::copy(entry.path(), &target).expect("copy fixture");
+    }
+    let bundle = dir.join("bundle.json");
+    let payload: Value =
+        serde_json::from_str(&fs::read_to_string(&bundle).expect("read fixture bundle"))
+            .expect("fixture bundle json");
+    if let Some(path) = payload
+        .pointer("/artifacts/forcefield_ref")
+        .and_then(Value::as_str)
+    {
+        let forcefield = dir.join(path);
+        if !forcefield.exists() {
+            write_text(&forcefield, "<ForceField/>\n");
+        }
     }
     (dir.clone(), dir.join("bundle.json"))
 }
@@ -336,7 +632,8 @@ fn schema_and_inspect_source_work() {
         caps["supports_relax_modes"],
         json!(["graph_spring", "targeted_steric"])
     );
-    assert_eq!(caps["default_validation_depth"], "shallow");
+    assert_eq!(caps["default_validation_depth"], "deep");
+    assert_eq!(caps["supported_qc_policies"], json!(["strict", "salvage"]));
     assert_eq!(caps["supports_named_termini_tokens"], json!(true));
     assert_eq!(
         warp_build::example_request("block")["target"]["mode"],
@@ -1726,25 +2023,19 @@ fn validate_accepts_branched_aligned_realization() {
     );
     assert_eq!(
         payload["resolved_inputs"]["validation"]["requested_depth"],
-        "shallow"
+        "deep"
     );
-    assert_eq!(payload["preflight"]["executed"], false);
-    assert_eq!(payload["preflight"]["mode"], "shallow");
-    assert!(payload["preflight"]["reason"]
-        .as_str()
-        .unwrap_or("")
-        .contains("validation.depth=deep"));
-    assert!(payload["preflight"]["timings_ms"]["compile_plan"]
+    assert_eq!(payload["preflight"]["executed"], true);
+    assert_eq!(
+        payload["preflight"]["qc"]["sequence_token_template_consistent"],
+        true
+    );
+    assert!(payload["preflight"]["timings_ms"]["build_graph"]
         .as_u64()
         .is_some());
-    assert_eq!(payload["preflight"]["timings_ms"]["build_graph"], 0);
     assert_eq!(
-        payload["preflight"]["overlap_status"]["status"],
-        "not_evaluated"
-    );
-    assert_eq!(
-        payload["preflight"]["overlap_status"]["may_report_no_overlaps"],
-        false
+        payload["preflight"]["overlap_status"]["report_source"],
+        "final_structure"
     );
     assert_eq!(
         payload["normalized_request"]["artifacts"]["inpcrd"],
@@ -1753,6 +2044,21 @@ fn validate_accepts_branched_aligned_realization() {
             .expect("coords parent")
             .join(format!(
                 "{}.inpcrd",
+                coords
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .expect("coords stem")
+            ))
+            .to_string_lossy()
+            .to_string()
+    );
+    assert_eq!(
+        payload["normalized_request"]["artifacts"]["forcefield_ref"],
+        coords
+            .parent()
+            .expect("coords parent")
+            .join(format!(
+                "{}.ffxml",
                 coords
                     .file_stem()
                     .and_then(|value| value.to_str())
@@ -2108,6 +2414,395 @@ fn validate_preflight_rejects_qc_failing_graph_build() {
             .as_str()
             .unwrap_or("")
             .contains("preflight QC failed")));
+}
+
+#[test]
+fn run_structure_only_bundle_writes_minimizable_synthetic_handoff() {
+    let (_dir, bundle) = make_structure_only_bundle_dir("structure_only_run");
+    let coords = temp_path("structure_only_coords.pdb");
+    let manifest = temp_path("structure_only_manifest.json");
+    let charge = temp_path("structure_only_charge.json");
+    let graph = temp_path("structure_only_graph.json");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "structure-only-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "extended"
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "build_manifest": manifest.to_string_lossy(),
+            "charge_manifest": charge.to_string_lossy(),
+            "topology_graph": graph.to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert_eq!(payload["summary"]["acceptance_state"], "accepted");
+    assert_eq!(payload["summary"]["handoff_level"], "minimizable_synthetic");
+    assert_eq!(
+        payload["summary"]["limitations"],
+        json!(["synthetic_topology", "charge_unavailable"])
+    );
+    let topology_path = payload["artifacts"]["topology"]
+        .as_str()
+        .expect("synthetic topology path");
+    assert!(coords.exists());
+    assert!(manifest.exists());
+    assert!(charge.exists());
+    assert!(graph.exists());
+    assert!(Path::new(topology_path).exists());
+    let ffxml_path = payload["artifacts"]["forcefield_ref"]
+        .as_str()
+        .expect("forcefield output");
+    assert!(Path::new(ffxml_path).exists());
+    let manifest_value: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(
+        manifest_value["summary"]["handoff_level"],
+        "minimizable_synthetic"
+    );
+    assert_eq!(
+        manifest_value["artifacts"]["topology"],
+        Value::String(topology_path.to_string())
+    );
+    assert_eq!(
+        manifest_value["md_ready_handoff"]["topology"],
+        Value::String(topology_path.to_string())
+    );
+    assert_eq!(
+        manifest_value["md_ready_handoff"]["forcefield_ref"],
+        Value::String(ffxml_path.to_string())
+    );
+    assert_eq!(
+        manifest_value["summary"]["limitations"],
+        json!(["synthetic_topology", "charge_unavailable"])
+    );
+    let charge_value: Value =
+        serde_json::from_str(&fs::read_to_string(&charge).expect("read charge manifest"))
+            .expect("parse charge manifest");
+    assert_eq!(charge_value["net_charge_e"], Value::Null);
+    assert_eq!(charge_value["charge_derivation"], "unavailable");
+    assert_eq!(
+        charge_value["target_topology_ref"],
+        Value::String(topology_path.to_string())
+    );
+}
+
+#[test]
+fn synthetic_structure_only_topology_writes_explicit_bonded_terms() {
+    let (_dir, bundle) = make_structure_only_bundle_dir("structure_only_synthetic_terms");
+    let coords = temp_path("synthetic_terms_coords.pdb");
+    let manifest = temp_path("synthetic_terms_manifest.json");
+    let charge = temp_path("synthetic_terms_charge.json");
+    let graph = temp_path("synthetic_terms_graph.json");
+    let topology = temp_path("synthetic_terms_topology.prmtop");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "structure-only-terms-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "extended"
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "build_manifest": manifest.to_string_lossy(),
+            "charge_manifest": charge.to_string_lossy(),
+            "topology": topology.to_string_lossy(),
+            "topology_graph": graph.to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    let topo = read_prmtop_topology(&topology).expect("read synthetic prmtop");
+    assert!(topo.atom_names.len() >= 4);
+    assert_eq!(topo.bonds.len() + 1, topo.atom_names.len());
+    assert!(!topo.angles.is_empty());
+    assert!(!topo.dihedrals.is_empty());
+    assert!(topo.bond_force_constants.iter().all(|value| *value > 0.0));
+    assert!(topo.angle_force_constants.iter().all(|value| *value > 0.0));
+    assert!(topo
+        .angle_equil_values
+        .iter()
+        .all(|value| *value > 0.0 && *value <= std::f32::consts::PI + 1.0e-5));
+    assert!(topo
+        .dihedral_phases
+        .iter()
+        .all(|value| *value >= 0.0 && *value <= std::f32::consts::PI));
+    assert!(topo
+        .masses
+        .iter()
+        .all(|value| (*value - 12.011).abs() < 0.05));
+}
+
+#[test]
+fn validate_rejects_unreliable_training_without_strong_source() {
+    let (_dir, bundle) = make_bad_training_bundle_dir("bad_training_reject", false, false);
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "bad-training-reject-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "extended"
+        },
+        "artifacts": {
+            "coordinates": temp_path("bad_training_reject_coords.pdb").to_string_lossy(),
+            "build_manifest": temp_path("bad_training_reject_manifest.json").to_string_lossy(),
+            "charge_manifest": temp_path("bad_training_reject_charge.json").to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::validate_request_json(&serde_json::to_string(&request).expect("serialize"));
+    assert_eq!(
+        code,
+        2,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert!(payload["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["code"] == "E_SOURCE_UNRELIABLE"));
+}
+
+#[test]
+fn validate_unreliable_training_prefers_source_topology_fallback() {
+    let (_dir, bundle) = make_bad_training_bundle_dir("bad_training_prmtop", true, true);
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "bad-training-prmtop-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "extended"
+        },
+        "artifacts": {
+            "coordinates": temp_path("bad_training_prmtop_coords.pdb").to_string_lossy(),
+            "build_manifest": temp_path("bad_training_prmtop_manifest.json").to_string_lossy(),
+            "charge_manifest": temp_path("bad_training_prmtop_charge.json").to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::validate_request_json(&serde_json::to_string(&request).expect("serialize"));
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert_eq!(
+        payload["preflight"]["parameter_source_decision"]["quality"],
+        "unreliable"
+    );
+    assert_eq!(
+        payload["preflight"]["parameter_source_decision"]["parameter_source"],
+        "source_topology_ref"
+    );
+}
+
+#[test]
+fn run_unreliable_training_uses_forcefield_fallback() {
+    let (_dir, bundle) = make_bad_training_bundle_dir("bad_training_ffxml", false, true);
+    let coords = temp_path("bad_training_ffxml_coords.pdb");
+    let manifest = temp_path("bad_training_ffxml_manifest.json");
+    let charge = temp_path("bad_training_ffxml_charge.json");
+    let graph = temp_path("bad_training_ffxml_graph.json");
+    let topology = temp_path("bad_training_ffxml_topology.prmtop");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "bad-training-ffxml-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "extended"
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "build_manifest": manifest.to_string_lossy(),
+            "charge_manifest": charge.to_string_lossy(),
+            "topology": topology.to_string_lossy(),
+            "topology_graph": graph.to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert_eq!(payload["summary"]["handoff_level"], "forcefield_backed");
+    assert_eq!(
+        payload["summary"]["parameter_source_decision"]["parameter_source"],
+        "forcefield_ref"
+    );
+    assert_eq!(
+        payload["summary"]["parameter_source_decision"]["quality"],
+        "unreliable"
+    );
+    assert!(payload["summary"]["limitations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item == "training_source_unreliable"));
+    let topo = read_prmtop_topology(&topology).expect("read ffxml-backed prmtop");
+    assert_eq!(topo.atom_names.len(), 36);
+    assert!(topo.atomic_numbers.iter().any(|value| *value == 1));
+    assert!(topo.atomic_numbers.iter().any(|value| *value == 17));
+    assert!(!topo.bonds.is_empty());
+    assert!(!topo.angles.is_empty());
+    assert!(!topo.dihedrals.is_empty());
+    assert!(!topo.bond_force_constants.is_empty());
+    assert!(!topo.angle_force_constants.is_empty());
+    assert!(!topo.dihedral_force_constants.is_empty());
+    assert!(topo.charges.iter().any(|charge| charge.abs() > 1.0e-3));
+    assert!(topo.charges.iter().sum::<f32>().abs() < 1.0e-3);
+    let manifest_value: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest).expect("read manifest"))
+            .expect("manifest json");
+    assert_eq!(
+        manifest_value["summary"]["parameter_source_decision"]["parameter_source"],
+        "forcefield_ref"
+    );
+    assert_eq!(
+        manifest_value["summary"]["handoff_level"],
+        "forcefield_backed"
+    );
+}
+
+#[test]
+fn run_qc_salvage_mode_writes_non_final_outputs() {
+    let (_dir, bundle) = make_bundle_dir("graph_qc_salvage");
+    let coords = temp_path("graph_qc_salvage_coords.pdb");
+    let manifest = temp_path("graph_qc_salvage_manifest.json");
+    let charge = temp_path("graph_qc_salvage_charge.json");
+    let topology = temp_path("graph_qc_salvage.prmtop");
+    let graph = temp_path("graph_qc_salvage_graph.json");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "graph-qc-salvage-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "polymer_graph",
+            "graph_root": "n1",
+            "graph_nodes": [
+                {"id": "n1", "token": "A"},
+                {"id": "n2", "token": "B"},
+                {"id": "n3", "token": "A"}
+            ],
+            "graph_edges": [
+                {"from": "n1", "to": "n2", "from_junction": "head", "to_junction": "head"},
+                {"from": "n2", "to": "n3", "from_junction": "tail", "to_junction": "head"},
+                {"from": "n3", "to": "n1", "from_junction": "tail", "to_junction": "tail"}
+            ],
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": 91,
+            "qc_policy": "salvage"
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "build_manifest": manifest.to_string_lossy(),
+            "charge_manifest": charge.to_string_lossy(),
+            "topology": topology.to_string_lossy(),
+            "topology_graph": graph.to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert_eq!(payload["summary"]["acceptance_state"], "salvaged");
+    assert_eq!(payload["summary"]["handoff_level"], "graph_bonded_only");
+    assert!(payload["summary"]["limitations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item == "salvaged_qc_failure"));
+    assert!(payload["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["code"] == "W_SALVAGED_BUILD"));
+    assert!(coords.exists());
+    assert!(manifest.exists());
+    assert!(charge.exists());
+    assert!(graph.exists());
+    assert!(topology.exists());
 }
 
 #[test]

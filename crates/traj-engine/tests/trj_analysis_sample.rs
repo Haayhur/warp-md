@@ -7,9 +7,8 @@ use traj_engine::{
     DtDecimation, Executor, FrameDecimation, GroupBy, MsdPlan, PbcMode, PlanOutput,
     StructureFactorPlan,
 };
-use traj_io::gro::GroReader;
 use traj_io::xtc::XtcReader;
-use traj_io::TopologyReader;
+use warp_structure::io::read_gro_system;
 
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 use libloading::Library;
@@ -79,8 +78,7 @@ fn sample_msd_structure_factor() -> TrajResult<()> {
         return Ok(());
     }
 
-    let mut gro = GroReader::new(gro_path);
-    let mut system = gro.read_system()?;
+    let mut system = read_gro_system(gro_path)?;
     let sel = system.select("resname BMIM or resname BF4")?;
 
     let mut traj = XtcReader::open(xtc_path)?;
@@ -146,8 +144,7 @@ fn sample_msd_structure_factor_cuda_compare() -> TrajResult<()> {
         _ => return Ok(()),
     };
 
-    let mut gro = GroReader::new(gro_path);
-    let mut system = gro.read_system()?;
+    let mut system = read_gro_system(gro_path)?;
     let sel = system.select("resname BMIM or resname BF4")?;
 
     let mut traj = XtcReader::open(xtc_path)?;
@@ -251,8 +248,7 @@ fn sample_ion_pair_cuda_compare() -> TrajResult<()> {
         _ => return Ok(()),
     };
 
-    let mut gro = GroReader::new(gro_path);
-    let mut system = gro.read_system()?;
+    let mut system = read_gro_system(gro_path)?;
     let sel = system.select("resname BMIM or resname BF4")?;
 
     let groups = GroupSpec::new(sel.clone(), GroupBy::Resid).build(&system)?;

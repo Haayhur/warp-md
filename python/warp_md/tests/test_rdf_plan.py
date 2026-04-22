@@ -18,7 +18,7 @@ def test_rdf_plan_accepts_frame_indices_with_multimodel_pdb(tmp_path):
         encoding="ascii",
     )
 
-    system = wmd.System.from_pdb(str(pdb))
+    system = wmd.System.from_file(str(pdb))
     sel = system.select("name O")
 
     traj_full = wmd.Trajectory.open_pdb(str(pdb), system)

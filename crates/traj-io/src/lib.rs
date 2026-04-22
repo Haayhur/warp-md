@@ -1,10 +1,8 @@
 pub mod cpt;
 pub mod dcd;
-pub mod gro;
 pub mod gro_traj;
 pub mod gromos96_traj;
 pub mod h5md;
-pub mod pdb;
 pub mod pdb_traj;
 mod selection_support;
 pub mod tng;
@@ -14,11 +12,6 @@ pub use selection_support::{validate_and_materialize_selection, validate_selecti
 
 use traj_core::error::TrajResult;
 use traj_core::frame::{Box3, FrameChunkBuilder};
-use traj_core::system::System;
-
-pub trait TopologyReader {
-    fn read_system(&mut self) -> TrajResult<System>;
-}
 
 pub trait TrajReader {
     fn n_atoms(&self) -> usize;

@@ -24,4 +24,5 @@ warp-topology-graph = { path = "../warp-topology-graph" }
 cuda = ["traj-gpu/cuda"]
 
 [dev-dependencies]
+serial_test = "3.2.0"
 warp-build = { path = "../warp-build" }

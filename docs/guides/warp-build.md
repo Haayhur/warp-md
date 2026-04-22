@@ -43,6 +43,12 @@ warp-build validate request.json
 warp-build run request.json --stream
 ```
 
+Validation defaults to deep geometry/QC preflight. Use an explicit shallow override only when you want a fast schema/contracts check:
+
+```json
+{"validation": {"depth": "shallow"}}
+```
+
 {% hint style="warning" %}
 `warp-build` is the public CLI wrapper. If the native builder binary is not on `PATH`, set `WARP_BUILD_BINARY` to the built `warp-build` executable.
 {% endhint %}
@@ -77,12 +83,20 @@ A successful build emits:
 
 - built coordinates
 - `inpcrd`
-- `prmtop`
 - charge handoff manifest
 - build manifest
 - topology graph
+- copied `ffxml` artifact when the source bundle provides `forcefield_ref`
+- `prmtop` when the selected handoff path is exact-transfer, forcefield-backed, or synthetic minimizer-ready
 
 The build manifest is the canonical handoff artifact for downstream `warp-pack`.
+
+Successful handoff tiers:
+
+- `md_ready`: transferable source topology + charge handoff available
+- `forcefield_backed`: training source was unreliable, validated `ffxml` fallback selected, production-capable topology emitted
+- `minimizable_synthetic`: trustworthy/risky training source, synthetic UFF-like topology emitted for downstream minimization
+- `graph_bonded_only`: coordinates + `inpcrd` + `topology_graph`, but no topology-capable or charge-capable handoff
 
 ---
 
@@ -148,6 +162,18 @@ Common realization modes:
 }
 ```
 
+If you want best-effort recovery artifacts on QC failure instead of a hard error, set:
+
+```json
+{
+  "realization": {
+    "qc_policy": "salvage"
+  }
+}
+```
+
+Salvage writes non-final outputs and marks the build with `acceptance_state = "salvaged"`.
+
 ---
 
 ## Source Bundles
@@ -166,6 +192,21 @@ Inspect a bundle before use:
 ```bash
 warp-build inspect-source source.bundle.json
 ```
+
+Deep validation now includes a training-source assessment and parameter-source selection step. The decision is surfaced in `preflight.parameter_source_decision`, the run summary, and the build manifest.
+
+Selection policy:
+
+- `trusted` / `risky` training source -> `synthetic_pdb`
+- `unreliable` + `source_topology_ref` -> exact transferable topology path
+- `unreliable` + validated `forcefield_ref` -> `forcefield_backed`
+- `unreliable` + no stronger source -> validation error / run rejection
+
+That means structure-first bundles no longer collapse to one behavior:
+
+- good structure-only source -> `minimizable_synthetic`
+- bad structure + strong fallback -> `md_ready` or `forcefield_backed`
+- bad structure + no strong fallback -> rejected early
 
 ---
 

@@ -1,44 +1,101 @@
 use super::*;
 use numpy::{PyArrayMethods, PyUntypedArrayMethods};
+use std::path::Path;
+use warp_structure::io::read_system_auto;
+
+const SUPPORTED_SYSTEM_FORMATS_TEXT: &str = "pdb, pdbqt, gro";
+pub(crate) const SUPPORTED_TRAJECTORY_FORMATS_TEXT: &str =
+    "dcd, xtc, gro, g96, cpt, h5md, tng, trr, pdb, pdbqt";
 
 #[pyclass]
 pub(crate) struct PySystem {
     pub(crate) system: RefCell<System>,
 }
 
+fn path_format_token(path: &str, format: Option<&str>) -> String {
+    format
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| {
+            Path::new(path)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase()
+        })
+}
+
+pub(crate) fn resolve_system_format_token(path: &str, format: Option<&str>) -> PyResult<String> {
+    let token = path_format_token(path, format);
+    if matches!(token.as_str(), "pdb" | "pdbqt" | "gro") {
+        Ok(token)
+    } else {
+        Err(PyValueError::new_err(format!(
+            "system.format must be {SUPPORTED_SYSTEM_FORMATS_TEXT}"
+        )))
+    }
+}
+
+pub(crate) fn resolve_trajectory_format_token(
+    path: &str,
+    format: Option<&str>,
+) -> PyResult<String> {
+    let token = path_format_token(path, format);
+    if matches!(
+        token.as_str(),
+        "dcd" | "xtc" | "gro" | "g96" | "cpt" | "h5md" | "tng" | "trr" | "pdb" | "pdbqt"
+    ) {
+        Ok(token)
+    } else {
+        Err(PyValueError::new_err(format!(
+            "unsupported trajectory format '{token}'; expected one of: {SUPPORTED_TRAJECTORY_FORMATS_TEXT}"
+        )))
+    }
+}
+
+pub(crate) fn load_system_auto(path: &str, format: Option<&str>) -> PyResult<System> {
+    read_system_auto(Path::new(path), format).map_err(|err| to_py_err(err.into()))
+}
+
+#[pyfunction]
+#[pyo3(signature = (path, system, format=None, length_scale=None))]
+pub(crate) fn open_trajectory_auto(
+    path: &str,
+    system: &PySystem,
+    format: Option<&str>,
+    length_scale: Option<f32>,
+) -> PyResult<PyTrajectory> {
+    let format = resolve_trajectory_format_token(path, format)?;
+    match format.as_str() {
+        "dcd" => PyTrajectory::open_dcd(path, system, length_scale),
+        "xtc" => PyTrajectory::open_xtc(path, system),
+        "gro" => PyTrajectory::open_gro(path, system),
+        "g96" => PyTrajectory::open_g96(path, system),
+        "cpt" => PyTrajectory::open_cpt(path, system),
+        "h5md" => PyTrajectory::open_h5md(path, system),
+        "tng" => PyTrajectory::open_tng(path, system),
+        "trr" => PyTrajectory::open_trr(path, system),
+        "pdb" => PyTrajectory::open_pdb(path, system),
+        "pdbqt" => PyTrajectory::open_pdbqt(path, system),
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported trajectory format '{format}'; expected one of: {SUPPORTED_TRAJECTORY_FORMATS_TEXT}"
+        ))),
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (path, format=None))]
+fn resolve_trajectory_format(path: &str, format: Option<&str>) -> PyResult<String> {
+    resolve_trajectory_format_token(path, format)
+}
+
 #[pymethods]
 impl PySystem {
     #[staticmethod]
-    pub(crate) fn from_pdb(path: &str) -> PyResult<Self> {
-        let mut reader = PdbReader::new(path);
-        let system = reader.read_system().map_err(to_py_err)?;
-        Ok(Self {
-            system: RefCell::new(system),
-        })
-    }
-
-    #[staticmethod]
-    pub(crate) fn from_pdb_permissive(path: &str) -> PyResult<Self> {
-        let reader = PdbReader::new(path);
-        let system = reader.read_system_permissive().map_err(to_py_err)?;
-        Ok(Self {
-            system: RefCell::new(system),
-        })
-    }
-
-    #[staticmethod]
-    pub(crate) fn from_pdbqt(path: &str) -> PyResult<Self> {
-        let mut reader = PdbqtReader::new(path);
-        let system = reader.read_system().map_err(to_py_err)?;
-        Ok(Self {
-            system: RefCell::new(system),
-        })
-    }
-
-    #[staticmethod]
-    pub(crate) fn from_gro(path: &str) -> PyResult<Self> {
-        let mut reader = GroReader::new(path);
-        let system = reader.read_system().map_err(to_py_err)?;
+    #[pyo3(signature = (path, format=None))]
+    pub(crate) fn from_file(path: &str, format: Option<&str>) -> PyResult<Self> {
+        let system = load_system_auto(path, format)?;
         Ok(Self {
             system: RefCell::new(system),
         })
@@ -2741,6 +2798,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySelection>()?;
     m.add_class::<PyTrajectory>()?;
     m.add_class::<PyTrajectoryWriter>()?;
+    m.add_function(wrap_pyfunction!(open_trajectory_auto, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_trajectory_format, m)?)?;
     m.add_class::<PyRgPlan>()?;
     m.add_class::<PyRadgyrTensorPlan>()?;
     m.add_class::<PyRmsdPlan>()?;
