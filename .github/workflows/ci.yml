@@ -47,7 +47,7 @@ jobs:
 
       - name: Build and install wheel
         run: |
-          maturin build --release
+          maturin build --release --features extension-module
           python -m pip install --force-reinstall target/wheels/warp_md-*.whl
 
       - name: Run Python tests (pack + cli smoke)

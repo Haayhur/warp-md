@@ -77,7 +77,6 @@ jobs:
           args: >-
             --release
             --out target/wheels
-            --interpreter /opt/python/cp38-cp38/bin/python
             --interpreter /opt/python/cp39-cp39/bin/python
             --interpreter /opt/python/cp310-cp310/bin/python
             --interpreter /opt/python/cp311-cp311/bin/python
@@ -299,9 +298,8 @@ jobs:
           docker-options: >-
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
           args: >-
-            --release --features cuda
+            --release --features cuda,extension-module
             --out target/wheels
-            --interpreter /opt/python/cp38-cp38/bin/python
             --interpreter /opt/python/cp39-cp39/bin/python
             --interpreter /opt/python/cp310-cp310/bin/python
             --interpreter /opt/python/cp311-cp311/bin/python
