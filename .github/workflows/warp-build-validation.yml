@@ -1,0 +1,61 @@
+name: warp-build-validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_scaling:
+        description: "Run scaling sweep in addition to stress gate"
+        required: false
+        default: "false"
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  minimized-handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python validation deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy openmm
+
+      - name: Build warp-build
+        run: cargo build -p warp-build
+
+      - name: Run minimized handoff stress gate
+        run: |
+          python scripts/validation/stress_warp_build_minimized.py \
+            --warp-build-bin target/debug/warp-build \
+            --outdir "$RUNNER_TEMP/warp-build-minimized-stress"
+
+      - name: Run optional scaling sweep
+        if: github.event_name == 'schedule' || github.event.inputs.include_scaling == 'true'
+        run: |
+          python scripts/validation/sweep_warp_build_scaling.py \
+            --warp-build-bin target/debug/warp-build \
+            --outdir "$RUNNER_TEMP/warp-build-scaling-sweep" \
+            --timeout-seconds 420 \
+            --openmm-max-particles 2500
+
+      - name: Upload validation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: warp-build-validation-results
+          path: |
+            ${{ runner.temp }}/warp-build-minimized-stress
+            ${{ runner.temp }}/warp-build-scaling-sweep

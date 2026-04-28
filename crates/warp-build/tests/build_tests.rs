@@ -231,6 +231,108 @@ fn make_structure_only_bundle_dir(label: &str) -> (PathBuf, PathBuf) {
     (dir, bundle)
 }
 
+fn make_multiport_star_bundle_dir(label: &str) -> (PathBuf, PathBuf) {
+    let dir = temp_path(label);
+    fs::create_dir_all(&dir).expect("create dir");
+    let training = dir.join("training.pdb");
+    let bundle = dir.join("bundle.json");
+    write_text(
+        &training,
+        "ATOM      1  C1  COR A   1       0.000   0.000   0.000  1.00  0.00           C\n\
+ATOM      2  C2  COR A   1       1.530   0.000   0.000  1.00  0.00           C\n\
+ATOM      3  C3  COR A   1       0.000   1.530   0.000  1.00  0.00           C\n\
+ATOM      4  C4  COR A   1       0.000   0.000   1.530  1.00  0.00           C\n\
+ATOM      5  A1  ARM A   2       4.500   0.000   0.000  1.00  0.00           C\n\
+ATOM      6  D1  DMY A   3       8.000   0.000   0.000  1.00  0.00           C\n\
+END\n",
+    );
+    write_json(
+        &bundle,
+        &json!({
+            "schema_version": "polymer-param-source.bundle.v1",
+            "bundle_id": "multiport_star_bundle_v1",
+            "training_context": {
+                "mode": "oligomer_training",
+                "training_oligomer_n": 3,
+                "notes": "four-port core test fixture"
+            },
+            "provenance": {},
+            "unit_library": {
+                "C": {
+                    "display_name": "four_port_core",
+                    "junctions": {
+                        "j1": "core_j1",
+                        "j2": "core_j2",
+                        "j3": "core_j3",
+                        "j4": "core_j4"
+                    },
+                    "template_resname": "COR"
+                },
+                "A": {
+                    "display_name": "arm_repeat",
+                    "junctions": {"head": "arm_head", "tail": "arm_tail"},
+                    "template_resname": "ARM"
+                }
+            },
+            "motif_library": {},
+            "junction_library": {
+                "core_j1": {
+                    "attach_atom": {"scope": "unit", "selector": "name C1"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name C1"}]
+                },
+                "core_j2": {
+                    "attach_atom": {"scope": "unit", "selector": "name C2"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name C2"}]
+                },
+                "core_j3": {
+                    "attach_atom": {"scope": "unit", "selector": "name C3"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name C3"}]
+                },
+                "core_j4": {
+                    "attach_atom": {"scope": "unit", "selector": "name C4"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name C4"}]
+                },
+                "arm_head": {
+                    "attach_atom": {"scope": "unit", "selector": "name A1"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name A1"}]
+                },
+                "arm_tail": {
+                    "attach_atom": {"scope": "unit", "selector": "name A1"},
+                    "leaving_atoms": [],
+                    "bond_order": 1,
+                    "anchor_atoms": [{"scope": "unit", "selector": "name A1"}]
+                }
+            },
+            "capabilities": {
+                "supported_target_modes": ["star_polymer", "polymer_graph"],
+                "supported_conformation_modes": ["aligned", "random_walk"],
+                "supported_tacticity_modes": ["inherit"],
+                "supported_termini_policies": ["default", "source_default"],
+                "sequence_token_support": {
+                    "tokens": ["C", "A"],
+                    "allowed_adjacencies": [["C", "A"], ["A", "A"]]
+                },
+                "charge_transfer_supported": false
+            },
+            "artifacts": {
+                "source_coordinates": "training.pdb"
+            },
+            "charge_model": {}
+        }),
+    );
+    (dir, bundle)
+}
+
 fn write_bad_valence_training_oligomer(path: &Path) {
     write_text(
         path,
@@ -599,6 +701,7 @@ fn schema_and_inspect_source_work() {
     let (_dir, bundle) = make_bundle_dir("inspect");
     let (code, payload) = warp_build::inspect_source_json(&bundle.to_string_lossy());
     assert_eq!(code, 0);
+    assert_eq!(payload["status"], "ok");
     assert_eq!(payload["bundle_id"], "pmma_param_bundle_v1");
     assert_eq!(payload["unit_tokens"], json!(["A", "B", "H", "T"]));
     assert_eq!(payload["motif_tokens"], json!(["M2"]));
@@ -650,6 +753,56 @@ fn schema_and_inspect_source_work() {
     assert_eq!(
         warp_build::example_request("graph")["target"]["mode"],
         "polymer_graph"
+    );
+}
+
+#[test]
+fn inspect_source_rejects_template_selector_mismatch() {
+    let (_dir, bundle) = make_bundle_dir("inspect_selector_mismatch");
+    let mut payload: Value =
+        serde_json::from_str(&fs::read_to_string(&bundle).expect("read bundle"))
+            .expect("bundle json");
+    payload["unit_library"]["A"]["template_resname"] = Value::String("HDA".into());
+    write_json(&bundle, &payload);
+
+    let (code, payload) = warp_build::inspect_source_json(&bundle.to_string_lossy());
+    assert_eq!(code, 2);
+    assert_eq!(payload["status"], "error");
+    assert!(payload["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("attach atom 'C2' missing from template 'HDA'")));
+}
+
+#[test]
+fn example_request_uses_bundle_id_from_existing_bundle_path() {
+    let (_dir, bundle) = make_bundle_dir("example_request_bundle_id");
+    let mut payload: Value =
+        serde_json::from_str(&fs::read_to_string(&bundle).expect("read bundle"))
+            .expect("bundle json");
+    payload["bundle_id"] = Value::String("custom_paa_bundle_v1".into());
+    write_json(&bundle, &payload);
+
+    let request = warp_build::example_request_for_bundle("random_walk", &bundle.to_string_lossy());
+    assert_eq!(
+        request["source_ref"]["bundle_id"],
+        Value::String("custom_paa_bundle_v1".into())
+    );
+    assert_eq!(
+        request["request_id"],
+        Value::String("custom_paa_50mer-build-001".into())
+    );
+    assert_eq!(
+        request["artifacts"]["coordinates"],
+        Value::String("custom_paa_50mer.pdb".into())
+    );
+    assert_eq!(
+        request["artifacts"]["topology"],
+        Value::String("custom_paa_50mer.prmtop".into())
     );
 }
 
@@ -2035,7 +2188,7 @@ fn validate_accepts_branched_aligned_realization() {
         .is_some());
     assert_eq!(
         payload["preflight"]["overlap_status"]["report_source"],
-        "final_structure"
+        "solver_cleanup"
     );
     assert_eq!(
         payload["normalized_request"]["artifacts"]["inpcrd"],
@@ -2054,18 +2207,7 @@ fn validate_accepts_branched_aligned_realization() {
     );
     assert_eq!(
         payload["normalized_request"]["artifacts"]["forcefield_ref"],
-        coords
-            .parent()
-            .expect("coords parent")
-            .join(format!(
-                "{}.ffxml",
-                coords
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .expect("coords stem")
-            ))
-            .to_string_lossy()
-            .to_string()
+        Value::Null
     );
     let warnings = payload["warnings"].as_array().expect("warnings array");
     assert!(!warnings.is_empty());
@@ -2126,7 +2268,7 @@ fn validate_deep_runs_geometry_preflight() {
     );
     assert_eq!(
         payload["preflight"]["overlap_status"]["report_source"],
-        "final_structure"
+        "solver_cleanup"
     );
     assert!(payload["preflight"]["overlap_status"]["overlap_pairs"]
         .as_u64()
@@ -2286,6 +2428,84 @@ fn run_star_and_branched_builds_write_branch_metadata() {
         .unwrap()
         .iter()
         .any(|item| item == "T"));
+}
+
+#[test]
+fn run_multiport_star_build_uses_all_core_junctions_without_clashes() {
+    let (_dir, bundle) = make_multiport_star_bundle_dir("multiport_star_run");
+    let coords = temp_path("multiport_star_coords.pdb");
+    let manifest = temp_path("multiport_star_manifest.json");
+    let charge = temp_path("multiport_star_charge.json");
+    let topology = temp_path("multiport_star_topology.prmtop");
+    let graph = temp_path("multiport_star_graph.json");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "multiport-star-build-001",
+        "source_ref": {
+            "bundle_id": "multiport_star_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "star_polymer",
+            "core_token": "C",
+            "core_junctions": ["j1", "j2", "j3", "j4"],
+            "arm_sequence": ["A"],
+            "arm_repeat_count": 8,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": 20260424
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "build_manifest": manifest.to_string_lossy(),
+            "charge_manifest": charge.to_string_lossy(),
+            "topology": topology.to_string_lossy(),
+            "topology_graph": graph.to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert_eq!(payload["summary"]["acceptance_state"], "accepted");
+    assert_eq!(payload["summary"]["handoff_level"], "minimizable_synthetic");
+    assert_eq!(payload["summary"]["qc"]["severe_nonbonded_clash_count"], 0);
+    assert!(
+        payload["summary"]["qc"]["min_nonbonded_distance_angstrom"]
+            .as_f64()
+            .unwrap_or(0.0)
+            >= 1.2
+    );
+
+    let graph_payload: Value =
+        serde_json::from_str(&fs::read_to_string(&graph).expect("read graph")).expect("graph");
+    assert_eq!(graph_payload["build_plan"]["target_mode"], "star_polymer");
+    assert_eq!(graph_payload["build_plan"]["root_token"], "C");
+    assert_eq!(graph_payload["build_plan"]["arm_count"], 4);
+    assert!(graph_payload["build_plan"]["max_branch_depth"]
+        .as_u64()
+        .map(|value| value >= 8)
+        .unwrap_or(false));
+    let mut core_ports = graph_payload["connection_definitions"]
+        .as_array()
+        .expect("connection definitions")
+        .iter()
+        .filter(|item| item["parent_resid"] == 1 && item["child_port"] == "head")
+        .filter_map(|item| item["parent_port"].as_str())
+        .collect::<Vec<_>>();
+    core_ports.sort_unstable();
+    assert_eq!(core_ports, vec!["j1", "j2", "j3", "j4"]);
+
+    let topo = read_prmtop_topology(&topology).expect("read multiport star prmtop");
+    assert_eq!(topo.atom_names.len(), 36);
+    assert_eq!(topo.bonds.len(), 35);
 }
 
 #[test]
@@ -2469,10 +2689,7 @@ fn run_structure_only_bundle_writes_minimizable_synthetic_handoff() {
     assert!(charge.exists());
     assert!(graph.exists());
     assert!(Path::new(topology_path).exists());
-    let ffxml_path = payload["artifacts"]["forcefield_ref"]
-        .as_str()
-        .expect("forcefield output");
-    assert!(Path::new(ffxml_path).exists());
+    assert_eq!(payload["artifacts"]["forcefield_ref"], Value::Null);
     let manifest_value: Value =
         serde_json::from_str(&fs::read_to_string(&manifest).expect("read manifest"))
             .expect("parse manifest");
@@ -2490,7 +2707,7 @@ fn run_structure_only_bundle_writes_minimizable_synthetic_handoff() {
     );
     assert_eq!(
         manifest_value["md_ready_handoff"]["forcefield_ref"],
-        Value::String(ffxml_path.to_string())
+        Value::Null
     );
     assert_eq!(
         manifest_value["summary"]["limitations"],
@@ -2655,6 +2872,169 @@ fn validate_unreliable_training_prefers_source_topology_fallback() {
 }
 
 #[test]
+fn clean_random_walk_synthetic_handoff_is_minimizable() {
+    let (_dir, bundle) = make_structure_only_bundle_dir("structure_only_random_walk_handoff");
+    let coords = temp_path("structure_only_random_walk_coords.pdb");
+    let manifest = temp_path("structure_only_random_walk_manifest.json");
+    let charge = temp_path("structure_only_random_walk_charge.json");
+    let graph = temp_path("structure_only_random_walk_graph.json");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "structure-only-random-walk-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "random_walk",
+            "seed": 12345
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "build_manifest": manifest.to_string_lossy(),
+            "charge_manifest": charge.to_string_lossy(),
+            "topology_graph": graph.to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert_eq!(payload["summary"]["acceptance_state"], "accepted");
+    assert_eq!(payload["summary"]["handoff_level"], "minimizable_synthetic");
+    assert!(!payload["summary"]["limitations"]
+        .as_array()
+        .expect("limitations")
+        .iter()
+        .any(|item| item == "conformer_not_production_minimized"));
+    assert!(payload["summary"]["qc"]["severe_bond_violations"]
+        .as_array()
+        .expect("severe bond violations")
+        .is_empty());
+    assert_eq!(payload["summary"]["qc"]["severe_nonbonded_clash_count"], 0);
+    assert!(
+        payload["summary"]["qc"]["min_nonbonded_distance_angstrom"]
+            .as_f64()
+            .unwrap_or(0.0)
+            >= 1.2
+    );
+    let manifest_value: Value =
+        serde_json::from_str(&fs::read_to_string(&manifest).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(
+        manifest_value["summary"]["handoff_level"],
+        "minimizable_synthetic"
+    );
+}
+
+#[test]
+fn validate_records_preflight_cache_and_run_requires_cache() {
+    let (_dir, bundle) = make_structure_only_bundle_dir("preflight_cache_bundle");
+    let cache_dir = temp_path("preflight_cache_store");
+    let original_topology = temp_path("preflight_cache_original_topology.prmtop");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "preflight-cache-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 4,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "extended"
+        },
+        "validation": {
+            "depth": "deep",
+            "cache_mode": "record",
+            "cache_dir": cache_dir.to_string_lossy()
+        },
+        "artifacts": {
+            "coordinates": temp_path("preflight_cache_original_coords.pdb").to_string_lossy(),
+            "build_manifest": temp_path("preflight_cache_original_manifest.json").to_string_lossy(),
+            "charge_manifest": temp_path("preflight_cache_original_charge.json").to_string_lossy(),
+            "topology": original_topology.to_string_lossy(),
+            "topology_graph": temp_path("preflight_cache_original_graph.json").to_string_lossy()
+        }
+    });
+    let (validate_code, validate_payload) =
+        warp_build::validate_request_json(&serde_json::to_string(&request).expect("serialize"));
+    assert_eq!(
+        validate_code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&validate_payload).unwrap()
+    );
+    assert_eq!(validate_payload["preflight_cache"]["state"], "written");
+    let record_path = validate_payload["preflight_cache"]["record_path"]
+        .as_str()
+        .expect("record path");
+    assert!(Path::new(record_path).exists());
+
+    let final_coords = temp_path("preflight_cache_final_coords.pdb");
+    let final_manifest = temp_path("preflight_cache_final_manifest.json");
+    let final_charge = temp_path("preflight_cache_final_charge.json");
+    let final_topology = temp_path("preflight_cache_final_topology.prmtop");
+    let final_graph = temp_path("preflight_cache_final_graph.json");
+    let mut run_request = request.clone();
+    run_request["validation"]["cache_mode"] = json!("require");
+    run_request["artifacts"] = json!({
+        "coordinates": final_coords.to_string_lossy(),
+        "build_manifest": final_manifest.to_string_lossy(),
+        "charge_manifest": final_charge.to_string_lossy(),
+        "topology": final_topology.to_string_lossy(),
+        "topology_graph": final_graph.to_string_lossy()
+    });
+    let (run_code, run_payload) = warp_build::run_request_json(
+        &serde_json::to_string(&run_request).expect("serialize"),
+        false,
+    );
+    assert_eq!(
+        run_code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&run_payload).unwrap()
+    );
+    assert!(run_payload["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["code"] == "W_PREFLIGHT_CACHE_HIT"));
+    assert!(final_coords.exists());
+    assert!(final_manifest.exists());
+    assert!(final_charge.exists());
+    assert!(final_topology.exists());
+    assert!(final_graph.exists());
+    let manifest_value: Value =
+        serde_json::from_str(&fs::read_to_string(&final_manifest).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(
+        manifest_value["artifacts"]["coordinates"],
+        final_coords.to_string_lossy().as_ref()
+    );
+    assert!(manifest_value["artifact_digests"]["coordinates"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+}
+
+#[test]
 fn run_unreliable_training_uses_forcefield_fallback() {
     let (_dir, bundle) = make_bad_training_bundle_dir("bad_training_ffxml", false, true);
     let coords = temp_path("bad_training_ffxml_coords.pdb");
@@ -2782,10 +3162,11 @@ fn run_qc_salvage_mode_writes_non_final_outputs() {
         warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
     assert_eq!(
         code,
-        0,
+        3,
         "{}",
         serde_json::to_string_pretty(&payload).unwrap()
     );
+    assert_eq!(payload["status"], "salvaged");
     assert_eq!(payload["summary"]["acceptance_state"], "salvaged");
     assert_eq!(payload["summary"]["handoff_level"], "graph_bonded_only");
     assert!(payload["summary"]["limitations"]

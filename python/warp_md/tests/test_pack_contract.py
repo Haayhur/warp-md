@@ -190,7 +190,7 @@ def test_pack_capabilities_json() -> None:
 
 def test_pack_example_polymer_build_handoff() -> None:
     payload = pack_contract.example_request("polymer_build_handoff")
-    assert payload["polymer_build"]["build_manifest"] == "outputs/pmma_50mer.build.json"
+    assert payload["polymer_build"]["build_manifest"] == "outputs/polymer_50mer.build.json"
     assert payload["environment"]["solvent"]["model"] == "tip3p"
     assert payload["environment"]["ions"]["salt"]["name"] == "nacl"
     assert payload["environment"]["ions"]["neutralize"]["enabled"] is True

@@ -122,7 +122,7 @@ def schema(kind: str = "request") -> Dict[str, Any]:
     return schema_json(kind)
 
 
-def example_request(mode: str = "random_walk", *, bundle_path: str = "source.bundle.json") -> Dict[str, Any]:
+def example_request(mode: str = "aligned", *, bundle_path: str = "source.bundle.json") -> Dict[str, Any]:
     native = _native()
     if native is not None:
         payload = native.build_agent_example(mode, bundle_path)

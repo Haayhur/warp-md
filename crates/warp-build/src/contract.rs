@@ -7,11 +7,17 @@ use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use traj_core::elements::{mass_for_element, normalize_element};
+use traj_core::{
+    elements::{mass_for_element, normalize_element},
+    SpatialHash,
+};
 use warp_common::resolve_relative_path;
 use warp_pack::agent::shared_contract::{self, to_error, to_warning};
 use warp_pack::{PackError, PackResult};
-use warp_structure::io::{write_amber_inpcrd, write_minimal_prmtop, write_output, AmberTopology};
+use warp_structure::io::{
+    read_molecule, read_prmtop_topology, write_amber_inpcrd, write_minimal_prmtop, write_output,
+    AmberTopology,
+};
 use warp_structure::{center_of_geometry, AtomRecord, OutputSpec, PackOutput, Vec3};
 
 use crate::minimize::minimize_synthetic_topology;
@@ -20,8 +26,8 @@ use crate::polymer::{
     compute_sequence_polymer_net_charge_from_prmtop,
     compute_sequence_polymer_net_charge_from_source, ensure_build_qc_passes, load_charge_manifest,
     recompute_build_qc_report, write_polymer_prmtop_from_ffxml, write_polymer_prmtop_from_source,
-    write_polymer_prmtop_synthetic_uff_like, GraphEdgeSpec, GraphNodeSpec, TokenJunctionSpec,
-    TrainingSourceAssessment, CHARGE_MANIFEST_VERSION,
+    write_polymer_prmtop_synthetic_uff_like, BuildQcReport, GraphEdgeSpec, GraphNodeSpec,
+    TokenJunctionSpec, TrainingSourceAssessment, CHARGE_MANIFEST_VERSION,
 };
 use warp_topology_graph::{
     AlignmentPath as TopologyGraphAlignmentPath, Angle as TopologyGraphAngle,
@@ -81,7 +87,7 @@ const SUPPORTED_TACTICITY_MODES: &[&str] = &[
     "atactic",
 ];
 const SUPPORTED_TERMINI_POLICIES: &[&str] = &["default", "source_default"];
-const EXAMPLE_BUNDLE_ID: &str = "pmma_param_bundle_v1";
+const EXAMPLE_BUNDLE_ID: &str = "example_polymer_bundle_v1";
 const EXAMPLE_BUNDLE_PATH: &str = "source.bundle.json";
 const EXAMPLE_SOURCE_COORDINATES: &str = "training.pdb";
 const EXAMPLE_SOURCE_TOPOLOGY: &str = "training.prmtop";
@@ -414,12 +420,19 @@ pub struct ValidationSpec {
     #[serde(default = "default_validation_depth")]
     #[schemars(default = "default_validation_depth")]
     pub depth: String,
+    #[serde(default = "default_validation_cache_mode")]
+    #[schemars(default = "default_validation_cache_mode")]
+    pub cache_mode: String,
+    #[serde(default)]
+    pub cache_dir: Option<String>,
 }
 
 impl Default for ValidationSpec {
     fn default() -> Self {
         Self {
             depth: default_validation_depth(),
+            cache_mode: default_validation_cache_mode(),
+            cache_dir: None,
         }
     }
 }
@@ -510,8 +523,25 @@ pub struct ValidateEnvelope {
     pub valid: bool,
     pub normalized_request: NormalizedBuildRequest,
     pub resolved_inputs: ResolvedInputsSummary,
+    pub preflight_cache: PreflightCacheSummary,
     pub preflight: PreflightSummary,
     pub warnings: Vec<ErrorDetail>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct PreflightCacheSummary {
+    pub cache_key: String,
+    pub request_digest: String,
+    pub input_digest: String,
+    pub cache_mode: String,
+    pub reusable: bool,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_paths: Option<ArtifactRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, JsonSchema)]
@@ -572,6 +602,9 @@ pub struct NormalizedBuildRequest {
 pub struct ValidationDepthSummary {
     pub requested_depth: String,
     pub default_depth: String,
+    pub cache_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -960,6 +993,10 @@ fn default_validation_depth() -> String {
     "deep".to_string()
 }
 
+fn default_validation_cache_mode() -> String {
+    "off".to_string()
+}
+
 fn default_qc_policy() -> String {
     "strict".to_string()
 }
@@ -1017,6 +1054,176 @@ fn sha256_text(text: &str) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
+fn sha256_json_value(value: &Value) -> String {
+    let bytes = serde_json::to_vec(value).unwrap_or_else(|_| value.to_string().into_bytes());
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn canonicalize_artifact_summary(value: &mut Value) {
+    let Some(artifacts) = value.as_object_mut() else {
+        return;
+    };
+    for key in [
+        "coordinates",
+        "raw_coordinates",
+        "build_manifest",
+        "charge_manifest",
+        "inpcrd",
+        "topology",
+        "topology_graph",
+        "ensemble_manifest",
+        "forcefield_ref",
+    ] {
+        if artifacts.contains_key(key) && !artifacts[key].is_null() {
+            artifacts.insert(key.to_string(), Value::String(format!("<artifact:{key}>")));
+        }
+    }
+}
+
+fn preflight_cache_payload(
+    normalized_request: &NormalizedBuildRequest,
+    resolved_inputs: &ResolvedInputsSummary,
+    include_artifact_paths: bool,
+) -> Value {
+    let mut normalized = serde_json::to_value(normalized_request).unwrap_or_else(|_| json!({}));
+    let mut resolved = serde_json::to_value(resolved_inputs).unwrap_or_else(|_| json!({}));
+    if !include_artifact_paths {
+        if let Some(artifacts) = normalized.get_mut("artifacts") {
+            canonicalize_artifact_summary(artifacts);
+        }
+        if let Some(artifacts) = resolved.get_mut("resolved_artifacts") {
+            canonicalize_artifact_summary(artifacts);
+        }
+        if let Some(validation) = resolved
+            .get_mut("validation")
+            .and_then(Value::as_object_mut)
+        {
+            validation.insert("cache_mode".into(), Value::String("<cache_mode>".into()));
+            validation.insert("cache_dir".into(), Value::String("<cache_dir>".into()));
+        }
+    }
+    json!({
+        "contract": "warp-build-preflight-cache.v1",
+        "schema_version": BUILD_SCHEMA_VERSION,
+        "normalized_request": normalized,
+        "resolved_inputs": resolved,
+    })
+}
+
+fn cache_key_from_digest(input_digest: &str) -> String {
+    let bare_digest = input_digest.strip_prefix("sha256:").unwrap_or(input_digest);
+    format!("warp-build-preflight-v1:{bare_digest}")
+}
+
+fn cache_key_slug(cache_key: &str) -> String {
+    cache_key
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn preflight_cache_record_path(cache_dir: &str, cache_key: &str) -> String {
+    Path::new(cache_dir)
+        .join(cache_key_slug(cache_key))
+        .join("record.json")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn preflight_cache_artifact_paths(
+    cache_dir: &str,
+    cache_key: &str,
+    resolved_artifacts: &ResolvedArtifactSummary,
+) -> ArtifactRequest {
+    let root = Path::new(cache_dir)
+        .join(cache_key_slug(cache_key))
+        .join("artifacts");
+    ArtifactRequest {
+        coordinates: root.join("coordinates.pdb").to_string_lossy().to_string(),
+        raw_coordinates: resolved_artifacts.raw_coordinates.as_ref().map(|_| {
+            root.join("raw_coordinates.pdb")
+                .to_string_lossy()
+                .to_string()
+        }),
+        build_manifest: root
+            .join("build_manifest.json")
+            .to_string_lossy()
+            .to_string(),
+        charge_manifest: root
+            .join("charge_manifest.json")
+            .to_string_lossy()
+            .to_string(),
+        inpcrd: Some(
+            root.join("coordinates.inpcrd")
+                .to_string_lossy()
+                .to_string(),
+        ),
+        topology: resolved_artifacts
+            .topology
+            .as_ref()
+            .map(|_| root.join("topology.prmtop").to_string_lossy().to_string()),
+        topology_graph: Some(
+            root.join("topology_graph.json")
+                .to_string_lossy()
+                .to_string(),
+        ),
+        ensemble_manifest: resolved_artifacts.ensemble_manifest.as_ref().map(|_| {
+            root.join("ensemble_manifest.json")
+                .to_string_lossy()
+                .to_string()
+        }),
+        forcefield_ref: resolved_artifacts
+            .forcefield_ref
+            .as_ref()
+            .map(|_| root.join("forcefield.ffxml").to_string_lossy().to_string()),
+    }
+}
+
+fn preflight_cache_summary(
+    normalized_request: &NormalizedBuildRequest,
+    resolved_inputs: &ResolvedInputsSummary,
+    cache_mode: &str,
+    cache_dir: Option<&str>,
+    reusable: bool,
+    state: &str,
+    reason: Option<&str>,
+) -> PreflightCacheSummary {
+    let request_digest = sha256_json_value(&preflight_cache_payload(
+        normalized_request,
+        resolved_inputs,
+        true,
+    ));
+    let input_digest = sha256_json_value(&preflight_cache_payload(
+        normalized_request,
+        resolved_inputs,
+        false,
+    ));
+    let cache_key = cache_key_from_digest(&input_digest);
+    let record_path = cache_dir.map(|dir| preflight_cache_record_path(dir, &cache_key));
+    let artifact_paths = cache_dir.map(|dir| {
+        preflight_cache_artifact_paths(dir, &cache_key, &resolved_inputs.resolved_artifacts)
+    });
+    PreflightCacheSummary {
+        cache_key,
+        request_digest,
+        input_digest,
+        cache_mode: cache_mode.to_string(),
+        reusable,
+        state: state.to_string(),
+        record_path,
+        artifact_paths,
+        reason: reason.map(str::to_string),
+    }
+}
+
 fn sha256_file(path: &Path) -> PackResult<String> {
     let bytes = fs::read(path)?;
     let mut hasher = Sha256::new();
@@ -1051,6 +1258,326 @@ fn load_bundle(path: &Path) -> Result<SourceBundle, ErrorDetail> {
         ));
     }
     Ok(bundle)
+}
+
+fn source_template_atoms_from_coordinates(
+    path: &Path,
+) -> Result<BTreeMap<String, BTreeSet<String>>, ErrorDetail> {
+    let molecule = read_molecule(path, None, false, true, None).map_err(|err| {
+        to_error(
+            "E_SOURCE_ARTIFACT",
+            Some("artifacts.source_coordinates".into()),
+            format!("source coordinates could not be read: {err}"),
+        )
+    })?;
+    let mut templates = BTreeMap::<String, BTreeSet<String>>::new();
+    for atom in molecule.atoms {
+        let resname = atom.resname.trim();
+        if resname.is_empty() {
+            continue;
+        }
+        templates
+            .entry(resname.to_string())
+            .or_default()
+            .insert(atom.name.trim().to_string());
+    }
+    Ok(templates)
+}
+
+fn source_template_atoms_from_prmtop(
+    path: &Path,
+) -> Result<BTreeMap<String, BTreeSet<String>>, ErrorDetail> {
+    let topology = read_prmtop_topology(path).map_err(|err| {
+        to_error(
+            "E_SOURCE_ARTIFACT",
+            Some("artifacts.source_topology_ref".into()),
+            format!("source topology could not be read: {err}"),
+        )
+    })?;
+    let mut templates = BTreeMap::<String, BTreeSet<String>>::new();
+    for (residue_idx, label) in topology.residue_labels.iter().enumerate() {
+        let start = topology
+            .residue_pointers
+            .get(residue_idx)
+            .copied()
+            .unwrap_or(1)
+            .saturating_sub(1);
+        let end = topology
+            .residue_pointers
+            .get(residue_idx + 1)
+            .copied()
+            .unwrap_or(topology.atom_names.len() + 1)
+            .saturating_sub(1)
+            .min(topology.atom_names.len());
+        let atoms = templates.entry(label.trim().to_string()).or_default();
+        for atom_name in topology.atom_names[start..end].iter() {
+            atoms.insert(atom_name.trim().to_string());
+        }
+    }
+    Ok(templates)
+}
+
+fn forcefield_ref_placeholder_reason(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let compact = text.split_whitespace().collect::<String>();
+    if compact.eq_ignore_ascii_case("<ForceField/>")
+        || compact.eq_ignore_ascii_case("<ForceField></ForceField>")
+    {
+        return Some("forcefield_ref is an empty <ForceField/> placeholder".into());
+    }
+    let has_atom_types = text.contains("<AtomTypes") && text.contains("<Type ");
+    let has_residues = text.contains("<Residues") && text.contains("<Residue ");
+    let has_nonbonded = text.contains("<NonbondedForce") && text.contains("<Atom ");
+    if !(has_atom_types && has_residues && has_nonbonded) {
+        return Some(
+            "forcefield_ref does not contain AtomTypes, Residues, and NonbondedForce parameters"
+                .into(),
+        );
+    }
+    None
+}
+
+fn source_forcefield_transferable(path: Option<&String>) -> bool {
+    path.map(|value| {
+        let path = Path::new(value);
+        path.exists() && forcefield_ref_placeholder_reason(path).is_none()
+    })
+    .unwrap_or(false)
+}
+
+fn validate_selector_atom_against_template(
+    errors: &mut Vec<ErrorDetail>,
+    template_atoms: &BTreeMap<String, BTreeSet<String>>,
+    topology_atoms: Option<&BTreeMap<String, BTreeSet<String>>>,
+    template_resname: &str,
+    atom_name: &str,
+    selector_kind: &str,
+    path: String,
+) {
+    if !template_atoms
+        .get(template_resname)
+        .map(|atoms| atoms.contains(atom_name))
+        .unwrap_or(false)
+    {
+        errors.push(to_error(
+            "E_SOURCE_SCHEMA",
+            Some(path.clone()),
+            format!(
+                "{selector_kind} atom '{}' missing from template '{}' in source coordinates",
+                atom_name, template_resname
+            ),
+        ));
+    }
+    if let Some(topology_atoms) = topology_atoms {
+        if !topology_atoms
+            .get(template_resname)
+            .map(|atoms| atoms.contains(atom_name))
+            .unwrap_or(false)
+        {
+            errors.push(to_error(
+                "E_SOURCE_SCHEMA",
+                Some(path),
+                format!(
+                    "{selector_kind} atom '{}' missing from template '{}' in source topology",
+                    atom_name, template_resname
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_bundle_template_selectors(
+    bundle: &SourceBundle,
+    template_atoms: &BTreeMap<String, BTreeSet<String>>,
+    topology_atoms: Option<&BTreeMap<String, BTreeSet<String>>>,
+) -> Vec<ErrorDetail> {
+    let mut errors = Vec::new();
+    for (token, unit) in &bundle.unit_library {
+        let template_resname = unit.template_resname.as_deref().unwrap_or("").trim();
+        if template_resname.is_empty() {
+            errors.push(to_error(
+                "E_SOURCE_SCHEMA",
+                Some(format!("unit_library.{token}.template_resname")),
+                "sequence-capable unit definitions must declare template_resname",
+            ));
+            continue;
+        }
+        if !template_atoms.contains_key(template_resname) {
+            errors.push(to_error(
+                "E_SOURCE_SCHEMA",
+                Some(format!("unit_library.{token}.template_resname")),
+                format!(
+                    "template_resname '{}' missing from source coordinates",
+                    template_resname
+                ),
+            ));
+        }
+        if let Some(topology_atoms) = topology_atoms {
+            if !topology_atoms.contains_key(template_resname) {
+                errors.push(to_error(
+                    "E_SOURCE_SCHEMA",
+                    Some(format!("unit_library.{token}.template_resname")),
+                    format!(
+                        "template_resname '{}' missing from source topology",
+                        template_resname
+                    ),
+                ));
+            }
+        }
+        for (port, junction_name) in &unit.junctions {
+            let Some(junction) = bundle.junction_library.get(junction_name) else {
+                errors.push(to_error(
+                    "E_SOURCE_SCHEMA",
+                    Some(format!("unit_library.{token}.junctions.{port}")),
+                    format!("junction '{}' missing from junction_library", junction_name),
+                ));
+                continue;
+            };
+            match selector_atom_name(&junction.attach_atom) {
+                Ok(atom_name) => validate_selector_atom_against_template(
+                    &mut errors,
+                    template_atoms,
+                    topology_atoms,
+                    template_resname,
+                    atom_name.trim(),
+                    "attach",
+                    format!("junction_library.{junction_name}.attach_atom.selector"),
+                ),
+                Err(err) => errors.push(to_error(
+                    "E_SOURCE_SCHEMA",
+                    Some(format!(
+                        "junction_library.{junction_name}.attach_atom.selector"
+                    )),
+                    err.to_string(),
+                )),
+            }
+            for (idx, selector) in junction.leaving_atoms.iter().enumerate() {
+                match selector_atom_name(selector) {
+                    Ok(atom_name) => validate_selector_atom_against_template(
+                        &mut errors,
+                        template_atoms,
+                        topology_atoms,
+                        template_resname,
+                        atom_name.trim(),
+                        "leaving",
+                        format!("junction_library.{junction_name}.leaving_atoms[{idx}].selector"),
+                    ),
+                    Err(err) => errors.push(to_error(
+                        "E_SOURCE_SCHEMA",
+                        Some(format!(
+                            "junction_library.{junction_name}.leaving_atoms[{idx}].selector"
+                        )),
+                        err.to_string(),
+                    )),
+                }
+            }
+            for (idx, selector) in junction.anchor_atoms.iter().enumerate() {
+                match selector_atom_name(selector) {
+                    Ok(atom_name) => validate_selector_atom_against_template(
+                        &mut errors,
+                        template_atoms,
+                        topology_atoms,
+                        template_resname,
+                        atom_name.trim(),
+                        "anchor",
+                        format!("junction_library.{junction_name}.anchor_atoms[{idx}].selector"),
+                    ),
+                    Err(err) => errors.push(to_error(
+                        "E_SOURCE_SCHEMA",
+                        Some(format!(
+                            "junction_library.{junction_name}.anchor_atoms[{idx}].selector"
+                        )),
+                        err.to_string(),
+                    )),
+                }
+            }
+        }
+    }
+    errors
+}
+
+fn inspect_source_artifacts(
+    bundle_path: &Path,
+    bundle: &SourceBundle,
+) -> (Vec<ErrorDetail>, Vec<ErrorDetail>) {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let source_coordinates =
+        resolve_relative_path(bundle_path, &bundle.artifacts.source_coordinates);
+    let coordinate_atoms =
+        match source_template_atoms_from_coordinates(Path::new(&source_coordinates)) {
+            Ok(value) => value,
+            Err(err) => {
+                errors.push(err);
+                BTreeMap::new()
+            }
+        };
+    let topology_atoms = bundle
+        .artifacts
+        .source_topology_ref
+        .as_ref()
+        .map(|path| resolve_relative_path(bundle_path, path))
+        .map(|path| {
+            let path_ref = Path::new(&path);
+            if !path_ref.exists() {
+                Err(to_error(
+                    "E_SOURCE_ARTIFACT",
+                    Some("artifacts.source_topology_ref".into()),
+                    format!("source topology '{}' does not exist", path),
+                ))
+            } else {
+                source_template_atoms_from_prmtop(path_ref)
+            }
+        })
+        .transpose();
+    let topology_atoms = match topology_atoms {
+        Ok(value) => value,
+        Err(err) => {
+            errors.push(err);
+            None
+        }
+    };
+    if let Some(path) = bundle.artifacts.source_charge_manifest.as_ref() {
+        let resolved = resolve_relative_path(bundle_path, path);
+        if !Path::new(&resolved).exists() {
+            errors.push(to_error(
+                "E_SOURCE_ARTIFACT",
+                Some("artifacts.source_charge_manifest".into()),
+                format!("source charge manifest '{}' does not exist", resolved),
+            ));
+        } else if let Err(err) = load_charge_manifest(Path::new(&resolved)) {
+            errors.push(to_error(
+                "E_SOURCE_ARTIFACT",
+                Some("artifacts.source_charge_manifest".into()),
+                format!("source charge manifest could not be read: {err}"),
+            ));
+        }
+    }
+    if let Some(path) = bundle.artifacts.forcefield_ref.as_ref() {
+        let resolved = resolve_relative_path(bundle_path, path);
+        let path_ref = Path::new(&resolved);
+        if !path_ref.exists() {
+            errors.push(to_error(
+                "E_SOURCE_ARTIFACT",
+                Some("artifacts.forcefield_ref".into()),
+                format!("forcefield_ref '{}' does not exist", resolved),
+            ));
+        } else if let Some(reason) = forcefield_ref_placeholder_reason(path_ref) {
+            warnings.push(to_warning(
+                "W_PLACEHOLDER_FORCEFIELD",
+                Some("artifacts.forcefield_ref".into()),
+                format!("{reason}; it will not be copied as an MD-ready force-field artifact"),
+            ));
+        }
+    }
+    if !coordinate_atoms.is_empty() {
+        errors.extend(validate_bundle_template_selectors(
+            bundle,
+            &coordinate_atoms,
+            topology_atoms.as_ref(),
+        ));
+    }
+    (errors, warnings)
 }
 
 fn default_inpcrd_path(coordinates_path: &str) -> String {
@@ -1168,7 +1695,12 @@ struct NormalizeRequestResult {
 }
 
 fn deterministic_seed(req: &BuildRequest) -> u64 {
-    let text = serde_json::to_string(req).unwrap_or_default();
+    let mut value = serde_json::to_value(req).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.remove("artifacts");
+        object.remove("validation");
+    }
+    let text = serde_json::to_string(&value).unwrap_or_default();
     let digest = sha256_text(&text);
     u64::from_str_radix(
         digest
@@ -1384,6 +1916,7 @@ fn resolve_request_state(
         .forcefield_ref
         .as_ref()
         .map(|path| resolve_relative_path(Path::new(&req.source_ref.bundle_path), path));
+    let forcefield_transferable = source_forcefield_transferable(source_forcefield_ref.as_ref());
     let artifacts = ResolvedArtifacts {
         coordinates: req.artifacts.coordinates.clone(),
         raw_coordinates: req.realization.relax.as_ref().map(|_| {
@@ -1420,7 +1953,7 @@ fn resolve_request_state(
         } else {
             req.artifacts.ensemble_manifest.clone()
         },
-        forcefield_ref: if bundle.artifacts.forcefield_ref.is_some() {
+        forcefield_ref: if forcefield_transferable {
             Some(
                 req.artifacts
                     .forcefield_ref
@@ -1428,11 +1961,20 @@ fn resolve_request_state(
                     .unwrap_or_else(|| default_forcefield_ref_path(&req.artifacts.coordinates)),
             )
         } else {
-            req.artifacts.forcefield_ref.clone()
+            None
         },
     };
     let mut warnings = preflight_warnings;
     warnings.extend(collect_warnings(req));
+    if let Some(path) = source_forcefield_ref.as_ref() {
+        if let Some(reason) = forcefield_ref_placeholder_reason(Path::new(path)) {
+            warnings.push(to_warning(
+                "W_PLACEHOLDER_FORCEFIELD",
+                Some("/source_ref/bundle_path".into()),
+                format!("{reason}; forcefield_ref will not be emitted as a handoff artifact"),
+            ));
+        }
+    }
     let bundle_digest = sha256_file(Path::new(&req.source_ref.bundle_path)).ok();
     let normalized_artifacts = ResolvedArtifactSummary {
         coordinates: artifacts.coordinates.clone(),
@@ -1480,6 +2022,8 @@ fn resolve_request_state(
         validation: ValidationDepthSummary {
             requested_depth: req.validation.depth.clone(),
             default_depth: default_validation_depth(),
+            cache_mode: req.validation.cache_mode.clone(),
+            cache_dir: req.validation.cache_dir.clone(),
         },
         resolved_termini_policy: ResolvedTerminiPolicy {
             head: if req.target.termini.head == "default" {
@@ -1540,6 +2084,23 @@ fn validation_depth(req: &BuildRequest) -> Result<&str, ErrorDetail> {
             Some("/validation/depth".into()),
             format!(
                 "unsupported validation depth '{}'; expected 'shallow' or 'deep'",
+                other
+            ),
+        )),
+    }
+}
+
+fn validation_cache_mode(req: &BuildRequest) -> Result<&str, ErrorDetail> {
+    match req.validation.cache_mode.as_str() {
+        "off" => Ok("off"),
+        "record" => Ok("record"),
+        "prefer" => Ok("prefer"),
+        "require" => Ok("require"),
+        other => Err(to_error(
+            "E_INVALID_REQUEST",
+            Some("/validation/cache_mode".into()),
+            format!(
+                "unsupported validation cache_mode '{}'; expected 'off', 'record', 'prefer', or 'require'",
                 other
             ),
         )),
@@ -1640,6 +2201,9 @@ fn handoff_level_and_limitations(
     net_charge: Option<f32>,
     salvaged: bool,
     parameter_source: &TrainingSourceAssessment,
+    conformation_mode: &str,
+    target_mode: &str,
+    qc_report: &BuildQcReport,
 ) -> (String, Vec<String>) {
     let mut limitations = Vec::new();
     match topology_mode {
@@ -1659,13 +2223,41 @@ fn handoff_level_and_limitations(
     if salvaged {
         limitations.push("salvaged_qc_failure".into());
     }
+    let synthetic_geometry_clean = qc_report.severe_bond_violations.is_empty()
+        && qc_report.severe_nonbonded_clash_count == 0
+        && qc_report
+            .min_nonbonded_distance_angstrom
+            .map(|value| value >= 1.20)
+            .unwrap_or(true);
+    let synthetic_production_conformation = synthetic_geometry_clean
+        && matches!(
+            conformation_mode,
+            "aligned" | "extended" | "random_walk" | "ensemble"
+        )
+        && matches!(
+            target_mode,
+            "linear_homopolymer"
+                | "linear_sequence_polymer"
+                | "block_copolymer"
+                | "random_copolymer"
+                | "star_polymer"
+                | "branched_polymer"
+                | "polymer_graph"
+        );
+    if matches!(topology_mode, TopologyArtifactMode::SyntheticUffLike)
+        && !synthetic_production_conformation
+    {
+        limitations.push("conformer_not_production_minimized".into());
+    }
     let handoff_level = if salvaged {
         "graph_bonded_only"
     } else {
         match topology_mode {
             TopologyArtifactMode::SourceTransfer if net_charge.is_some() => "md_ready",
             TopologyArtifactMode::ForcefieldRef if net_charge.is_some() => "forcefield_backed",
-            TopologyArtifactMode::SyntheticUffLike => "minimizable_synthetic",
+            TopologyArtifactMode::SyntheticUffLike if synthetic_production_conformation => {
+                "minimizable_synthetic"
+            }
             _ => "graph_bonded_only",
         }
     };
@@ -1984,17 +2576,13 @@ fn preflight_build(
             )]);
         }
     };
-    let (internal_cleanup_report, cleanup_elapsed_ms, _cleanup_warning) =
-        run_internal_cleanup_pipeline(
-            &mut built,
-            &prepared,
-            &req.realization.conformation_mode,
-            &parameter_source_decision.parameter_source,
-            &resolved.source_coordinates,
-            resolved.source_charge_manifest.as_deref(),
-        );
+    let defer_qc_until_synthetic_cleanup =
+        parameter_source_decision.parameter_source == "synthetic_pdb";
+    let cleanup_initial_positions = output_positions(&built.output);
+    let (mut internal_cleanup_report, cleanup_elapsed_ms) =
+        run_internal_cleanup_pipeline(&mut built, &prepared, &req.realization.conformation_mode);
     timings_ms.solver_cleanup = cleanup_elapsed_ms;
-    if internal_cleanup_report.is_some() {
+    if internal_cleanup_report.is_some() && !defer_qc_until_synthetic_cleanup {
         if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
             let _ = fs::remove_dir_all(&temp_dir);
             return Err(vec![to_error(
@@ -2018,12 +2606,46 @@ fn preflight_build(
     });
     if relax_report.is_some() {
         built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
+        if !defer_qc_until_synthetic_cleanup {
+            if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(vec![to_error(
+                    "E_SOURCE_GEOMETRY",
+                    Some("/source_ref/bundle_path".into()),
+                    format!("preflight QC failed after relax: {err}"),
+                )]);
+            }
+        }
+    }
+    if parameter_source_decision.parameter_source == "synthetic_pdb" {
+        let (synthetic_report, synthetic_elapsed_ms, _synthetic_warning) =
+            run_synthetic_topology_cleanup_stage(
+                &mut built,
+                &resolved.source_coordinates,
+                resolved.source_charge_manifest.as_deref(),
+            );
+        timings_ms.solver_cleanup = timings_ms
+            .solver_cleanup
+            .saturating_add(synthetic_elapsed_ms);
+        if let Some(followup) = synthetic_report {
+            let final_positions = output_positions(&built.output);
+            internal_cleanup_report = Some(if let Some(primary) = internal_cleanup_report.take() {
+                merge_relax_report_with_followup_stage(
+                    primary,
+                    followup,
+                    &cleanup_initial_positions,
+                    &final_positions,
+                )
+            } else {
+                followup
+            });
+        }
         if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
             let _ = fs::remove_dir_all(&temp_dir);
             return Err(vec![to_error(
                 "E_SOURCE_GEOMETRY",
                 Some("/source_ref/bundle_path".into()),
-                format!("preflight QC failed after relax: {err}"),
+                format!("preflight QC failed after synthetic topology cleanup: {err}"),
             )]);
         }
     }
@@ -2048,6 +2670,448 @@ fn preflight_build(
         overlap_status,
         parameter_source_decision: Some(parameter_source_decision),
     })
+}
+
+fn resolved_artifact_request(resolved: &ResolvedBuildRequest) -> ArtifactRequest {
+    ArtifactRequest {
+        coordinates: resolved.artifacts.coordinates.clone(),
+        raw_coordinates: resolved.artifacts.raw_coordinates.clone(),
+        build_manifest: resolved.artifacts.build_manifest.clone(),
+        charge_manifest: resolved.artifacts.charge_manifest.clone(),
+        inpcrd: Some(resolved.artifacts.inpcrd.clone()),
+        topology: resolved.artifacts.topology.clone(),
+        topology_graph: Some(resolved.artifacts.topology_graph.clone()),
+        ensemble_manifest: resolved.artifacts.ensemble_manifest.clone(),
+        forcefield_ref: resolved.artifacts.forcefield_ref.clone(),
+    }
+}
+
+fn artifact_path_map(artifacts: &ArtifactRequest) -> BTreeMap<String, String> {
+    let mut paths = BTreeMap::new();
+    paths.insert("coordinates".into(), artifacts.coordinates.clone());
+    if let Some(path) = artifacts.raw_coordinates.clone() {
+        paths.insert("raw_coordinates".into(), path);
+    }
+    paths.insert("build_manifest".into(), artifacts.build_manifest.clone());
+    paths.insert("charge_manifest".into(), artifacts.charge_manifest.clone());
+    if let Some(path) = artifacts.inpcrd.clone() {
+        paths.insert("inpcrd".into(), path);
+    }
+    if let Some(path) = artifacts.topology.clone() {
+        paths.insert("topology".into(), path);
+    }
+    if let Some(path) = artifacts.topology_graph.clone() {
+        paths.insert("topology_graph".into(), path);
+    }
+    if let Some(path) = artifacts.ensemble_manifest.clone() {
+        paths.insert("ensemble_manifest".into(), path);
+    }
+    if let Some(path) = artifacts.forcefield_ref.clone() {
+        paths.insert("forcefield_ref".into(), path);
+    }
+    paths
+}
+
+fn artifact_digests_value(artifacts: &ArtifactRequest) -> Value {
+    let digest = |path: Option<&str>| path.and_then(|path| sha256_file(Path::new(path)).ok());
+    json!({
+        "coordinates": digest(Some(&artifacts.coordinates)),
+        "raw_coordinates": digest(artifacts.raw_coordinates.as_deref()),
+        "charge_manifest": digest(Some(&artifacts.charge_manifest)),
+        "inpcrd": digest(artifacts.inpcrd.as_deref()),
+        "topology": digest(artifacts.topology.as_deref()),
+        "topology_graph": digest(artifacts.topology_graph.as_deref()),
+        "ensemble_manifest": digest(artifacts.ensemble_manifest.as_deref()),
+        "forcefield_ref": digest(artifacts.forcefield_ref.as_deref()),
+    })
+}
+
+fn replace_json_path_strings(value: &mut Value, replacements: &BTreeMap<String, String>) {
+    match value {
+        Value::String(text) => {
+            if let Some(replacement) = replacements.get(text) {
+                *text = replacement.clone();
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                replace_json_path_strings(item, replacements);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values_mut() {
+                replace_json_path_strings(item, replacements);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn copy_cached_file(src: &str, dst: &str, path: &str) -> Result<(), ErrorDetail> {
+    if !Path::new(src).exists() {
+        return Err(to_error(
+            "E_PREFLIGHT_CACHE",
+            Some(path.into()),
+            format!("cached artifact '{}' is missing", src),
+        ));
+    }
+    ensure_parent(dst).map_err(|err| {
+        to_error(
+            "E_OUTPUT_WRITE",
+            Some(path.into()),
+            format!("failed to create output parent for '{}': {err}", dst),
+        )
+    })?;
+    fs::copy(src, dst).map(|_| ()).map_err(|err| {
+        to_error(
+            "E_OUTPUT_WRITE",
+            Some(path.into()),
+            format!(
+                "failed to copy cached artifact '{}' to '{}': {err}",
+                src, dst
+            ),
+        )
+    })
+}
+
+fn write_rewritten_cached_json(
+    src: &str,
+    dst: &str,
+    path: &str,
+    replacements: &BTreeMap<String, String>,
+    mutate: impl FnOnce(&mut Value),
+) -> Result<(), ErrorDetail> {
+    let text = fs::read_to_string(src).map_err(|err| {
+        to_error(
+            "E_PREFLIGHT_CACHE",
+            Some(path.into()),
+            format!("failed to read cached JSON artifact '{}': {err}", src),
+        )
+    })?;
+    let mut value: Value = serde_json::from_str(&text).map_err(|err| {
+        to_error(
+            "E_PREFLIGHT_CACHE",
+            Some(path.into()),
+            format!("cached JSON artifact '{}' is invalid: {err}", src),
+        )
+    })?;
+    replace_json_path_strings(&mut value, replacements);
+    mutate(&mut value);
+    ensure_parent(dst).map_err(|err| {
+        to_error(
+            "E_OUTPUT_WRITE",
+            Some(path.into()),
+            format!("failed to create output parent for '{}': {err}", dst),
+        )
+    })?;
+    fs::write(
+        dst,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".into())
+        ),
+    )
+    .map_err(|err| {
+        to_error(
+            "E_OUTPUT_WRITE",
+            Some(path.into()),
+            format!("failed to write cached JSON artifact '{}': {err}", dst),
+        )
+    })
+}
+
+fn verify_cached_artifact_digests(
+    artifacts: &ArtifactRequest,
+    digests: &Value,
+) -> Result<(), ErrorDetail> {
+    for (key, path) in artifact_path_map(artifacts) {
+        let Some(expected) = digests.get(&key).and_then(Value::as_str) else {
+            continue;
+        };
+        let actual = sha256_file(Path::new(&path)).map_err(|err| {
+            to_error(
+                "E_PREFLIGHT_CACHE",
+                Some(format!("artifact_digests.{key}")),
+                format!("failed to hash cached artifact '{}': {err}", path),
+            )
+        })?;
+        if actual != expected {
+            return Err(to_error(
+                "E_PREFLIGHT_CACHE",
+                Some(format!("artifact_digests.{key}")),
+                format!("cached artifact digest mismatch for '{}'", key),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn materialize_cached_artifacts(
+    cached: &ArtifactRequest,
+    final_artifacts: &ArtifactRequest,
+) -> Result<(), ErrorDetail> {
+    let cached_paths = artifact_path_map(cached);
+    let final_paths = artifact_path_map(final_artifacts);
+    let replacements = cached_paths
+        .iter()
+        .filter_map(|(key, cached)| {
+            final_paths
+                .get(key)
+                .map(|final_path| (cached.clone(), final_path.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for key in [
+        "coordinates",
+        "raw_coordinates",
+        "inpcrd",
+        "topology",
+        "forcefield_ref",
+    ] {
+        if let (Some(src), Some(dst)) = (cached_paths.get(key), final_paths.get(key)) {
+            copy_cached_file(src, dst, &format!("/artifacts/{key}"))?;
+        }
+    }
+    for key in ["topology_graph", "ensemble_manifest"] {
+        if let (Some(src), Some(dst)) = (cached_paths.get(key), final_paths.get(key)) {
+            write_rewritten_cached_json(
+                src,
+                dst,
+                &format!("/artifacts/{key}"),
+                &replacements,
+                |_| {},
+            )?;
+        }
+    }
+    if let (Some(src), Some(dst)) = (
+        cached_paths.get("charge_manifest"),
+        final_paths.get("charge_manifest"),
+    ) {
+        write_rewritten_cached_json(
+            src,
+            dst,
+            "/artifacts/charge_manifest",
+            &replacements,
+            |_| {},
+        )?;
+    }
+    if let (Some(src), Some(dst)) = (
+        cached_paths.get("build_manifest"),
+        final_paths.get("build_manifest"),
+    ) {
+        let digests = artifact_digests_value(final_artifacts);
+        write_rewritten_cached_json(
+            src,
+            dst,
+            "/artifacts/build_manifest",
+            &replacements,
+            |value| {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("artifact_digests".into(), digests);
+                }
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn materialize_preflight_artifact_cache(
+    req: &BuildRequest,
+    resolved: &ResolvedBuildRequest,
+    preflight: &PreflightSummary,
+    mut cache: PreflightCacheSummary,
+) -> Result<PreflightCacheSummary, Vec<ErrorDetail>> {
+    let Some(cache_artifacts) = cache.artifact_paths.clone() else {
+        return Ok(cache);
+    };
+    let Some(record_path) = cache.record_path.clone() else {
+        return Ok(cache);
+    };
+    let mut cached_req = req.clone();
+    cached_req.validation.cache_mode = "off".into();
+    cached_req.validation.cache_dir = None;
+    cached_req.artifacts = cache_artifacts;
+    let request_text = serde_json::to_string(&cached_req).map_err(|err| {
+        vec![to_error(
+            "E_PREFLIGHT_CACHE",
+            Some("/validation/cache_dir".into()),
+            format!("failed to serialize cache build request: {err}"),
+        )]
+    })?;
+    let (code, run_result) = run_request_json(&request_text, false);
+    if code != 0 {
+        return Err(vec![to_error(
+            "E_PREFLIGHT_CACHE",
+            Some("/validation/cache_dir".into()),
+            format!("failed to materialize preflight artifact cache: {run_result}"),
+        )]);
+    }
+    let actual_artifacts: ArtifactRequest = serde_json::from_value(
+        run_result
+            .get("artifacts")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+    )
+    .map_err(|err| {
+        vec![to_error(
+            "E_PREFLIGHT_CACHE",
+            Some("/validation/cache_dir".into()),
+            format!("cached run did not return a valid artifact contract: {err}"),
+        )]
+    })?;
+    let record = json!({
+        "schema_version": "warp-build.preflight-cache.v1",
+        "cache_key": cache.cache_key,
+        "request_digest": cache.request_digest,
+        "input_digest": cache.input_digest,
+        "created_unix_seconds": SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or(0),
+        "normalized_request": resolved.normalized_request,
+        "resolved_inputs": resolved.resolved_inputs,
+        "preflight": preflight,
+        "artifacts": actual_artifacts,
+        "artifact_digests": artifact_digests_value(&actual_artifacts),
+        "run_result": run_result,
+    });
+    if let Some(parent) = Path::new(&record_path).parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            vec![to_error(
+                "E_OUTPUT_WRITE",
+                Some("/validation/cache_dir".into()),
+                err.to_string(),
+            )]
+        })?;
+    }
+    fs::write(
+        &record_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&record).unwrap_or_else(|_| "{}".into())
+        ),
+    )
+    .map_err(|err| {
+        vec![to_error(
+            "E_OUTPUT_WRITE",
+            Some("/validation/cache_dir".into()),
+            err.to_string(),
+        )]
+    })?;
+    cache.state = "written".into();
+    cache.artifact_paths = Some(actual_artifacts);
+    Ok(cache)
+}
+
+fn try_reuse_preflight_artifact_cache(
+    req: &BuildRequest,
+    resolved: &ResolvedBuildRequest,
+) -> Result<Option<(i32, Value)>, ErrorDetail> {
+    let cache_mode = validation_cache_mode(req)?;
+    if !matches!(cache_mode, "prefer" | "require") {
+        return Ok(None);
+    }
+    let cache = preflight_cache_summary(
+        &resolved.normalized_request,
+        &resolved.resolved_inputs,
+        cache_mode,
+        req.validation.cache_dir.as_deref(),
+        true,
+        "lookup",
+        None,
+    );
+    let Some(record_path) = cache.record_path.as_ref() else {
+        return Ok(None);
+    };
+    if !Path::new(record_path).exists() {
+        return Ok(None);
+    }
+    let record_text = fs::read_to_string(record_path).map_err(|err| {
+        to_error(
+            "E_PREFLIGHT_CACHE",
+            Some("/validation/cache_dir".into()),
+            format!(
+                "failed to read preflight cache record '{}': {err}",
+                record_path
+            ),
+        )
+    })?;
+    let record: Value = serde_json::from_str(&record_text).map_err(|err| {
+        to_error(
+            "E_PREFLIGHT_CACHE",
+            Some("/validation/cache_dir".into()),
+            format!("invalid preflight cache record '{}': {err}", record_path),
+        )
+    })?;
+    if record.get("schema_version").and_then(Value::as_str) != Some("warp-build.preflight-cache.v1")
+        || record.get("cache_key").and_then(Value::as_str) != Some(cache.cache_key.as_str())
+        || record.get("input_digest").and_then(Value::as_str) != Some(cache.input_digest.as_str())
+    {
+        return Ok(None);
+    }
+    let cached_artifacts: ArtifactRequest = serde_json::from_value(
+        record
+            .get("artifacts")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+    )
+    .map_err(|err| {
+        to_error(
+            "E_PREFLIGHT_CACHE",
+            Some("/validation/cache_dir".into()),
+            format!("preflight cache record has invalid artifacts: {err}"),
+        )
+    })?;
+    verify_cached_artifact_digests(
+        &cached_artifacts,
+        record.get("artifact_digests").unwrap_or(&Value::Null),
+    )?;
+    let final_artifacts = resolved_artifact_request(resolved);
+    materialize_cached_artifacts(&cached_artifacts, &final_artifacts)?;
+
+    let mut result = record.get("run_result").cloned().ok_or_else(|| {
+        to_error(
+            "E_PREFLIGHT_CACHE",
+            Some("/validation/cache_dir".into()),
+            "preflight cache record is missing run_result",
+        )
+    })?;
+    let cached_paths = artifact_path_map(&cached_artifacts);
+    let final_paths = artifact_path_map(&final_artifacts);
+    let replacements = cached_paths
+        .iter()
+        .filter_map(|(key, cached)| {
+            final_paths
+                .get(key)
+                .map(|final_path| (cached.clone(), final_path.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    replace_json_path_strings(&mut result, &replacements);
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "artifacts".into(),
+            serde_json::to_value(&final_artifacts).unwrap_or_else(|_| json!({})),
+        );
+        let warning = serde_json::to_value(to_warning(
+            "W_PREFLIGHT_CACHE_HIT",
+            Some("/validation/cache_dir".into()),
+            format!("reused preflight artifact cache '{}'", record_path),
+        ))
+        .unwrap_or_else(|_| json!({}));
+        if let Some(warnings) = object
+            .entry("warnings")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+        {
+            warnings.push(warning);
+        }
+    }
+    let code = if result.get("status").and_then(Value::as_str) == Some("salvaged") {
+        3
+    } else {
+        0
+    };
+    Ok(Some((code, result)))
 }
 
 fn topology_transfer_supported(bundle: &SourceBundle) -> bool {
@@ -3977,45 +5041,53 @@ fn token_junction_specs(
                 token
             ))
         })?;
-        let head_name = unit.junctions.get("head").ok_or_else(|| {
-            PackError::Invalid(format!(
-                "unit '{}' missing required 'head' junction binding",
-                token
-            ))
-        })?;
-        let tail_name = unit.junctions.get("tail").ok_or_else(|| {
-            PackError::Invalid(format!(
-                "unit '{}' missing required 'tail' junction binding",
-                token
-            ))
-        })?;
-        let head = bundle.junction_library.get(head_name).ok_or_else(|| {
-            PackError::Invalid(format!(
-                "junction '{}' missing from junction_library",
-                head_name
-            ))
-        })?;
-        let tail = bundle.junction_library.get(tail_name).ok_or_else(|| {
-            PackError::Invalid(format!(
-                "junction '{}' missing from junction_library",
-                tail_name
-            ))
-        })?;
+        let head = unit
+            .junctions
+            .get("head")
+            .map(|name| {
+                bundle.junction_library.get(name).ok_or_else(|| {
+                    PackError::Invalid(format!("junction '{}' missing from junction_library", name))
+                })
+            })
+            .transpose()?;
+        let tail = unit
+            .junctions
+            .get("tail")
+            .map(|name| {
+                bundle.junction_library.get(name).ok_or_else(|| {
+                    PackError::Invalid(format!("junction '{}' missing from junction_library", name))
+                })
+            })
+            .transpose()?;
         specs.insert(
             token.clone(),
             TokenJunctionSpec {
-                head_attach_atom: Some(selector_atom_name(&head.attach_atom)?),
+                head_attach_atom: head
+                    .map(|junction| selector_atom_name(&junction.attach_atom))
+                    .transpose()?,
                 head_leaving_atoms: head
-                    .leaving_atoms
-                    .iter()
-                    .map(selector_atom_name)
-                    .collect::<PackResult<Vec<_>>>()?,
-                tail_attach_atom: Some(selector_atom_name(&tail.attach_atom)?),
+                    .map(|junction| {
+                        junction
+                            .leaving_atoms
+                            .iter()
+                            .map(selector_atom_name)
+                            .collect::<PackResult<Vec<_>>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
+                tail_attach_atom: tail
+                    .map(|junction| selector_atom_name(&junction.attach_atom))
+                    .transpose()?,
                 tail_leaving_atoms: tail
-                    .leaving_atoms
-                    .iter()
-                    .map(selector_atom_name)
-                    .collect::<PackResult<Vec<_>>>()?,
+                    .map(|junction| {
+                        junction
+                            .leaving_atoms
+                            .iter()
+                            .map(selector_atom_name)
+                            .collect::<PackResult<Vec<_>>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
             },
         );
     }
@@ -4473,6 +5545,16 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
     if let Err(err) = validation_depth(req) {
         errors.push(err);
     }
+    if let Err(err) = validation_cache_mode(req) {
+        errors.push(err);
+    }
+    if !matches!(validation_cache_mode(req), Ok("off")) && req.validation.cache_dir.is_none() {
+        errors.push(to_error(
+            "E_INVALID_REQUEST",
+            Some("/validation/cache_dir".into()),
+            "validation.cache_dir is required when validation.cache_mode is not 'off'",
+        ));
+    }
     if let Err(err) = qc_policy(req) {
         errors.push(err);
     }
@@ -4784,46 +5866,6 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
                             "E_INVALID_TARGET",
                             Some("/target/sequence".into()),
                             format!("unsupported token adjacency '{}-{}'", window[0], window[1]),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    for token in &compiled_sequence {
-        if let Some(unit) = bundle.unit_library.get(token) {
-            for direction in ["head", "tail"] {
-                let Some(junction_name) = unit.junctions.get(direction) else {
-                    errors.push(to_error(
-                        "E_SOURCE_SCHEMA",
-                        Some(format!("unit_library.{token}.junctions.{direction}")),
-                        format!(
-                            "sequence token '{}' must declare '{}' junction",
-                            token, direction
-                        ),
-                    ));
-                    continue;
-                };
-                let Some(junction) = bundle.junction_library.get(junction_name) else {
-                    continue;
-                };
-                if let Err(err) = selector_atom_name(&junction.attach_atom) {
-                    errors.push(to_error(
-                        "E_SOURCE_SCHEMA",
-                        Some(format!(
-                            "junction_library.{junction_name}.attach_atom.selector"
-                        )),
-                        err.to_string(),
-                    ));
-                }
-                for (idx, selector) in junction.leaving_atoms.iter().enumerate() {
-                    if let Err(err) = selector_atom_name(selector) {
-                        errors.push(to_error(
-                            "E_SOURCE_SCHEMA",
-                            Some(format!(
-                                "junction_library.{junction_name}.leaving_atoms[{idx}].selector"
-                            )),
-                            err.to_string(),
                         ));
                     }
                 }
@@ -5174,6 +6216,18 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
             "artifacts.forcefield_ref requires bundle.artifacts.forcefield_ref to point to a transferable .ffxml",
         ));
     }
+    if req.artifacts.forcefield_ref.is_some() {
+        if let Some(path) = bundle.artifacts.forcefield_ref.as_ref() {
+            let resolved = resolve_relative_path(Path::new(&req.source_ref.bundle_path), path);
+            if let Some(reason) = forcefield_ref_placeholder_reason(Path::new(&resolved)) {
+                errors.push(to_error(
+                    "E_UNSUPPORTED_TARGET",
+                    Some("/artifacts/forcefield_ref".into()),
+                    format!("artifacts.forcefield_ref requires a non-placeholder .ffxml: {reason}"),
+                ));
+            }
+        }
+    }
     errors
 }
 
@@ -5383,6 +6437,18 @@ fn atom_vdw_radius(element: &str) -> f32 {
     }
 }
 
+fn max_scaled_vdw_cutoff(clash_scale: f32) -> f32 {
+    (2.0 * atom_vdw_radius("S") * clash_scale).max(1.0)
+}
+
+fn atom_position_index(positions: &[Vec3], cell_size: f32) -> SpatialHash {
+    let mut index = SpatialHash::with_capacity(cell_size, positions.len() * 2);
+    for (idx, position) in positions.iter().copied().enumerate() {
+        index.insert(idx, position);
+    }
+    index
+}
+
 fn max_atom_clash(output: &PackOutput, clash_scale: f32) -> f32 {
     let bonded = output
         .bonds
@@ -5390,22 +6456,31 @@ fn max_atom_clash(output: &PackOutput, clash_scale: f32) -> f32 {
         .map(|(a, b)| if a <= b { (*a, *b) } else { (*b, *a) })
         .collect::<BTreeSet<_>>();
     let mut max_clash = 0.0f32;
+    let positions = output
+        .atoms
+        .iter()
+        .map(|atom| atom.position)
+        .collect::<Vec<_>>();
+    let index = atom_position_index(&positions, max_scaled_vdw_cutoff(clash_scale));
     for left in 0..output.atoms.len() {
-        for right in (left + 1)..output.atoms.len() {
+        index.for_each_neighbor(output.atoms[left].position, |right| {
+            if right <= left {
+                return;
+            }
             if bonded.contains(&(left, right)) {
-                continue;
+                return;
             }
             let atom_left = &output.atoms[left];
             let atom_right = &output.atoms[right];
             if atom_left.resid == atom_right.resid {
-                continue;
+                return;
             }
             let cutoff = (atom_vdw_radius(&atom_left.element)
                 + atom_vdw_radius(&atom_right.element))
                 * clash_scale;
             let dist = atom_left.position.sub(atom_right.position).norm();
             max_clash = max_clash.max(cutoff - dist);
-        }
+        });
     }
     max_clash.max(0.0)
 }
@@ -5468,10 +6543,14 @@ fn collect_overlap_stats(
         return OverlapStats::default();
     }
     let mut stats = OverlapStats::default();
+    let index = atom_position_index(positions, max_scaled_vdw_cutoff(clash_scale));
     for left in 0..atoms.len() {
-        for right in (left + 1)..atoms.len() {
+        index.for_each_neighbor(positions[left], |right| {
+            if right <= left {
+                return;
+            }
             if context.excluded_pairs.contains(&(left, right)) {
-                continue;
+                return;
             }
             let cutoff = (atom_vdw_radius(&atoms[left].element)
                 + atom_vdw_radius(&atoms[right].element))
@@ -5479,7 +6558,7 @@ fn collect_overlap_stats(
             let distance = positions[left].sub(positions[right]).norm();
             let overlap = (cutoff - distance).max(0.0);
             if overlap <= 1.0e-4 {
-                continue;
+                return;
             }
             stats.pair_count += 1;
             stats.max_overlap = stats.max_overlap.max(overlap);
@@ -5491,7 +6570,7 @@ fn collect_overlap_stats(
                     overlap,
                 });
             }
-        }
+        });
     }
     stats
 }
@@ -5597,22 +6676,17 @@ fn merge_relax_report_with_followup_stage(
     }
 }
 
-fn synthetic_cleanup_should_run(report: &crate::polymer::BuildQcReport) -> bool {
-    !report.severe_bond_violations.is_empty()
-        || report.severe_nonbonded_clash_count > 0
-        || report
-            .min_nonbonded_distance_angstrom
-            .map(|value| value < 1.05)
-            .unwrap_or(false)
+fn output_positions(output: &PackOutput) -> Vec<Vec3> {
+    output.atoms.iter().map(|atom| atom.position).collect()
 }
 
 fn relax_synthetic_topology_output(
     output: &mut PackOutput,
     topology: &AmberTopology,
-    qc_context: &crate::polymer::BuildQcContext,
+    _qc_context: &crate::polymer::BuildQcContext,
     raw_coordinates: Option<String>,
 ) -> RelaxReport {
-    let steps_requested = 48usize;
+    let steps_requested = if output.atoms.len() <= 512 { 720 } else { 420 };
     let initial_positions = output
         .atoms
         .iter()
@@ -5626,8 +6700,7 @@ fn relax_synthetic_topology_output(
         &topology_context,
         false,
     );
-    let initial_report = crate::polymer::recompute_build_qc_report(output, qc_context);
-    if output.atoms.len() < 4 || !synthetic_cleanup_should_run(&initial_report) {
+    if output.atoms.len() < 4 {
         return RelaxReport {
             mode: "synthetic_bonded".into(),
             steps_requested,
@@ -5654,7 +6727,7 @@ fn relax_synthetic_topology_output(
             raw_coordinates,
         };
     }
-    let telemetry = minimize_synthetic_topology(output, topology, steps_requested, 0.35);
+    let telemetry = minimize_synthetic_topology(output, topology, steps_requested, 0.45);
     let final_positions = output
         .atoms
         .iter()
@@ -5691,6 +6764,73 @@ fn relax_synthetic_topology_output(
         rejected_line_search_steps: Some(telemetry.rejected_steps),
         termination_reason: Some(telemetry.termination_reason),
         raw_coordinates,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct GraphRelaxEdgeTarget {
+    parent_group: usize,
+    child_group: usize,
+    parent_idx: usize,
+    child_idx: usize,
+    target: f32,
+}
+
+fn restore_graph_edge_targets(
+    output: &mut PackOutput,
+    residue_atoms: &[Vec<usize>],
+    edge_targets: &[GraphRelaxEdgeTarget],
+    root_group: usize,
+    passes: usize,
+) {
+    for _ in 0..passes {
+        for target in edge_targets {
+            let current = output.atoms[target.child_idx]
+                .position
+                .sub(output.atoms[target.parent_idx].position);
+            let distance = current.norm().max(1.0e-6);
+            let stretch = distance - target.target;
+            if stretch.abs() <= 1.0e-3 {
+                continue;
+            }
+            let correction = current.scale(stretch / distance);
+            let parent_locked = target.parent_group == root_group;
+            let child_locked = target.child_group == root_group;
+            match (parent_locked, child_locked) {
+                (true, true) => {}
+                (true, false) => {
+                    if let Some(atom_indices) = residue_atoms.get(target.child_group) {
+                        for atom_idx in atom_indices {
+                            output.atoms[*atom_idx].position =
+                                output.atoms[*atom_idx].position.sub(correction);
+                        }
+                    }
+                }
+                (false, true) => {
+                    if let Some(atom_indices) = residue_atoms.get(target.parent_group) {
+                        for atom_idx in atom_indices {
+                            output.atoms[*atom_idx].position =
+                                output.atoms[*atom_idx].position.add(correction);
+                        }
+                    }
+                }
+                (false, false) => {
+                    let half = correction.scale(0.5);
+                    if let Some(atom_indices) = residue_atoms.get(target.parent_group) {
+                        for atom_idx in atom_indices {
+                            output.atoms[*atom_idx].position =
+                                output.atoms[*atom_idx].position.add(half);
+                        }
+                    }
+                    if let Some(atom_indices) = residue_atoms.get(target.child_group) {
+                        for atom_idx in atom_indices {
+                            output.atoms[*atom_idx].position =
+                                output.atoms[*atom_idx].position.sub(half);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5784,9 +6924,16 @@ fn relax_graph_spring_output(
                 .norm()
                 .max(0.9)
                 .min(step_length.max(1.5));
-            Some((parent_group, child_group, parent_idx, child_idx, target))
+            Some(GraphRelaxEdgeTarget {
+                parent_group,
+                child_group,
+                parent_idx,
+                child_idx,
+                target,
+            })
         })
         .collect::<Vec<_>>();
+    let restore_edge_targets = !plan.graph_has_cycle;
     let root_resid = plan
         .nodes
         .iter()
@@ -5811,26 +6958,35 @@ fn relax_graph_spring_output(
             })
             .collect::<Vec<_>>();
         let mut deltas = vec![Vec3::new(0.0, 0.0, 0.0); residue_atoms.len()];
-        for &(parent_group, child_group, parent_idx, child_idx, target) in &edge_targets {
-            if parent_group >= centers.len() || child_group >= centers.len() {
+        for target in &edge_targets {
+            if target.parent_group >= centers.len() || target.child_group >= centers.len() {
                 continue;
             }
-            let diff = output.atoms[child_idx]
+            let diff = output.atoms[target.child_idx]
                 .position
-                .sub(output.atoms[parent_idx].position);
+                .sub(output.atoms[target.parent_idx].position);
             let dist = diff.norm().max(1.0e-4);
             let dir = diff.scale(1.0 / dist);
-            let stretch = dist - target;
+            let stretch = dist - target.target;
             let correction = dir.scale(0.18 * stretch);
-            deltas[parent_group] = deltas[parent_group].add(correction);
-            deltas[child_group] = deltas[child_group].sub(correction);
+            deltas[target.parent_group] = deltas[target.parent_group].add(correction);
+            deltas[target.child_group] = deltas[target.child_group].sub(correction);
         }
+        let positions = output
+            .atoms
+            .iter()
+            .map(|atom| atom.position)
+            .collect::<Vec<_>>();
+        let atom_index = atom_position_index(&positions, max_scaled_vdw_cutoff(clash_scale));
         for left in 0..output.atoms.len() {
-            for right in (left + 1)..output.atoms.len() {
+            atom_index.for_each_neighbor(output.atoms[left].position, |right| {
+                if right <= left {
+                    return;
+                }
                 let atom_left = &output.atoms[left];
                 let atom_right = &output.atoms[right];
                 if atom_left.resid == atom_right.resid {
-                    continue;
+                    return;
                 }
                 let left_group = atom_left.resid.max(1) as usize - 1;
                 let right_group = atom_right.resid.max(1) as usize - 1;
@@ -5840,13 +6996,13 @@ fn relax_graph_spring_output(
                 let diff = atom_right.position.sub(atom_left.position);
                 let dist = diff.norm().max(1.0e-4);
                 if dist >= cutoff {
-                    continue;
+                    return;
                 }
                 let dir = diff.scale(1.0 / dist);
                 let push = dir.scale(0.12 * (cutoff - dist));
                 deltas[left_group] = deltas[left_group].sub(push);
                 deltas[right_group] = deltas[right_group].add(push);
-            }
+            });
         }
         for (resid_idx, atom_indices) in residue_atoms.iter().enumerate() {
             if resid_idx + 1 == root_resid {
@@ -5868,10 +7024,28 @@ fn relax_graph_spring_output(
         for atom in &mut output.atoms {
             atom.position = atom.position.sub(shift);
         }
+        if restore_edge_targets {
+            restore_graph_edge_targets(
+                output,
+                &residue_atoms,
+                &edge_targets,
+                root_resid.saturating_sub(1),
+                4,
+            );
+        }
         steps_executed = step_idx + 1;
         if max_atom_clash(output, clash_scale) <= 1.0e-2 {
             break;
         }
+    }
+    if restore_edge_targets {
+        restore_graph_edge_targets(
+            output,
+            &residue_atoms,
+            &edge_targets,
+            root_resid.saturating_sub(1),
+            24,
+        );
     }
     let final_positions = output
         .atoms
@@ -6548,19 +7722,9 @@ fn run_internal_cleanup_pipeline(
     built: &mut crate::polymer::PolymerBuiltArtifact,
     prepared: &PreparedBuildExecution,
     conformation_mode: &str,
-    parameter_source: &str,
-    source_coordinates: &str,
-    source_charge_manifest: Option<&str>,
-) -> (Option<RelaxReport>, u64, Option<String>) {
-    let stage_initial_positions = built
-        .output
-        .atoms
-        .iter()
-        .map(|atom| atom.position)
-        .collect::<Vec<_>>();
+) -> (Option<RelaxReport>, u64) {
     let mut cleanup_elapsed_ms = 0u64;
-    let mut cleanup_warning = None;
-    let mut cleanup_report = if matches!(conformation_mode, "random_walk" | "ensemble") {
+    let cleanup_report = if matches!(conformation_mode, "random_walk" | "ensemble") {
         let cleanup_started = Instant::now();
         let report = relax_built_output(
             &mut built.output,
@@ -6577,48 +7741,63 @@ fn run_internal_cleanup_pipeline(
     if cleanup_report.is_some() {
         built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
     }
-    if parameter_source == "synthetic_pdb" && synthetic_cleanup_should_run(&built.qc_report) {
-        match build_polymer_synthetic_uff_topology(
-            built,
-            Path::new(source_coordinates),
-            source_charge_manifest.map(Path::new),
-        ) {
-            Ok(topology) => {
-                let synthetic_started = Instant::now();
-                let followup = relax_synthetic_topology_output(
+    (cleanup_report, cleanup_elapsed_ms)
+}
+
+fn run_synthetic_topology_cleanup_stage(
+    built: &mut crate::polymer::PolymerBuiltArtifact,
+    source_coordinates: &str,
+    source_charge_manifest: Option<&str>,
+) -> (Option<RelaxReport>, u64, Option<String>) {
+    match build_polymer_synthetic_uff_topology(
+        built,
+        Path::new(source_coordinates),
+        source_charge_manifest.map(Path::new),
+    ) {
+        Ok(topology) => {
+            let stage_initial_positions = output_positions(&built.output);
+            let synthetic_started = Instant::now();
+            let mut report = relax_synthetic_topology_output(
+                &mut built.output,
+                &topology,
+                &built.qc_context,
+                None,
+            );
+            let mut qc_after_synthetic =
+                recompute_build_qc_report(&built.output, &built.qc_context);
+            if report.final_overlap_pairs > 0 || qc_after_synthetic.severe_nonbonded_clash_count > 0
+            {
+                let fallback = relax_targeted_steric_output(
                     &mut built.output,
-                    &topology,
-                    &built.qc_context,
+                    &RelaxSpec {
+                        mode: "targeted_steric".into(),
+                        steps: Some(96),
+                        step_scale: Some(0.35),
+                        clash_scale: Some(0.9),
+                    },
                     None,
                 );
-                cleanup_elapsed_ms =
-                    cleanup_elapsed_ms.saturating_add(elapsed_ms(synthetic_started));
-                let final_positions = built
-                    .output
-                    .atoms
-                    .iter()
-                    .map(|atom| atom.position)
-                    .collect::<Vec<_>>();
-                cleanup_report = Some(if let Some(primary) = cleanup_report.take() {
-                    merge_relax_report_with_followup_stage(
-                        primary,
-                        followup,
-                        &stage_initial_positions,
-                        &final_positions,
-                    )
-                } else {
-                    followup
-                });
-                built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
+                let final_positions = output_positions(&built.output);
+                report = merge_relax_report_with_followup_stage(
+                    report,
+                    fallback,
+                    &stage_initial_positions,
+                    &final_positions,
+                );
+                qc_after_synthetic = recompute_build_qc_report(&built.output, &built.qc_context);
             }
-            Err(err) => {
-                cleanup_warning = Some(format!(
-                    "synthetic bonded cleanup skipped because synthetic topology could not be built: {err}"
-                ));
-            }
+            let elapsed = elapsed_ms(synthetic_started);
+            built.qc_report = qc_after_synthetic;
+            (Some(report), elapsed, None)
         }
+        Err(err) => (
+            None,
+            0,
+            Some(format!(
+                "synthetic bonded cleanup skipped because synthetic topology could not be built: {err}"
+            )),
+        ),
     }
-    (cleanup_report, cleanup_elapsed_ms, cleanup_warning)
 }
 
 fn bond_adjacency(atom_count: usize, bonds: &[(usize, usize)]) -> Vec<Vec<usize>> {
@@ -7465,29 +8644,29 @@ pub fn example_bundle() -> Value {
         "provenance": {},
         "unit_library": {
             "H": {
-                "display_name": "PMMA head cap",
-                "junctions": {"head": "pmma_head_cap", "tail": "pmma_head_cap"},
+                "display_name": "Example head cap",
+                "junctions": {"head": "example_head_cap", "tail": "example_head_cap"},
                 "template_resname": "HDA"
             },
             "A": {
-                "display_name": "PMMA repeat unit",
-                "junctions": {"head": "pmma_head", "tail": "pmma_tail"},
+                "display_name": "Example repeat unit",
+                "junctions": {"head": "example_head", "tail": "example_tail"},
                 "template_resname": "RPT"
             },
             "B": {
-                "display_name": "PMMA alternate repeat unit",
-                "junctions": {"head": "pmma_head", "tail": "pmma_tail"},
+                "display_name": "Example alternate repeat unit",
+                "junctions": {"head": "example_head", "tail": "example_tail"},
                 "template_resname": "RPT"
             },
             "T": {
-                "display_name": "PMMA tail cap",
-                "junctions": {"head": "pmma_tail_cap", "tail": "pmma_tail_cap"},
+                "display_name": "Example tail cap",
+                "junctions": {"head": "example_tail_cap", "tail": "example_tail_cap"},
                 "template_resname": "TLA"
             }
         },
         "motif_library": {
             "M2": {
-                "display_name": "PMMA dimer motif",
+                "display_name": "Example dimer motif",
                 "root_node_id": "m1",
                 "nodes": [
                     {"id": "m1", "token": "A"},
@@ -7503,28 +8682,28 @@ pub fn example_bundle() -> Value {
             }
         },
         "junction_library": {
-            "pmma_head_cap": {
+            "example_head_cap": {
                 "attach_atom": {"scope": "unit", "selector": "name C1"},
                 "leaving_atoms": [],
                 "bond_order": 1,
                 "anchor_atoms": [{"scope": "unit", "selector": "name C1"}],
                 "notes": "Head-cap junction. attach_atom is retained and bonded to the next unit. anchor_atoms mark nearby atoms that preserve local junction orientation."
             },
-            "pmma_head": {
+            "example_head": {
                 "attach_atom": {"scope": "unit", "selector": "name C2"},
                 "leaving_atoms": [],
                 "bond_order": 1,
                 "anchor_atoms": [{"scope": "unit", "selector": "name C2"}],
                 "notes": "Repeat-unit head junction. Use leaving_atoms for atoms removed before the new bond is created."
             },
-            "pmma_tail": {
+            "example_tail": {
                 "attach_atom": {"scope": "unit", "selector": "name C2"},
                 "leaving_atoms": [],
                 "bond_order": 1,
                 "anchor_atoms": [{"scope": "unit", "selector": "name C2"}],
                 "notes": "Repeat-unit tail junction. attach_atom names the retained bonding atom; anchor_atoms help orient the residue around that junction."
             },
-            "pmma_tail_cap": {
+            "example_tail_cap": {
                 "attach_atom": {"scope": "unit", "selector": "name C3"},
                 "leaving_atoms": [],
                 "bond_order": 1,
@@ -7596,6 +8775,15 @@ pub fn write_example_bundle(path: &str) -> Result<Value, String> {
 }
 
 pub fn example_request_for_bundle(mode: &str, bundle_path: &str) -> Value {
+    let bundle_id = load_bundle(Path::new(bundle_path))
+        .map(|bundle| bundle.bundle_id)
+        .unwrap_or_else(|_| EXAMPLE_BUNDLE_ID.into());
+    let output_prefix = example_artifact_prefix(&bundle_id);
+    let request_id = if bundle_id == EXAMPLE_BUNDLE_ID {
+        "polymer-build-50mer-001".to_string()
+    } else {
+        format!("{output_prefix}-build-001")
+    };
     let (target, realization) = match mode {
         "sequence" => (
             json!({
@@ -7632,6 +8820,19 @@ pub fn example_request_for_bundle(mode: &str, bundle_path: &str) -> Value {
                 "total_units": 50,
                 "termini": {"head": "default", "tail": "default"},
                 "stereochemistry": {"mode": "atactic"}
+            }),
+            json!({
+                "conformation_mode": "random_walk",
+                "seed": 12345
+            }),
+        ),
+        "random_walk" => (
+            json!({
+                "mode": "linear_homopolymer",
+                "repeat_unit": "A",
+                "n_repeat": 50,
+                "termini": {"head": "default", "tail": "default"},
+                "stereochemistry": {"mode": "syndiotactic"}
             }),
             json!({
                 "conformation_mode": "random_walk",
@@ -7755,21 +8956,22 @@ pub fn example_request_for_bundle(mode: &str, bundle_path: &str) -> Value {
                 "stereochemistry": {"mode": "syndiotactic"}
             }),
             json!({
-                "conformation_mode": "random_walk",
+                "conformation_mode": "aligned",
+                "alignment_axis": "z",
                 "seed": 12345
             }),
         ),
     };
     let ensemble_manifest = if mode == "ensemble" {
-        Some("pmma_50mer.ensemble.json")
+        Some(format!("{output_prefix}.ensemble.json"))
     } else {
         None
     };
     json!({
         "schema_version": BUILD_SCHEMA_VERSION,
-        "request_id": "pmma-build-50mer-001",
+        "request_id": request_id,
         "source_ref": {
-            "bundle_id": EXAMPLE_BUNDLE_ID,
+            "bundle_id": bundle_id,
             "bundle_path": bundle_path,
         },
         "target": target,
@@ -7804,17 +9006,56 @@ pub fn example_request_for_bundle(mode: &str, bundle_path: &str) -> Value {
             "depth": "deep"
         },
         "artifacts": {
-            "coordinates": "pmma_50mer.pdb",
-            "raw_coordinates": "pmma_50mer.raw.pdb",
-            "build_manifest": "pmma_50mer.build.json",
-            "charge_manifest": "pmma_50mer.charge.json",
-            "inpcrd": "pmma_50mer.inpcrd",
-            "topology": "pmma_50mer.prmtop",
-            "topology_graph": "pmma_50mer.topology.json",
-            "ensemble_manifest": ensemble_manifest,
-            "forcefield_ref": "pmma_50mer.ffxml"
+            "coordinates": format!("{output_prefix}.pdb"),
+            "raw_coordinates": format!("{output_prefix}.raw.pdb"),
+            "build_manifest": format!("{output_prefix}.build.json"),
+            "charge_manifest": format!("{output_prefix}.charge.json"),
+            "inpcrd": format!("{output_prefix}.inpcrd"),
+            "topology": format!("{output_prefix}.prmtop"),
+            "topology_graph": format!("{output_prefix}.topology.json"),
+            "ensemble_manifest": ensemble_manifest
         }
     })
+}
+
+fn example_artifact_prefix(bundle_id: &str) -> String {
+    if bundle_id == EXAMPLE_BUNDLE_ID {
+        return "polymer_50mer".into();
+    }
+    let mut stem = sanitize_artifact_stem(bundle_id);
+    for suffix in [
+        "_param_bundle_v1",
+        "_fixture_bundle_v1",
+        "_bundle_v1",
+        "_bundle",
+    ] {
+        if let Some(stripped) = stem.strip_suffix(suffix) {
+            stem = stripped.to_string();
+            break;
+        }
+    }
+    if stem.is_empty() {
+        stem = "polymer".into();
+    }
+    format!("{stem}_50mer")
+}
+
+fn sanitize_artifact_stem(value: &str) -> String {
+    let mut stem = String::new();
+    let mut last_was_separator = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            stem.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator && !stem.is_empty() {
+            stem.push('_');
+            last_was_separator = true;
+        }
+    }
+    while stem.ends_with('_') {
+        stem.pop();
+    }
+    stem
 }
 
 pub fn example_request(mode: &str) -> Value {
@@ -7846,6 +9087,8 @@ pub fn capabilities() -> Value {
         "supported_termini_policies": SUPPORTED_TERMINI_POLICIES,
         "supported_validation_depths": ["shallow", "deep"],
         "default_validation_depth": "deep",
+        "supported_validation_cache_modes": ["off", "record", "prefer", "require"],
+        "default_validation_cache_mode": "off",
         "supported_qc_policies": ["strict", "salvage"],
         "artifact_outputs": [
             "coordinates",
@@ -7864,7 +9107,7 @@ pub fn capabilities() -> Value {
             "raw_coordinates": "optional pre-relax snapshot when realization.relax is enabled",
             "built_solute_debug": "*_built_solute.pdb may be staged during execution; treat it as a recovery/debug artifact, not the final contract output",
             "topology_transfer_requirement": "artifacts.topology auto-derives a .prmtop output; transferable source .prmtop and validated ffxml fallback take precedence when the training source is unreliable, otherwise warp-build emits a synthetic UFF-like minimizer topology",
-            "forcefield_transfer_requirement": "artifacts.forcefield_ref requires bundle.artifacts.forcefield_ref to reference a transferable .ffxml",
+            "forcefield_transfer_requirement": "artifacts.forcefield_ref requires bundle.artifacts.forcefield_ref to reference a transferable, non-placeholder .ffxml",
         },
         "junction_selector_semantics": {
             "attach_atom": "retained atom on the unit that forms the new inter-unit bond",
@@ -7875,6 +9118,7 @@ pub fn capabilities() -> Value {
         "agent_contract": {
             "machine_readable_errors": true,
             "deterministic_seeded_output": true,
+            "preflight_artifact_cache": true,
             "streaming_events": true,
             "preferred_handoff": ["build_manifest", "charge_manifest", "topology", "topology_graph"]
         },
@@ -7910,37 +9154,56 @@ pub fn capabilities() -> Value {
 
 pub fn inspect_source_json(path: &str) -> (i32, Value) {
     match load_bundle(Path::new(path)) {
-        Ok(bundle) => (
-            0,
-            json!({
-                "status": "ok",
-                "bundle_id": bundle.bundle_id,
-                "schema_version": bundle.schema_version,
-                "training_context": bundle.training_context,
-                "supported_target_modes": bundle.capabilities.supported_target_modes,
-                "supported_conformation_modes": bundle.capabilities.supported_conformation_modes,
-                "supported_tacticity_modes": bundle.capabilities.supported_tacticity_modes,
-                "supported_termini_policies": bundle.capabilities.supported_termini_policies,
-                "sequence_token_support": bundle.capabilities.sequence_token_support,
-                "charge_transfer_supported": bundle.capabilities.charge_transfer_supported,
-                "topology_transfer_supported": topology_transfer_supported(&bundle),
-                "artifact_contract": {
-                    "coordinates": "strict mode writes accepted coordinates after QC passes; salvage mode may emit non-final coordinates with acceptance_state=salvaged",
-                    "raw_coordinates": "optional pre-relax snapshot when realization.relax is enabled",
-                    "built_solute_debug": "*_built_solute.pdb may be staged during execution; treat it as a recovery/debug artifact, not the final contract output",
-                    "topology_transfer_requirement": "artifacts.topology auto-derives a .prmtop output; transferable source .prmtop and validated ffxml fallback take precedence when the training source is unreliable, otherwise warp-build emits a synthetic UFF-like minimizer topology",
-                    "forcefield_transfer_requirement": "artifacts.forcefield_ref requires bundle.artifacts.forcefield_ref to reference a transferable .ffxml",
-                },
-                "junction_selector_semantics": {
-                    "attach_atom": "retained atom on the unit that forms the new inter-unit bond",
-                    "leaving_atoms": "atoms removed from the unit before the new bond is created",
-                    "anchor_atoms": "orientation hints near the junction; they do not create bonds by themselves",
-                },
-                "unit_tokens": bundle.unit_library.keys().cloned().collect::<Vec<_>>(),
-                "motif_tokens": bundle.motif_library.keys().cloned().collect::<Vec<_>>(),
-                "artifacts": bundle.artifacts,
-            }),
-        ),
+        Ok(bundle) => {
+            let (artifact_errors, artifact_warnings) =
+                inspect_source_artifacts(Path::new(path), &bundle);
+            let status = if artifact_errors.is_empty() {
+                "ok"
+            } else {
+                "error"
+            };
+            let code = if artifact_errors.is_empty() { 0 } else { 2 };
+            let topology_supported = topology_transfer_supported(&bundle);
+            let unit_tokens = bundle.unit_library.keys().cloned().collect::<Vec<_>>();
+            let motif_tokens = bundle.motif_library.keys().cloned().collect::<Vec<_>>();
+            (
+                code,
+                json!({
+                    "status": status,
+                    "bundle_id": bundle.bundle_id,
+                    "schema_version": bundle.schema_version,
+                    "training_context": bundle.training_context,
+                    "supported_target_modes": bundle.capabilities.supported_target_modes,
+                    "supported_conformation_modes": bundle.capabilities.supported_conformation_modes,
+                    "supported_tacticity_modes": bundle.capabilities.supported_tacticity_modes,
+                    "supported_termini_policies": bundle.capabilities.supported_termini_policies,
+                    "sequence_token_support": bundle.capabilities.sequence_token_support,
+                    "charge_transfer_supported": bundle.capabilities.charge_transfer_supported,
+                    "topology_transfer_supported": topology_supported,
+                    "artifact_validation": {
+                        "valid": artifact_errors.is_empty(),
+                        "checked": ["source_coordinates", "source_topology_ref", "source_charge_manifest", "forcefield_ref", "junction_selectors"],
+                    },
+                    "artifact_contract": {
+                        "coordinates": "strict mode writes accepted coordinates after QC passes; salvage mode may emit non-final coordinates with acceptance_state=salvaged",
+                        "raw_coordinates": "optional pre-relax snapshot when realization.relax is enabled",
+                        "built_solute_debug": "*_built_solute.pdb may be staged during execution; treat it as a recovery/debug artifact, not the final contract output",
+                        "topology_transfer_requirement": "artifacts.topology auto-derives a .prmtop output; transferable source .prmtop and validated ffxml fallback take precedence when the training source is unreliable, otherwise warp-build emits a synthetic UFF-like minimizer topology",
+                        "forcefield_transfer_requirement": "artifacts.forcefield_ref requires bundle.artifacts.forcefield_ref to reference a transferable, non-placeholder .ffxml",
+                    },
+                    "junction_selector_semantics": {
+                        "attach_atom": "retained atom on the unit that forms the new inter-unit bond",
+                        "leaving_atoms": "atoms removed from the unit before the new bond is created",
+                        "anchor_atoms": "orientation hints near the junction; they do not create bonds by themselves",
+                    },
+                    "unit_tokens": unit_tokens,
+                    "motif_tokens": motif_tokens,
+                    "artifacts": bundle.artifacts,
+                    "errors": artifact_errors,
+                    "warnings": artifact_warnings,
+                }),
+            )
+        }
         Err(err) => (2, json!({"status": "error", "errors": [err]})),
     }
 }
@@ -8027,18 +9290,57 @@ pub fn validate_request_json(text: &str) -> (i32, Value) {
     ) {
         Ok(resolved) => match validation_depth(&normalized.request) {
             Ok("deep") => match preflight_build(&normalized.request, &bundle, &resolved) {
-                Ok(preflight) => (
-                    0,
-                    json!(ValidateEnvelope {
-                        schema_version: BUILD_SCHEMA_VERSION.into(),
-                        status: "ok".into(),
-                        valid: true,
-                        normalized_request: resolved.normalized_request,
-                        resolved_inputs: resolved.resolved_inputs,
-                        preflight,
-                        warnings: resolved.warnings,
-                    }),
-                ),
+                Ok(preflight) => {
+                    let cache_mode = validation_cache_mode(&normalized.request).unwrap_or("off");
+                    let mut preflight_cache = preflight_cache_summary(
+                        &resolved.normalized_request,
+                        &resolved.resolved_inputs,
+                        cache_mode,
+                        normalized.request.validation.cache_dir.as_deref(),
+                        true,
+                        if cache_mode == "off" {
+                            "disabled"
+                        } else {
+                            "ready"
+                        },
+                        None,
+                    );
+                    if cache_mode != "off" {
+                        match materialize_preflight_artifact_cache(
+                            &normalized.request,
+                            &resolved,
+                            &preflight,
+                            preflight_cache,
+                        ) {
+                            Ok(cache) => preflight_cache = cache,
+                            Err(errors) => {
+                                return (
+                                    2,
+                                    json!({
+                                        "schema_version": BUILD_SCHEMA_VERSION,
+                                        "status": "error",
+                                        "valid": false,
+                                        "errors": errors,
+                                        "warnings": resolved.warnings,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                    (
+                        0,
+                        json!(ValidateEnvelope {
+                            schema_version: BUILD_SCHEMA_VERSION.into(),
+                            status: "ok".into(),
+                            valid: true,
+                            normalized_request: resolved.normalized_request,
+                            resolved_inputs: resolved.resolved_inputs,
+                            preflight_cache,
+                            preflight,
+                            warnings: resolved.warnings,
+                        }),
+                    )
+                }
                 Err(errors) => (
                     2,
                     json!({
@@ -8050,18 +9352,35 @@ pub fn validate_request_json(text: &str) -> (i32, Value) {
                     }),
                 ),
             },
-            Ok("shallow") => (
-                0,
-                json!(ValidateEnvelope {
-                    schema_version: BUILD_SCHEMA_VERSION.into(),
-                    status: "ok".into(),
-                    valid: true,
-                    normalized_request: resolved.normalized_request,
-                    resolved_inputs: resolved.resolved_inputs,
-                    preflight: shallow_preflight_summary(),
-                    warnings: resolved.warnings,
-                }),
-            ),
+            Ok("shallow") => {
+                let cache_mode = validation_cache_mode(&normalized.request).unwrap_or("off");
+                let preflight_cache = preflight_cache_summary(
+                    &resolved.normalized_request,
+                    &resolved.resolved_inputs,
+                    cache_mode,
+                    normalized.request.validation.cache_dir.as_deref(),
+                    false,
+                    if cache_mode == "off" {
+                        "disabled"
+                    } else {
+                        "not_recorded"
+                    },
+                    Some("shallow_validation"),
+                );
+                (
+                    0,
+                    json!(ValidateEnvelope {
+                        schema_version: BUILD_SCHEMA_VERSION.into(),
+                        status: "ok".into(),
+                        valid: true,
+                        normalized_request: resolved.normalized_request,
+                        resolved_inputs: resolved.resolved_inputs,
+                        preflight_cache,
+                        preflight: shallow_preflight_summary(),
+                        warnings: resolved.warnings,
+                    }),
+                )
+            }
             Ok(_) => unreachable!(),
             Err(err) => (
                 2,
@@ -8154,6 +9473,82 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         },
         stream_ndjson,
     );
+    let mut cache_warnings = Vec::new();
+    match try_reuse_preflight_artifact_cache(&req, &resolved) {
+        Ok(Some((code, value))) => {
+            if let Some(path) = value
+                .get("artifacts")
+                .and_then(|artifacts| artifacts.get("build_manifest"))
+                .and_then(Value::as_str)
+            {
+                emit(
+                    &RunEvent::ManifestWritten {
+                        request_id: req.request_id.clone(),
+                        path: path.to_string(),
+                    },
+                    stream_ndjson,
+                );
+            }
+            if let Ok(artifacts) = serde_json::from_value::<ArtifactRequest>(
+                value.get("artifacts").cloned().unwrap_or_else(|| json!({})),
+            ) {
+                emit(
+                    &RunEvent::RunCompleted {
+                        request_id: req.request_id.clone(),
+                        artifacts,
+                    },
+                    stream_ndjson,
+                );
+            }
+            return (code, value);
+        }
+        Ok(None) => {
+            if matches!(validation_cache_mode(&req), Ok("require")) {
+                let cache = preflight_cache_summary(
+                    &resolved.normalized_request,
+                    &resolved.resolved_inputs,
+                    "require",
+                    req.validation.cache_dir.as_deref(),
+                    true,
+                    "lookup",
+                    None,
+                );
+                let detail = to_error(
+                    "E_PREFLIGHT_CACHE",
+                    Some("/validation/cache_dir".into()),
+                    format!(
+                        "required preflight artifact cache was not found or did not match this request; expected record_path={:?} input_digest={}",
+                        cache.record_path, cache.input_digest
+                    ),
+                );
+                emit(
+                    &run_failed_event(&req.request_id, detail.clone(), None),
+                    stream_ndjson,
+                );
+                return (
+                    4,
+                    json!(error_envelope(&req.request_id, vec![detail], vec![], None)),
+                );
+            }
+        }
+        Err(err) => {
+            if matches!(validation_cache_mode(&req), Ok("require")) {
+                emit(
+                    &run_failed_event(&req.request_id, err.clone(), None),
+                    stream_ndjson,
+                );
+                return (
+                    4,
+                    json!(error_envelope(&req.request_id, vec![err], vec![], None)),
+                );
+            }
+            cache_warnings.push(to_warning(
+                "W_PREFLIGHT_CACHE_MISS",
+                Some("/validation/cache_dir".into()),
+                err.message,
+            ));
+        }
+    }
     emit(
         &RunEvent::PhaseStarted {
             request_id: req.request_id.clone(),
@@ -8213,6 +9608,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     let topology_path = resolved.artifacts.topology.clone();
     let forcefield_output_path = resolved.artifacts.forcefield_ref.clone();
     let mut runtime_warnings = resolved.warnings.clone();
+    runtime_warnings.extend(cache_warnings);
     let mut any_salvaged = false;
     let ensemble_size = if req.realization.conformation_mode == "ensemble" {
         req.realization.ensemble_size.unwrap_or(4)
@@ -8279,20 +9675,16 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                 );
             }
         };
-        let (internal_cleanup_report, cleanup_elapsed_ms, cleanup_warning) =
-            run_internal_cleanup_pipeline(
-                &mut built,
-                &prepared,
-                &req.realization.conformation_mode,
-                &parameter_source_decision.parameter_source,
-                &source_coordinates,
-                source_charge_manifest.as_deref(),
-            );
+        let cleanup_initial_positions = output_positions(&built.output);
+        let defer_qc_until_synthetic_cleanup =
+            parameter_source_decision.parameter_source == "synthetic_pdb";
+        let (mut internal_cleanup_report, cleanup_elapsed_ms) = run_internal_cleanup_pipeline(
+            &mut built,
+            &prepared,
+            &req.realization.conformation_mode,
+        );
         timings_ms.solver_cleanup = timings_ms.solver_cleanup.saturating_add(cleanup_elapsed_ms);
-        if let Some(message) = cleanup_warning {
-            runtime_warnings.push(to_warning("W_SYNTHETIC_CLEANUP", None, message));
-        }
-        if internal_cleanup_report.is_some() {
+        if internal_cleanup_report.is_some() && !defer_qc_until_synthetic_cleanup {
             if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
                 if let Some(report) = built.solver_report.as_mut() {
                     report.termination_reason = "qc_failed".into();
@@ -8368,7 +9760,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         } else {
             None
         };
-        if relax_report.is_some() {
+        if relax_report.is_some() && !defer_qc_until_synthetic_cleanup {
             built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
             if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
                 let detail = to_error("E_RUNTIME_BUILD", None, err.to_string());
@@ -8412,12 +9804,88 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     );
                 }
             }
+        } else if relax_report.is_some() {
+            built.qc_report = recompute_build_qc_report(&built.output, &built.qc_context);
         }
         if req.realization.conformation_mode == "aligned" {
             rotate_output_along_axis(
                 &mut built.output,
                 req.realization.alignment_axis.as_deref().unwrap_or("z"),
             );
+        }
+        if parameter_source_decision.parameter_source == "synthetic_pdb" {
+            let (synthetic_report, synthetic_elapsed_ms, synthetic_warning) =
+                run_synthetic_topology_cleanup_stage(
+                    &mut built,
+                    &source_coordinates,
+                    source_charge_manifest.as_deref(),
+                );
+            timings_ms.solver_cleanup = timings_ms
+                .solver_cleanup
+                .saturating_add(synthetic_elapsed_ms);
+            if let Some(message) = synthetic_warning {
+                runtime_warnings.push(to_warning("W_SYNTHETIC_CLEANUP", None, message));
+            }
+            if let Some(followup) = synthetic_report {
+                let final_positions = output_positions(&built.output);
+                internal_cleanup_report =
+                    Some(if let Some(primary) = internal_cleanup_report.take() {
+                        merge_relax_report_with_followup_stage(
+                            primary,
+                            followup,
+                            &cleanup_initial_positions,
+                            &final_positions,
+                        )
+                    } else {
+                        followup
+                    });
+            }
+            if let Err(err) = ensure_build_qc_passes(&built.qc_report) {
+                if let Some(report) = built.solver_report.as_mut() {
+                    report.termination_reason = "qc_failed".into();
+                    report.hard_fail_reason = Some(err.to_string());
+                }
+                let detail = to_error("E_RUNTIME_BUILD", None, err.to_string());
+                let diagnostics = failure_diagnostics(
+                    "synthetic_topology_cleanup",
+                    Some(&built.qc_report),
+                    Some(&prepared.token_junctions),
+                    overlap_status_summary(
+                        Some(&built.output),
+                        internal_cleanup_report.as_ref(),
+                        relax_report.as_ref(),
+                    ),
+                    Some(built.path.to_string_lossy().to_string()),
+                    member_raw_path.clone(),
+                );
+                if skip_strict_qc {
+                    runtime_warnings.push(source_fallback_qc_warning(
+                        &parameter_source_decision.parameter_source,
+                        &detail,
+                    ));
+                } else if salvage_qc {
+                    any_salvaged = true;
+                    runtime_warnings.push(salvage_warning(&detail));
+                } else {
+                    emit(
+                        &run_failed_event(
+                            &req.request_id,
+                            detail.clone(),
+                            Some(diagnostics.clone()),
+                        ),
+                        stream_ndjson,
+                    );
+                    return (
+                        4,
+                        json!(error_envelope(
+                            &req.request_id,
+                            vec![detail],
+                            qc_failure_warnings(&built.path, member_raw_path.as_deref()),
+                            Some(diagnostics),
+                        )),
+                    );
+                }
+            }
         }
         for path in [
             built.path.to_string_lossy().to_string(),
@@ -8801,6 +10269,9 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         net_charge,
         any_salvaged,
         &parameter_source_decision,
+        &req.realization.conformation_mode,
+        &req.target.mode,
+        &built.qc_report,
     );
 
     ensure_parent(&resolved.artifacts.charge_manifest).ok();
@@ -9044,11 +10515,18 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         stream_ndjson,
     );
 
+    let result_status = if acceptance_state == "salvaged" {
+        "salvaged"
+    } else {
+        "ok"
+    };
+    let result_code = if acceptance_state == "salvaged" { 3 } else { 0 };
+
     (
-        0,
+        result_code,
         json!(SuccessEnvelope {
             schema_version: BUILD_SCHEMA_VERSION.into(),
-            status: "ok".into(),
+            status: result_status.into(),
             request_id: req.request_id,
             artifacts: ArtifactRequest {
                 coordinates: resolved.artifacts.coordinates,
@@ -9339,5 +10817,49 @@ mod tests {
                     .min_nonbonded_distance_angstrom
                     .unwrap_or(0.0)
         );
+    }
+
+    #[test]
+    fn synthetic_bonded_cleanup_runs_when_qc_is_green() {
+        let mut output = PackOutput {
+            atoms: vec![
+                test_atom("C1", "C", 1, Vec3::new(0.0, 0.0, 0.0)),
+                test_atom("C2", "C", 1, Vec3::new(2.2, 0.0, 0.0)),
+                test_atom("C3", "C", 2, Vec3::new(4.4, 0.0, 0.0)),
+                test_atom("C4", "C", 2, Vec3::new(6.6, 0.0, 0.0)),
+            ],
+            bonds: vec![(0, 1), (1, 2), (2, 3)],
+            box_size: [0.0, 0.0, 0.0],
+            ter_after: vec![3],
+            box_vectors: None,
+        };
+        let qc_context = crate::polymer::BuildQcContext {
+            inter_residue_bond_count: 1,
+            terminal_connectivity_consistent: true,
+            sequence_token_template_consistent: true,
+            bond_expectations: Vec::new(),
+        };
+        let topology = test_synthetic_topology();
+        let initial_report = recompute_build_qc_report(&output, &qc_context);
+        let initial_bond_error = (output.atoms[1]
+            .position
+            .sub(output.atoms[0].position)
+            .norm()
+            - 1.54)
+            .abs();
+        assert_eq!(initial_report.severe_nonbonded_clash_count, 0);
+        assert!(initial_report.severe_bond_violations.is_empty());
+
+        let report = relax_synthetic_topology_output(&mut output, &topology, &qc_context, None);
+        let final_bond_error = (output.atoms[1]
+            .position
+            .sub(output.atoms[0].position)
+            .norm()
+            - 1.54)
+            .abs();
+
+        assert_eq!(report.mode, "synthetic_bonded");
+        assert!(report.steps_executed > 0, "{report:#?}");
+        assert!(final_bond_error < initial_bond_error, "{report:#?}");
     }
 }

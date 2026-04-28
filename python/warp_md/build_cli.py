@@ -57,7 +57,7 @@ def build_parser(
     schema_cmd.add_argument("--out", help="optional output file path")
 
     example_cmd = sub.add_parser("example", help="print example build request")
-    example_cmd.add_argument("--mode", default="random_walk", help="example mode")
+    example_cmd.add_argument("--mode", default="aligned", help="example mode")
     example_cmd.add_argument("--bundle-path", default="source.bundle.json", help="bundle path to embed in the example")
     example_cmd.add_argument("--format", choices=["json", "yaml"], default="json", help="output format")
     example_cmd.add_argument("--json", action="store_true", help="alias for --format json")

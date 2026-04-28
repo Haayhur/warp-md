@@ -36,7 +36,7 @@ That split keeps:
 # Schema and examples
 warp-build schema --kind request
 warp-build example-bundle --out source.bundle.json
-warp-build example --mode random_walk --bundle-path source.bundle.json > request.json
+warp-build example --mode aligned --bundle-path source.bundle.json > request.json
 
 # Validate and run
 warp-build validate request.json
@@ -49,6 +49,22 @@ Validation defaults to deep geometry/QC preflight. Use an explicit shallow overr
 {"validation": {"depth": "shallow"}}
 ```
 
+Deep validate responses include `preflight_cache.cache_key`, `preflight_cache.request_digest`, and `preflight_cache.input_digest`. These identify the exact normalized request and the build inputs checked by preflight, so agents can correlate validate/run decisions deterministically.
+
+By default, validation does not write final build artifacts. Agents that intentionally want validate-to-run reuse can opt into an explicit artifact cache:
+
+```json
+{
+  "validation": {
+    "depth": "deep",
+    "cache_mode": "record",
+    "cache_dir": ".warp-build-cache"
+  }
+}
+```
+
+Then run with `cache_mode: "prefer"` to reuse a matching cache when available, or `cache_mode: "require"` to fail if the cache is absent or stale. Cache matching uses `input_digest`, which ignores artifact output destinations and validation cache controls.
+
 {% hint style="warning" %}
 `warp-build` is the public CLI wrapper. If the native builder binary is not on `PATH`, set `WARP_BUILD_BINARY` to the built `warp-build` executable.
 {% endhint %}
@@ -58,7 +74,7 @@ Validation defaults to deep geometry/QC preflight. Use an explicit shallow overr
 ```python
 from warp_md import build as wb
 
-request = wb.example_request("random_walk")
+request = wb.example_request("aligned")
 bundle = wb.example_bundle()
 caps = wb.capabilities()
 
@@ -86,7 +102,7 @@ A successful build emits:
 - charge handoff manifest
 - build manifest
 - topology graph
-- copied `ffxml` artifact when the source bundle provides `forcefield_ref`
+- copied `ffxml` artifact only when the source bundle provides a transferable, non-placeholder `forcefield_ref`
 - `prmtop` when the selected handoff path is exact-transfer, forcefield-backed, or synthetic minimizer-ready
 
 The build manifest is the canonical handoff artifact for downstream `warp-pack`.
@@ -95,7 +111,7 @@ Successful handoff tiers:
 
 - `md_ready`: transferable source topology + charge handoff available
 - `forcefield_backed`: training source was unreliable, validated `ffxml` fallback selected, production-capable topology emitted
-- `minimizable_synthetic`: trustworthy/risky training source, synthetic UFF-like topology emitted for downstream minimization
+- `minimizable_synthetic`: geometry-QC-clean build with synthetic UFF-like topology emitted for downstream minimization
 - `graph_bonded_only`: coordinates + `inpcrd` + `topology_graph`, but no topology-capable or charge-capable handoff
 
 ---
@@ -126,6 +142,22 @@ Common realization modes:
 - `aligned`
 - `ensemble`
 
+For the most deterministic production handoff tests, use `aligned` or `extended` for linear chains. These modes build an axis-biased zigzag chain and run a final synthetic-topology relaxation when emitting synthetic PRMTOP/INPCRD artifacts.
+
+`random_walk`, `star_polymer`, `branched_polymer`, and `polymer_graph` builds can also be reported as `minimizable_synthetic` when geometry QC is clean. The builder uses spatial-hash-backed residue-envelope self-avoidance and rejects folded-back placements that would create severe nonbonded overlaps. This contract means topology-loadable, no-overlap, downstream-minimizer-safe starting coordinates; it does not claim that the emitted coordinates are already at the same local minimum OpenMM or AmberTools would find.
+
+For optional downstream-force-field polishing, use:
+
+```bash
+python scripts/validation/polish_warp_build_openmm.py \
+  --topology outputs/chain.prmtop \
+  --inpcrd outputs/chain.inpcrd \
+  --out-pdb outputs/chain.openmm_minimized.pdb \
+  --report-json outputs/chain.openmm_minimized.json
+```
+
+This is intentionally outside the core `warp-build run` contract because it depends on OpenMM availability and uses downstream force-field semantics.
+
 ---
 
 ## Minimal Request
@@ -133,10 +165,10 @@ Common realization modes:
 ```json
 {
   "schema_version": "warp-build.agent.v1",
-  "request_id": "pmma-build-50mer-001",
+  "request_id": "polymer-build-50mer-001",
   "source_ref": {
-    "bundle_id": "pmma_param_bundle_v1",
-    "bundle_path": "pmma.bundle.json"
+    "bundle_id": "example_polymer_bundle_v1",
+    "bundle_path": "source.bundle.json"
   },
   "target": {
     "mode": "linear_homopolymer",
@@ -151,13 +183,13 @@ Common realization modes:
     }
   },
   "realization": {
-    "conformation_mode": "random_walk",
-    "seed": 12345
+    "conformation_mode": "aligned",
+    "alignment_axis": "z"
   },
   "artifacts": {
-    "coordinates": "outputs/pmma_50mer.pdb",
-    "build_manifest": "outputs/pmma_50mer.build.json",
-    "charge_manifest": "outputs/pmma_50mer.charge.json"
+    "coordinates": "outputs/polymer_50mer.pdb",
+    "build_manifest": "outputs/polymer_50mer.build.json",
+    "charge_manifest": "outputs/polymer_50mer.charge.json"
   }
 }
 ```
@@ -172,7 +204,7 @@ If you want best-effort recovery artifacts on QC failure instead of a hard error
 }
 ```
 
-Salvage writes non-final outputs and marks the build with `acceptance_state = "salvaged"`.
+Salvage writes non-final outputs, marks the build with `acceptance_state = "salvaged"`, returns `status = "salvaged"`, and exits nonzero so automation does not treat QC hard-fails as accepted MD-ready output.
 
 ---
 
@@ -192,6 +224,8 @@ Inspect a bundle before use:
 ```bash
 warp-build inspect-source source.bundle.json
 ```
+
+`inspect-source` validates referenced source artifacts and junction selectors against residue templates. Template/selector mismatches are reported before `validate` or `run`; placeholder `ffxml` files are warned and are not emitted as MD-ready force-field handoff artifacts.
 
 Deep validation now includes a training-source assessment and parameter-source selection step. The decision is surfaced in `preflight.parameter_source_decision`, the run summary, and the build manifest.
 
@@ -218,7 +252,7 @@ Once the chain is built, hand the manifest into `warp-pack`:
 {
   "schema_version": "warp-pack.agent.v1",
   "polymer_build": {
-    "build_manifest": "outputs/pmma_50mer.build.json"
+    "build_manifest": "outputs/polymer_50mer.build.json"
   },
   "environment": {
     "box": {

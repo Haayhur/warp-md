@@ -77,7 +77,7 @@ Minimal `warp-pack` handoff:
 {
   "version": "warp-pack.agent.v1",
   "polymer_build": {
-    "build_manifest": "outputs/pmma_50mer.build.json"
+    "build_manifest": "outputs/polymer_50mer.build.json"
   },
   "environment": {
     "box": {"mode": "padding", "padding_angstrom": 12.0, "shape": "cubic"},

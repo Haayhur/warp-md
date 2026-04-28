@@ -295,6 +295,11 @@ fn validate_supports_yaml_and_preserves_invalid_exit_code() {
         serde_yaml::from_slice(&valid_output.stdout).expect("parse yaml validate");
     assert_eq!(valid_payload["schema_version"], "warp-build.agent.v1");
     assert_eq!(valid_payload["preflight"]["executed"], true);
+    assert_eq!(valid_payload["preflight_cache"]["reusable"], true);
+    assert!(valid_payload["preflight_cache"]["cache_key"]
+        .as_str()
+        .unwrap()
+        .starts_with("warp-build-preflight-v1:"));
 
     let shallow_output = warp_build()
         .args(["validate", "--shallow"])
@@ -306,6 +311,11 @@ fn validate_supports_yaml_and_preserves_invalid_exit_code() {
     let shallow_payload: Value =
         serde_json::from_slice(&shallow_output.stdout).expect("parse json shallow validate");
     assert_eq!(shallow_payload["preflight"]["executed"], false);
+    assert_eq!(shallow_payload["preflight_cache"]["reusable"], false);
+    assert_eq!(
+        shallow_payload["preflight_cache"]["reason"],
+        "shallow_validation"
+    );
 
     let deep_output = warp_build()
         .args(["validate", "--deep"])
@@ -317,6 +327,10 @@ fn validate_supports_yaml_and_preserves_invalid_exit_code() {
     let deep_payload: Value =
         serde_json::from_slice(&deep_output.stdout).expect("parse json deep validate");
     assert_eq!(deep_payload["preflight"]["executed"], true);
+    assert_eq!(
+        deep_payload["preflight_cache"]["cache_key"],
+        valid_payload["preflight_cache"]["cache_key"]
+    );
 
     let invalid_request = temp_path("request_invalid.json");
     write_json(
@@ -365,14 +379,29 @@ fn example_bundle_out_materializes_runnable_example_flow() {
     assert!(dir.join("training_charge.json").exists());
 
     let request_output = warp_build()
-        .args(["example", "--mode", "random_walk", "--bundle-path"])
+        .args(["example", "--bundle-path"])
         .arg(&bundle)
         .output()
         .expect("run warp-build example");
     assert!(request_output.status.success(), "{request_output:?}");
+    let request_payload: Value =
+        serde_json::from_slice(&request_output.stdout).expect("parse example request");
+    assert_eq!(
+        request_payload["realization"]["conformation_mode"],
+        "aligned"
+    );
+    assert_eq!(
+        request_payload["source_ref"]["bundle_id"],
+        "example_polymer_bundle_v1"
+    );
+    assert_eq!(
+        request_payload["artifacts"]["coordinates"],
+        "polymer_50mer.pdb"
+    );
     fs::write(&request, &request_output.stdout).expect("write request");
 
     let validate_output = warp_build()
+        .current_dir(&dir)
         .args(["validate"])
         .arg(&request)
         .args(["--json"])
@@ -384,6 +413,7 @@ fn example_bundle_out_materializes_runnable_example_flow() {
     assert_eq!(validate_payload["status"], "ok");
 
     let run_output = warp_build()
+        .current_dir(&dir)
         .args(["run"])
         .arg(&request)
         .output()

@@ -46,7 +46,7 @@ def test_build_cli_example_bundle_out_uses_writer(monkeypatch, capsys, tmp_path)
 
     def fake_write_example_bundle(path):
         called["path"] = str(path)
-        return {"bundle_id": "pmma_param_bundle_v1"}
+        return {"bundle_id": "example_polymer_bundle_v1"}
 
     monkeypatch.setattr(build_contract, "write_example_bundle", fake_write_example_bundle)
 

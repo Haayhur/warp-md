@@ -55,7 +55,7 @@ def test_write_example_bundle_materializes_from_cli(monkeypatch, tmp_path: Path)
     out = tmp_path / "source.bundle.json"
 
     def fake_run(cmd, capture_output, text, check):  # type: ignore[override]
-        out.write_text(json.dumps({"bundle_id": "pmma_param_bundle_v1"}), encoding="utf-8")
+        out.write_text(json.dumps({"bundle_id": "example_polymer_bundle_v1"}), encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, str(out), "")
 
     monkeypatch.setattr(build_contract, "_native", lambda: None)
@@ -63,7 +63,7 @@ def test_write_example_bundle_materializes_from_cli(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     payload = build_contract.write_example_bundle(out)
-    assert payload["bundle_id"] == "pmma_param_bundle_v1"
+    assert payload["bundle_id"] == "example_polymer_bundle_v1"
 
 
 def test_capabilities_endpoints(monkeypatch) -> None:

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -629,7 +630,7 @@ pub(crate) fn parse_prmtop(path: &Path, n_atoms: usize) -> PackResult<AmberTopol
                 chunk[2].unsigned_abs() / 3,
                 chunk[3].unsigned_abs() / 3,
             ];
-            if chunk[2] < 0 || chunk[3] < 0 {
+            if chunk[2] < 0 {
                 impropers.push(entry);
                 improper_type_indices.push(chunk[4] as usize);
             } else {
@@ -883,14 +884,80 @@ fn inferred_impropers(adjacency: &[Vec<usize>]) -> Vec<[usize; 4]> {
     items
 }
 
+fn ordered_pair_indices(a: usize, b: usize) -> (usize, usize) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn base_nonbonded_exception_pairs(
+    bonds: &[(usize, usize)],
+    angles: &[[usize; 3]],
+) -> BTreeSet<(usize, usize)> {
+    let mut pairs = bonds
+        .iter()
+        .copied()
+        .map(|(a, b)| ordered_pair_indices(a, b))
+        .collect::<BTreeSet<_>>();
+    for angle in angles {
+        pairs.insert(ordered_pair_indices(angle[0], angle[2]));
+    }
+    pairs
+}
+
+fn signed_atom_index(atom_idx: usize, negative: bool) -> isize {
+    let value = (atom_idx * 3) as isize;
+    if negative && value != 0 {
+        -value
+    } else {
+        value
+    }
+}
+
+fn proper_dihedral_values(
+    entry: [usize; 4],
+    type_idx: usize,
+    suppress_end_group_interaction: bool,
+) -> [isize; 5] {
+    let mut torsion = entry;
+    if suppress_end_group_interaction && torsion[3] == 0 && torsion[0] != 0 {
+        torsion = [torsion[3], torsion[2], torsion[1], torsion[0]];
+    }
+    [
+        signed_atom_index(torsion[0], false),
+        signed_atom_index(torsion[1], false),
+        signed_atom_index(torsion[2], false),
+        signed_atom_index(torsion[3], suppress_end_group_interaction),
+        type_idx as isize,
+    ]
+}
+
+fn improper_dihedral_values(entry: [usize; 4], type_idx: usize) -> [isize; 5] {
+    let mut torsion = entry;
+    if torsion[2] == 0 && torsion[3] != 0 {
+        torsion.swap(2, 3);
+    }
+    [
+        signed_atom_index(torsion[0], false),
+        signed_atom_index(torsion[1], false),
+        signed_atom_index(torsion[2], true),
+        signed_atom_index(torsion[3], true),
+        type_idx as isize,
+    ]
+}
+
 fn inferred_exclusions(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
     let mut all = Vec::with_capacity(adjacency.len());
     for atom_idx in 0..adjacency.len() {
         let mut excluded = std::collections::BTreeSet::new();
         for bonded in adjacency.get(atom_idx).cloned().unwrap_or_default() {
-            excluded.insert(bonded + 1);
+            if bonded > atom_idx {
+                excluded.insert(bonded + 1);
+            }
             for angle in adjacency.get(bonded).cloned().unwrap_or_default() {
-                if angle != atom_idx {
+                if angle != atom_idx && angle > atom_idx {
                     excluded.insert(angle + 1);
                 }
             }
@@ -898,6 +965,21 @@ fn inferred_exclusions(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
         all.push(excluded.into_iter().collect());
     }
     all
+}
+
+fn normalize_exclusions(atom_count: usize, exclusions: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut normalized = Vec::with_capacity(atom_count);
+    for atom_idx in 0..atom_count {
+        let mut items = BTreeSet::new();
+        for &right_1based in exclusions.get(atom_idx).into_iter().flatten() {
+            if right_1based == 0 || right_1based > atom_count || right_1based <= atom_idx + 1 {
+                continue;
+            }
+            items.insert(right_1based);
+        }
+        normalized.push(items.into_iter().collect());
+    }
+    normalized
 }
 
 fn type_indices_or_default(values: &[usize], len: usize) -> Vec<usize> {
@@ -1061,7 +1143,7 @@ pub fn write_minimal_prmtop(path: &str, topology: &AmberTopology) -> PackResult<
         topology.impropers.clone()
     };
     let excluded_atoms = if topology.excluded_atoms.len() == atom_count {
-        topology.excluded_atoms.clone()
+        normalize_exclusions(atom_count, &topology.excluded_atoms)
     } else {
         inferred_exclusions(&adjacency)
     };
@@ -1242,14 +1324,17 @@ pub fn write_minimal_prmtop(path: &str, topology: &AmberTopology) -> PackResult<
     let mut dihedrals_without_h = Vec::new();
     let mut dihedral_count_inc_h = 0usize;
     let mut dihedral_count_without_h = 0usize;
+    let base_exception_pairs = base_nonbonded_exception_pairs(&topology.bonds, &angles);
+    let mut emitted_one_four_pairs = BTreeSet::new();
     for (idx, entry) in dihedrals.iter().enumerate() {
-        let values = [
-            (entry[0] * 3) as isize,
-            (entry[1] * 3) as isize,
-            (entry[2] * 3) as isize,
-            (entry[3] * 3) as isize,
-            *dihedral_type_indices.get(idx).unwrap_or(&1) as isize,
-        ];
+        let end_pair = ordered_pair_indices(entry[0], entry[3]);
+        let suppress_end_group_interaction =
+            base_exception_pairs.contains(&end_pair) || !emitted_one_four_pairs.insert(end_pair);
+        let values = proper_dihedral_values(
+            *entry,
+            *dihedral_type_indices.get(idx).unwrap_or(&1),
+            suppress_end_group_interaction,
+        );
         let has_hydrogen = entry.iter().any(|idx| {
             topology
                 .atomic_numbers
@@ -1267,13 +1352,8 @@ pub fn write_minimal_prmtop(path: &str, topology: &AmberTopology) -> PackResult<
         }
     }
     for (idx, entry) in impropers.iter().enumerate() {
-        let values = [
-            (entry[0] * 3) as isize,
-            (entry[1] * 3) as isize,
-            -((entry[2] * 3) as isize),
-            -((entry[3] * 3) as isize),
-            *improper_type_indices.get(idx).unwrap_or(&1) as isize,
-        ];
+        let values =
+            improper_dihedral_values(*entry, *improper_type_indices.get(idx).unwrap_or(&1));
         let has_hydrogen = entry.iter().any(|idx| {
             topology
                 .atomic_numbers
@@ -1449,6 +1529,80 @@ mod tests {
         path
     }
 
+    fn section_isize_values(text: &str, flag: &str) -> Vec<isize> {
+        let mut values = Vec::new();
+        let mut in_section = false;
+        for line in text.lines() {
+            if line.starts_with("%FLAG ") {
+                in_section = line.trim() == format!("%FLAG {flag}");
+                continue;
+            }
+            if !in_section || line.starts_with("%FORMAT") {
+                continue;
+            }
+            values.extend(
+                line.split_whitespace()
+                    .filter_map(|token| token.parse::<isize>().ok()),
+            );
+        }
+        values
+    }
+
+    fn carbon_topology(
+        bonds: Vec<(usize, usize)>,
+        dihedrals: Vec<[usize; 4]>,
+        dihedral_type_indices: Vec<usize>,
+    ) -> AmberTopology {
+        let atom_count = 4;
+        AmberTopology {
+            atom_names: vec!["C1".into(), "C2".into(), "C3".into(), "C4".into()],
+            residue_labels: vec!["MOL".into()],
+            residue_pointers: vec![1],
+            atomic_numbers: vec![6; atom_count],
+            masses: vec![12.011; atom_count],
+            charges: vec![0.0; atom_count],
+            atom_type_indices: vec![1; atom_count],
+            amber_atom_types: vec!["CT".into(); atom_count],
+            radii: vec![1.7; atom_count],
+            screen: vec![0.8; atom_count],
+            bonds,
+            bond_type_indices: vec![1; 4],
+            bond_force_constants: vec![310.0],
+            bond_equil_values: vec![1.53],
+            angles: Vec::new(),
+            angle_type_indices: Vec::new(),
+            angle_force_constants: Vec::new(),
+            angle_equil_values: Vec::new(),
+            dihedrals,
+            dihedral_type_indices,
+            dihedral_force_constants: vec![0.5, 0.25],
+            dihedral_periodicities: vec![3.0, 2.0],
+            dihedral_phases: vec![0.0, 3.1415927],
+            scee_scale_factors: vec![1.2, 1.2],
+            scnb_scale_factors: vec![2.0, 2.0],
+            solty: vec![0.0],
+            impropers: Vec::new(),
+            improper_type_indices: Vec::new(),
+            excluded_atoms: Vec::new(),
+            nonbonded_parm_index: vec![1],
+            lennard_jones_acoef: vec![1.0],
+            lennard_jones_bcoef: vec![0.5],
+            lennard_jones_14_acoef: vec![0.8],
+            lennard_jones_14_bcoef: vec![0.4],
+            hbond_acoef: Vec::new(),
+            hbond_bcoef: Vec::new(),
+            hbcut: Vec::new(),
+            tree_chain_classification: vec!["M".into(); atom_count],
+            join_array: vec![0; atom_count],
+            irotat: vec![0; atom_count],
+            solvent_pointers: Vec::new(),
+            atoms_per_molecule: vec![atom_count],
+            box_dimensions: Vec::new(),
+            radius_set: Some("modified Bondi radii".into()),
+            ipol: 0,
+        }
+    }
+
     #[test]
     fn minimal_prmtop_round_trip_preserves_hydrogen_bond_sections() {
         let path = temp_path("hydrogen_roundtrip");
@@ -1512,6 +1666,11 @@ mod tests {
         assert_eq!(bonds, topology.bonds);
         assert_eq!(parsed.angles, vec![[1, 0, 2], [0, 2, 3]]);
         assert_eq!(parsed.dihedrals, vec![[1, 0, 2, 3]]);
+        assert!(parsed
+            .excluded_atoms
+            .iter()
+            .enumerate()
+            .all(|(atom_idx, items)| items.iter().all(|right| *right > atom_idx + 1)));
         assert_eq!(
             parsed
                 .bonds
@@ -1522,6 +1681,48 @@ mod tests {
         );
         assert_eq!(parsed.bond_force_constants, vec![310.0]);
         assert_eq!(parsed.bond_equil_values, vec![1.09]);
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn prmtop_writer_suppresses_duplicate_proper_torsion_exceptions() {
+        let path = temp_path("duplicate_torsion_exception");
+        let topology = carbon_topology(
+            vec![(0, 1), (1, 2), (2, 3)],
+            vec![[0, 1, 2, 3], [0, 1, 2, 3]],
+            vec![1, 2],
+        );
+
+        write_minimal_prmtop(path.to_string_lossy().as_ref(), &topology).expect("write prmtop");
+        let text = fs::read_to_string(&path).expect("read prmtop");
+        let raw = section_isize_values(&text, "DIHEDRALS_WITHOUT_HYDROGEN");
+        let parsed = read_prmtop_topology(&path).expect("read prmtop");
+
+        assert_eq!(parsed.dihedrals, topology.dihedrals);
+        assert_eq!(parsed.dihedral_type_indices, vec![1, 2]);
+        assert_eq!(raw.chunks_exact(5).next().unwrap()[3], 9);
+        assert_eq!(raw.chunks_exact(5).nth(1).unwrap()[3], -9);
+
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn prmtop_writer_suppresses_torsion_exception_when_endpoints_already_excluded() {
+        let path = temp_path("bonded_endpoint_torsion_exception");
+        let topology = carbon_topology(
+            vec![(0, 1), (1, 2), (2, 3), (0, 3)],
+            vec![[3, 2, 1, 0]],
+            vec![1],
+        );
+
+        write_minimal_prmtop(path.to_string_lossy().as_ref(), &topology).expect("write prmtop");
+        let text = fs::read_to_string(&path).expect("read prmtop");
+        let raw = section_isize_values(&text, "DIHEDRALS_WITHOUT_HYDROGEN");
+        let parsed = read_prmtop_topology(&path).expect("read prmtop");
+
+        assert_eq!(parsed.dihedrals, vec![[0, 1, 2, 3]]);
+        assert_eq!(raw.chunks_exact(5).next().unwrap()[3], -9);
 
         fs::remove_file(path).ok();
     }

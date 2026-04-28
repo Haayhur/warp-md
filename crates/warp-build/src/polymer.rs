@@ -9,7 +9,7 @@ use traj_core::{
     center_of_geometry,
     elements::{mass_for_element, normalize_element},
     normalize_vec3 as normalize, rotate_about_axis_vec3 as rotate_about_axis,
-    rotate_from_to_vec3 as rotate_from_to, Vec3,
+    rotate_from_to_vec3 as rotate_from_to, SpatialHash, Vec3,
 };
 use warp_pack::{PackError, PackResult};
 use warp_structure::io::{
@@ -299,62 +299,47 @@ fn tacticity_phase(tacticity_mode: &str, idx: usize, rng: &mut StdRng) -> PackRe
 
 fn group_residues(molecule: MoleculeData) -> PackResult<Vec<ResidueTemplate>> {
     let mut grouped = Vec::new();
-    let mut current_key: Option<(char, i32)> = None;
-    let mut current_atoms = Vec::new();
-    let mut current_resname = String::new();
-    let mut residue_starts = Vec::new();
-    let mut residue_ends = Vec::new();
     let atoms = molecule.atoms;
     let bonds = molecule.bonds;
+    let mut residue_index = BTreeMap::<(char, i32, String), usize>::new();
+    let mut global_to_local = vec![None; atoms.len()];
 
     for (global_idx, atom) in atoms.into_iter().enumerate() {
-        let key = (atom.chain, atom.resid);
-        if current_key.is_none() {
-            current_key = Some(key);
-            residue_starts.push(global_idx);
-        }
-        if Some(key) != current_key {
-            let centroid = centroid_of_atoms(&current_atoms);
-            residue_ends.push(global_idx);
-            grouped.push(ResidueTemplate {
-                resname: current_resname.clone(),
-                atoms: current_atoms,
-                centroid,
-                local_bonds: Vec::new(),
-            });
-            current_atoms = Vec::new();
-            current_key = Some(key);
-            residue_starts.push(global_idx);
-        }
-        current_resname = if atom.resname.trim().is_empty() {
+        let chain = if atom.chain == ' ' { 'A' } else { atom.chain };
+        let resname = if atom.resname.trim().is_empty() {
             "MOL".to_string()
         } else {
             atom.resname.clone()
         };
-        current_atoms.push(AtomRecord {
+        let key = (chain, atom.resid, resname.clone());
+        let group_idx = if let Some(idx) = residue_index.get(&key).copied() {
+            idx
+        } else {
+            let idx = grouped.len();
+            residue_index.insert(key, idx);
+            grouped.push(ResidueTemplate {
+                resname: resname.clone(),
+                atoms: Vec::new(),
+                centroid: Vec3::new(0.0, 0.0, 0.0),
+                local_bonds: Vec::new(),
+            });
+            idx
+        };
+        let local_idx = grouped[group_idx].atoms.len();
+        grouped[group_idx].atoms.push(AtomRecord {
             record_kind: atom.record_kind,
             name: atom.name,
             element: atom.element,
-            resname: current_resname.clone(),
+            resname,
             resid: atom.resid,
-            chain: if atom.chain == ' ' { 'A' } else { atom.chain },
+            chain,
             segid: atom.segid,
             charge: 0.0,
             position: Vec3::new(atom.position.x, atom.position.y, atom.position.z),
             mol_id: 1,
             pdb_metadata: atom.pdb_metadata,
         });
-    }
-
-    if !current_atoms.is_empty() {
-        let centroid = centroid_of_atoms(&current_atoms);
-        residue_ends.push(atoms_len_from_grouped(&grouped) + current_atoms.len());
-        grouped.push(ResidueTemplate {
-            resname: current_resname,
-            atoms: current_atoms,
-            centroid,
-            local_bonds: Vec::new(),
-        });
+        global_to_local[global_idx] = Some((group_idx, local_idx));
     }
 
     if grouped.len() < 3 {
@@ -363,27 +348,41 @@ fn group_residues(molecule: MoleculeData) -> PackResult<Vec<ResidueTemplate>> {
         ));
     }
 
-    for (residue_idx, template) in grouped.iter_mut().enumerate() {
-        template.local_bonds = if bonds.is_empty() {
-            infer_local_bonds(&template.atoms)
-        } else {
-            let start = residue_starts[residue_idx];
-            let end = residue_ends[residue_idx];
-            let mut local_bonds = Vec::new();
-            for &(a, b) in &bonds {
-                if a >= start && a < end && b >= start && b < end {
-                    let i = a - start;
-                    let j = b - start;
-                    let (i, j) = if i <= j { (i, j) } else { (j, i) };
-                    if i != j {
-                        local_bonds.push((i, j));
-                    }
-                }
+    for template in &mut grouped {
+        template.centroid = centroid_of_atoms(&template.atoms);
+    }
+
+    if bonds.is_empty() {
+        for template in &mut grouped {
+            template.local_bonds = infer_local_bonds(&template.atoms);
+        }
+    } else {
+        for &(a, b) in &bonds {
+            let Some(Some((group_a, local_a))) = global_to_local.get(a) else {
+                continue;
+            };
+            let Some(Some((group_b, local_b))) = global_to_local.get(b) else {
+                continue;
+            };
+            if group_a != group_b {
+                continue;
             }
-            local_bonds.sort_unstable();
-            local_bonds.dedup();
-            local_bonds
-        };
+            let (i, j) = if local_a <= local_b {
+                (*local_a, *local_b)
+            } else {
+                (*local_b, *local_a)
+            };
+            if i != j {
+                grouped[*group_a].local_bonds.push((i, j));
+            }
+        }
+        for template in &mut grouped {
+            template.local_bonds.sort_unstable();
+            template.local_bonds.dedup();
+            if template.local_bonds.is_empty() {
+                template.local_bonds = infer_local_bonds(&template.atoms);
+            }
+        }
     }
 
     Ok(grouped)
@@ -730,10 +729,6 @@ fn parameter_source_label(choice: ParameterSourceChoice) -> String {
     }
 }
 
-fn atoms_len_from_grouped(grouped: &[ResidueTemplate]) -> usize {
-    grouped.iter().map(|template| template.atoms.len()).sum()
-}
-
 fn load_training_templates(path: &Path) -> PackResult<Vec<ResidueTemplate>> {
     let molecule = read_molecule(path, None, false, true, None)?;
     group_residues(molecule)
@@ -865,9 +860,16 @@ fn template_atom_by_name<'a>(
         .iter()
         .find(|atom| atom.name.trim() == atom_name.trim())
         .ok_or_else(|| {
+            let available = template
+                .atoms
+                .iter()
+                .map(|atom| atom.name.trim())
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
             PackError::Invalid(format!(
-                "attach atom '{}' missing from template '{}'",
-                atom_name, template.resname
+                "attach atom '{}' missing from template '{}' (available atoms: [{}])",
+                atom_name, template.resname, available
             ))
         })
 }
@@ -1229,11 +1231,29 @@ fn infer_uff_like_typing(
     let geometry = infer_geometry_class(atoms, adjacency, atom_idx);
     let label = match normalized.as_str() {
         "H" => "H_",
-        "C" => match geometry {
-            AtomGeometryClass::Sp1 => "C_1",
-            AtomGeometryClass::Sp2 => "C_2",
-            AtomGeometryClass::Sp3 => "C_3",
-        },
+        "C" => {
+            let shortest_neighbor = adjacency
+                .get(atom_idx)
+                .into_iter()
+                .flatten()
+                .filter_map(|neighbor| {
+                    Some(
+                        atoms
+                            .get(atom_idx)?
+                            .position
+                            .sub(atoms.get(*neighbor)?.position)
+                            .norm(),
+                    )
+                })
+                .fold(f32::INFINITY, f32::min);
+            match geometry {
+                AtomGeometryClass::Sp1 if shortest_neighbor <= 1.24 => "C_1",
+                AtomGeometryClass::Sp1 => "C_3",
+                AtomGeometryClass::Sp2 if shortest_neighbor <= 1.47 => "C_2",
+                AtomGeometryClass::Sp2 => "C_3",
+                AtomGeometryClass::Sp3 => "C_3",
+            }
+        }
         "N" => match geometry {
             AtomGeometryClass::Sp1 => "N_1",
             AtomGeometryClass::Sp2 => "N_2",
@@ -2462,6 +2482,21 @@ fn orthonormal_basis(axis: Vec3) -> (Vec3, Vec3) {
     (u, v)
 }
 
+fn aligned_zigzag_direction(axis: Vec3, step_idx: usize, torsion_angle: f32) -> Vec3 {
+    let axis = normalize(axis);
+    let (u, v) = orthonormal_basis(axis);
+    let phase = if step_idx % 2 == 0 {
+        torsion_angle
+    } else {
+        std::f32::consts::PI + torsion_angle
+    };
+    normalize(
+        axis.scale(0.816_496_6)
+            .add(u.scale(0.577_350_26 * phase.cos()))
+            .add(v.scale(0.577_350_26 * phase.sin())),
+    )
+}
+
 fn preferred_branch_direction(
     parent_dir: Vec3,
     sibling_idx: usize,
@@ -2501,25 +2536,123 @@ fn preferred_branch_direction(
     rotate_about_axis(base, axis, torsion_angle)
 }
 
-fn placement_accepts(
-    candidate: Vec3,
-    existing: &[Option<Vec3>],
-    parent: Option<usize>,
-    step: f32,
-) -> bool {
-    let min_distance = (step * 0.72).max(1.6);
-    for (idx, prev) in existing.iter().enumerate() {
-        let Some(prev) = prev else {
-            continue;
-        };
-        if Some(idx) == parent {
-            continue;
-        }
-        if candidate.sub(*prev).norm() < min_distance {
-            return false;
+fn template_collision_radius(template: &ResidueTemplate) -> f32 {
+    template
+        .atoms
+        .iter()
+        .filter(|atom| heavy_atom(&atom.element))
+        .map(|atom| atom.position.sub(template.centroid).norm())
+        .fold(0.0f32, f32::max)
+        .max(0.65)
+        .min(4.0)
+}
+
+fn envelope_cell_size(radii: &[f32], clearance: f32) -> f32 {
+    let max_radius = radii.iter().copied().fold(0.65f32, f32::max);
+    (2.0 * max_radius + clearance).max(1.0)
+}
+
+struct ResidueEnvelopeIndex {
+    hash: SpatialHash,
+}
+
+impl ResidueEnvelopeIndex {
+    fn new(radii: &[f32], clearance: f32, expected_items: usize) -> Self {
+        Self {
+            hash: SpatialHash::with_capacity(
+                envelope_cell_size(radii, clearance),
+                expected_items.saturating_mul(2).max(1),
+            ),
         }
     }
-    true
+
+    fn insert(&mut self, idx: usize, position: Vec3) {
+        self.hash.insert(idx, position);
+    }
+
+    fn remove(&mut self, idx: usize, position: Vec3) {
+        self.hash.remove(idx, position);
+    }
+
+    fn clearance_against_options(
+        &self,
+        candidate: Vec3,
+        existing: &[Option<Vec3>],
+        parent: Option<usize>,
+        candidate_radius: f32,
+        existing_radii: &[f32],
+        clearance: f32,
+    ) -> f32 {
+        let mut best = f32::INFINITY;
+        self.hash.for_each_neighbor(candidate, |idx| {
+            let Some(prev) = existing.get(idx).and_then(|item| *item) else {
+                return;
+            };
+            if Some(idx) == parent {
+                return;
+            }
+            let required =
+                candidate_radius + existing_radii.get(idx).copied().unwrap_or(0.65) + clearance;
+            best = best.min(candidate.sub(prev).norm() - required);
+        });
+        if best.is_finite() {
+            best
+        } else {
+            f32::INFINITY
+        }
+    }
+
+    fn linear_clearance(
+        &self,
+        candidate: Vec3,
+        centroids: &[Vec3],
+        candidate_idx: usize,
+        candidate_radius: f32,
+        radii: &[f32],
+        clearance: f32,
+    ) -> f32 {
+        let mut best = f32::INFINITY;
+        self.hash.for_each_neighbor(candidate, |idx| {
+            if idx + 2 >= candidate_idx {
+                return;
+            }
+            let Some(prev) = centroids.get(idx).copied() else {
+                return;
+            };
+            let near_chain_scale = if idx + 3 >= candidate_idx { 0.86 } else { 1.0 };
+            let required = (candidate_radius + radii.get(idx).copied().unwrap_or(0.65) + clearance)
+                * near_chain_scale;
+            best = best.min(candidate.sub(prev).norm() - required);
+        });
+        if best.is_finite() {
+            best
+        } else {
+            f32::INFINITY
+        }
+    }
+}
+
+fn apply_centroid_repulsion_with_hash(positions: &[Vec3], deltas: &mut [Vec3], min_distance: f32) {
+    let mut index = SpatialHash::with_capacity(min_distance.max(1.0e-6), positions.len() * 2);
+    for (idx, position) in positions.iter().copied().enumerate() {
+        index.insert(idx, position);
+    }
+    for left in 0..positions.len() {
+        index.for_each_neighbor(positions[left], |right| {
+            if right <= left {
+                return;
+            }
+            let diff = positions[right].sub(positions[left]);
+            let dist = diff.norm().max(1.0e-4);
+            if dist >= min_distance {
+                return;
+            }
+            let dir = diff.scale(1.0 / dist);
+            let push = dir.scale(0.08 * (min_distance - dist));
+            deltas[left] = deltas[left].sub(push);
+            deltas[right] = deltas[right].add(push);
+        });
+    }
 }
 
 fn perturb_direction(rng: &mut StdRng, preferred: Vec3, width: f32) -> Vec3 {
@@ -2716,6 +2849,23 @@ fn solve_rotatable_edges(
     let mut best_report = recompute_build_qc_report(output, qc_context);
     let mut best_score = solver_score(&best_report, output);
     let mut termination_reason = "pass_budget_exhausted".to_string();
+    if best_report.severe_bond_violations.is_empty()
+        && best_report.severe_nonbonded_clash_count == 0
+    {
+        return Ok(BuildSolverReport {
+            enabled: true,
+            mode: "torsion_solve".into(),
+            seed,
+            passes_requested,
+            passes_executed: 0,
+            rotatable_edge_count: rotatable_edges.len(),
+            candidate_evaluations: 0,
+            accepted_moves: 0,
+            termination_reason: "qc_already_passed".into(),
+            best_score,
+            hard_fail_reason: None,
+        });
+    }
     for pass_idx in 0..passes_requested {
         let mut improved_any = false;
         for edge in rotatable_edges {
@@ -2817,6 +2967,8 @@ fn severe_bond_threshold(expected_distance: f32) -> f32 {
     (expected_distance * 1.8).max(expected_distance + 2.0)
 }
 
+const BUILD_QC_NEIGHBOR_CUTOFF_ANGSTROM: f32 = 4.0;
+
 fn build_qc_report(
     atoms: &[AtomRecord],
     bonds: &[(usize, usize)],
@@ -2848,24 +3000,41 @@ fn build_qc_report(
         .collect::<BTreeSet<_>>();
     let mut min_nonbonded: Option<f32> = None;
     let mut severe_clash_examples = Vec::new();
+    let mut severe_clash_count = 0usize;
+    let possible_nonbonded_count = atoms.len().saturating_mul(atoms.len().saturating_sub(1)) / 2;
+    let has_nonbonded_pairs = possible_nonbonded_count > bonded_pairs.len();
+    let mut spatial =
+        SpatialHash::with_capacity(BUILD_QC_NEIGHBOR_CUTOFF_ANGSTROM, atoms.len() * 2);
+    for (idx, atom) in atoms.iter().enumerate() {
+        spatial.insert(idx, atom.position);
+    }
     for left in 0..atoms.len() {
-        for right in (left + 1)..atoms.len() {
+        spatial.for_each_neighbor(atoms[left].position, |right| {
+            if right <= left {
+                return;
+            }
             if bonded_pairs.contains(&(left, right)) {
-                continue;
+                return;
             }
             let distance = atoms[right].position.sub(atoms[left].position).norm();
             min_nonbonded = Some(match min_nonbonded {
                 Some(current) => current.min(distance),
                 None => distance,
             });
-            if distance < 0.8 && severe_clash_examples.len() < 8 {
-                severe_clash_examples.push(ClashQcViolation {
-                    atom_a: left + 1,
-                    atom_b: right + 1,
-                    distance_angstrom: distance,
-                });
+            if distance < 0.8 {
+                severe_clash_count += 1;
+                if severe_clash_examples.len() < 8 {
+                    severe_clash_examples.push(ClashQcViolation {
+                        atom_a: left + 1,
+                        atom_b: right + 1,
+                        distance_angstrom: distance,
+                    });
+                }
             }
-        }
+        });
+    }
+    if min_nonbonded.is_none() && has_nonbonded_pairs {
+        min_nonbonded = Some(BUILD_QC_NEIGHBOR_CUTOFF_ANGSTROM);
     }
 
     BuildQcReport {
@@ -2873,7 +3042,7 @@ fn build_qc_report(
         terminal_connectivity_consistent: context.terminal_connectivity_consistent,
         sequence_token_template_consistent: context.sequence_token_template_consistent,
         min_nonbonded_distance_angstrom: min_nonbonded,
-        severe_nonbonded_clash_count: severe_clash_examples.len(),
+        severe_nonbonded_clash_count: severe_clash_count,
         severe_bond_violations,
         severe_clash_examples,
     }
@@ -2909,6 +3078,7 @@ fn layout_graph_centroids(
     conformation_mode: &str,
     source_axis: Vec3,
     seed: u64,
+    collision_radii: &[f32],
 ) -> PackResult<Vec<Vec3>> {
     if node_count == 0 {
         return Err(PackError::Invalid(
@@ -2964,6 +3134,8 @@ fn layout_graph_centroids(
     let mut positions = vec![None; node_count];
     let mut incoming_dirs = vec![normalize(source_axis); node_count];
     positions[root_idx] = Some(Vec3::new(0.0, 0.0, 0.0));
+    let mut envelope_index = ResidueEnvelopeIndex::new(collision_radii, 0.30, node_count);
+    envelope_index.insert(root_idx, Vec3::new(0.0, 0.0, 0.0));
     let mut rng = StdRng::seed_from_u64(seed ^ 0xB4A7_CE11);
     for node_idx in visit_order {
         let depth = depth_of[node_idx];
@@ -2980,30 +3152,78 @@ fn layout_graph_centroids(
                 .ok_or_else(|| {
                     PackError::Invalid("polymer graph layout edge lookup failed".into())
                 })?;
-            let preferred = preferred_branch_direction(
-                parent_dir,
-                sibling_idx,
-                children.len(),
-                depth,
-                &edge.branch_spread,
-                resolved_torsion_angle(edge, &mut rng),
-            );
-            let (chosen_dir, chosen_pos) = if conformation_mode == "random_walk" {
-                let mut placed = None;
-                for _ in 0..512 {
-                    let dir = perturb_direction(&mut rng, preferred, 0.45);
-                    let candidate = parent_pos.add(dir.scale(step_length));
-                    if placement_accepts(candidate, &positions, Some(node_idx), step_length) {
-                        placed = Some((dir, candidate));
-                        break;
-                    }
-                }
-                placed.unwrap_or((preferred, parent_pos.add(preferred.scale(step_length))))
+            let torsion_angle = resolved_torsion_angle(edge, &mut rng);
+            let preferred = if conformation_mode == "extended" && children.len() == 1 {
+                aligned_zigzag_direction(source_axis, depth, torsion_angle)
             } else {
-                (preferred, parent_pos.add(preferred.scale(step_length)))
+                preferred_branch_direction(
+                    parent_dir,
+                    sibling_idx,
+                    children.len(),
+                    depth,
+                    &edge.branch_spread,
+                    torsion_angle,
+                )
             };
+            let child_radius = collision_radii.get(*child_idx).copied().unwrap_or(0.65);
+            let mut chosen = None;
+            let mut best_candidate = None;
+            let mut best_clearance = f32::NEG_INFINITY;
+            let attempts = if conformation_mode == "random_walk" {
+                2048
+            } else {
+                256
+            };
+            for attempt in 0..attempts {
+                let width = if conformation_mode == "random_walk" {
+                    if attempt < 512 {
+                        0.45
+                    } else if attempt < 1536 {
+                        0.85
+                    } else {
+                        1.35
+                    }
+                } else if attempt == 0 {
+                    0.0
+                } else if attempt < 96 {
+                    0.35
+                } else {
+                    0.70
+                };
+                let dir = if width <= 1.0e-6 {
+                    preferred
+                } else {
+                    perturb_direction(&mut rng, preferred, width)
+                };
+                let candidate = parent_pos.add(dir.scale(step_length));
+                let clearance = envelope_index.clearance_against_options(
+                    candidate,
+                    &positions,
+                    Some(node_idx),
+                    child_radius,
+                    collision_radii,
+                    0.30,
+                );
+                if clearance > best_clearance {
+                    best_clearance = clearance;
+                    best_candidate = Some((dir, candidate));
+                }
+                if clearance >= 0.0 {
+                    chosen = Some((dir, candidate));
+                    break;
+                }
+            }
+            let (chosen_dir, chosen_pos) = chosen
+                .or_else(|| best_candidate.filter(|_| best_clearance >= -0.10))
+                .ok_or_else(|| {
+                    PackError::Invalid(format!(
+                        "polymer graph self-avoiding placement failed for node {}",
+                        child_idx
+                    ))
+                })?;
             incoming_dirs[*child_idx] = chosen_dir;
             positions[*child_idx] = Some(chosen_pos);
+            envelope_index.insert(*child_idx, chosen_pos);
         }
     }
     let mut positions = positions
@@ -3026,19 +3246,7 @@ fn layout_graph_centroids(
             deltas[edge.parent] = deltas[edge.parent].add(correction);
             deltas[edge.child] = deltas[edge.child].sub(correction);
         }
-        for left in 0..node_count {
-            for right in (left + 1)..node_count {
-                let diff = positions[right].sub(positions[left]);
-                let dist = diff.norm().max(1.0e-4);
-                if dist >= min_distance {
-                    continue;
-                }
-                let dir = diff.scale(1.0 / dist);
-                let push = dir.scale(0.08 * (min_distance - dist));
-                deltas[left] = deltas[left].sub(push);
-                deltas[right] = deltas[right].add(push);
-            }
-        }
+        apply_centroid_repulsion_with_hash(&positions, &mut deltas, min_distance);
         deltas[root_idx] = Vec3::new(0.0, 0.0, 0.0);
         for idx in 0..node_count {
             if idx == root_idx {
@@ -4722,12 +4930,19 @@ fn build_centroids(
     conformation_mode: &str,
     source_axis: Vec3,
     seed: u64,
+    collision_radii: &[f32],
 ) -> PackResult<Vec<Vec3>> {
     let axis = normalize(source_axis);
     if conformation_mode == "extended" {
         let mut centroids = Vec::with_capacity(n_repeat);
+        let mut current = Vec3::new(0.0, 0.0, 0.0);
         for idx in 0..n_repeat {
-            centroids.push(axis.scale(step_length * idx as f32));
+            if idx > 0 {
+                current = current.add(
+                    aligned_zigzag_direction(axis, idx.saturating_sub(1), 0.0).scale(step_length),
+                );
+            }
+            centroids.push(current);
         }
         return Ok(centroids);
     }
@@ -4741,19 +4956,32 @@ fn build_centroids(
     let mut rng = StdRng::seed_from_u64(seed);
     let mut centroids = vec![Vec3::new(0.0, 0.0, 0.0)];
     let mut directions = vec![axis];
-    let min_nonbonded = (step_length * 0.70).max(1.8);
     let persistence = 0.72f32;
     let max_bend_cos = (-0.35f32).max(-1.0);
+    let clearance = 0.30f32;
+    let mut envelope_index = ResidueEnvelopeIndex::new(collision_radii, clearance, n_repeat);
+    envelope_index.insert(0, Vec3::new(0.0, 0.0, 0.0));
+    let mut backtracks = 0usize;
 
     while centroids.len() < n_repeat {
-        let mut placed = false;
+        let candidate_idx = centroids.len();
+        let candidate_radius = collision_radii.get(candidate_idx).copied().unwrap_or(0.65);
         let prev_dir = *directions.last().unwrap_or(&axis);
-        for _ in 0..768 {
+        let mut best_candidate = None;
+        let mut best_clearance = f32::NEG_INFINITY;
+        for attempt in 0..4096 {
             let random_dir = normalize(Vec3::new(
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
                 rng.gen_range(-1.0..1.0),
             ));
+            let persistence = if attempt < 1024 {
+                persistence
+            } else if attempt < 3072 {
+                0.45
+            } else {
+                0.18
+            };
             let dir = normalize(
                 prev_dir
                     .scale(persistence)
@@ -4767,46 +4995,40 @@ fn build_centroids(
                 .copied()
                 .unwrap_or(Vec3::new(0.0, 0.0, 0.0))
                 .add(dir.scale(step_length));
-            let mut clashes = false;
-            for (prev_idx, prev) in centroids
-                .iter()
-                .enumerate()
-                .take(centroids.len().saturating_sub(2))
-            {
-                let distance = candidate.sub(*prev).norm();
-                let required = if prev_idx + 3 >= centroids.len() {
-                    min_nonbonded * 0.92
-                } else {
-                    min_nonbonded
-                };
-                if distance < required {
-                    clashes = true;
-                    break;
-                }
+            let candidate_clearance = envelope_index.linear_clearance(
+                candidate,
+                &centroids,
+                candidate_idx,
+                candidate_radius,
+                collision_radii,
+                clearance,
+            );
+            if candidate_clearance > best_clearance {
+                best_clearance = candidate_clearance;
+                best_candidate = Some((candidate, dir));
             }
-            if clashes {
-                continue;
+            if candidate_clearance >= 0.0 {
+                break;
             }
+        }
+        if let Some((candidate, dir)) = best_candidate.filter(|_| best_clearance >= -0.10) {
             centroids.push(candidate);
             directions.push(dir);
-            placed = true;
-            break;
+            envelope_index.insert(candidate_idx, candidate);
+            backtracks = 0;
+            continue;
         }
-        if !placed {
-            let fallback = normalize(prev_dir.add(axis.scale(0.35)));
-            let dir = if fallback.norm() <= 1.0e-6 {
-                prev_dir
-            } else {
-                fallback
-            };
-            let candidate = centroids
-                .last()
-                .copied()
-                .unwrap_or(Vec3::new(0.0, 0.0, 0.0))
-                .add(dir.scale(step_length));
-            centroids.push(candidate);
-            directions.push(dir);
+        if centroids.len() > 1 && backtracks < n_repeat.saturating_mul(4).max(16) {
+            if let Some(removed) = centroids.pop() {
+                envelope_index.remove(centroids.len(), removed);
+            }
+            directions.pop();
+            backtracks += 1;
+            continue;
         }
+        return Err(PackError::Invalid(
+            "random_walk self-avoiding placement exhausted candidate directions".into(),
+        ));
     }
 
     Ok(centroids)
@@ -4930,12 +5152,23 @@ pub fn build_linear_sequence_polymer(
         head_label,
         tail_label,
     )?;
+    let collision_radii = sequence_specs
+        .iter()
+        .map(|spec| {
+            template_lookup
+                .get(&spec.template_resname)
+                .copied()
+                .unwrap_or(repeat)
+        })
+        .map(template_collision_radius)
+        .collect::<Vec<_>>();
     let centroids = build_centroids(
         sequence_specs.len(),
         step_length,
         conformation_mode,
         source_axis,
         build_seed,
+        &collision_radii,
     )?;
 
     let mut atoms = Vec::new();
@@ -5181,6 +5414,16 @@ pub fn build_polymer_graph(
         .max(tail.centroid.sub(repeat.centroid).norm())
         .max(1.5);
     let (parent_of, parent_edge, visit_order) = graph_tree(node_specs.len(), edge_specs, root_idx)?;
+    let collision_radii = node_specs
+        .iter()
+        .map(|spec| {
+            template_lookup
+                .get(&spec.template_resname)
+                .copied()
+                .unwrap_or(repeat)
+        })
+        .map(template_collision_radius)
+        .collect::<Vec<_>>();
     let centroids = layout_graph_centroids(
         node_specs.len(),
         edge_specs,
@@ -5189,6 +5432,7 @@ pub fn build_polymer_graph(
         conformation_mode,
         source_axis,
         build_seed,
+        &collision_radii,
     )?;
     let mut node_neighbors = vec![Vec::<usize>::new(); node_specs.len()];
     let mut parent_edges = vec![Vec::<usize>::new(); node_specs.len()];
@@ -5644,6 +5888,45 @@ ATOM 6 H H3 TLA A 3 7.090 0.000 0.000\n",
 
         assert_eq!(resolved.training_structure_path, training);
         assert_eq!(templates.len(), 3);
+        assert_eq!(templates[0].local_bonds, vec![(0, 1)]);
+        assert_eq!(templates[1].local_bonds, vec![(0, 1)]);
+        assert_eq!(templates[2].local_bonds, vec![(0, 1)]);
+
+        let _ = fs::remove_file(&training);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn training_templates_merge_noncontiguous_residue_atoms() {
+        let dir = temp_path("noncontiguous_residue_source");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let training = dir.join("training_oligomer.pdb");
+        fs::write(
+            &training,
+            "ATOM      1  C1  HDA A   1       0.000   0.000   0.000  1.00  0.00           C\n\
+ATOM      2  C2  RPT A   2       3.000   0.000   0.000  1.00  0.00           C\n\
+ATOM      3  C3  TLA A   3       6.000   0.000   0.000  1.00  0.00           C\n\
+ATOM      4  H1  HDA A   1       1.090   0.000   0.000  1.00  0.00           H\n\
+ATOM      5  H2  RPT A   2       4.090   0.000   0.000  1.00  0.00           H\n\
+ATOM      6  H3  TLA A   3       7.090   0.000   0.000  1.00  0.00           H\n\
+CONECT    1    4\n\
+CONECT    2    5\n\
+CONECT    3    6\n\
+END\n",
+        )
+        .expect("write pdb");
+
+        let templates = load_training_templates(&training).expect("load templates");
+
+        assert_eq!(templates.len(), 3);
+        assert_eq!(
+            templates[0]
+                .atoms
+                .iter()
+                .map(|atom| atom.name.trim())
+                .collect::<Vec<_>>(),
+            vec!["C1", "H1"]
+        );
         assert_eq!(templates[0].local_bonds, vec![(0, 1)]);
         assert_eq!(templates[1].local_bonds, vec![(0, 1)]);
         assert_eq!(templates[2].local_bonds, vec![(0, 1)]);

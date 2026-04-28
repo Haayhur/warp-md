@@ -5111,8 +5111,8 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
             "schema_version": AGENT_SCHEMA_VERSION,
             "run_id": "warp-build-handoff-001",
             "polymer_build": {
-                "build_manifest": "outputs/pmma_50mer.build.json",
-                "topology_graph": "outputs/pmma_50mer.topology.json"
+                "build_manifest": "outputs/polymer_50mer.build.json",
+                "topology_graph": "outputs/polymer_50mer.topology.json"
             },
             "environment": {
                 "box": {"mode": "padding", "padding_angstrom": 12.0, "shape": "cubic"},
@@ -5142,7 +5142,7 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
                     "source": {
                         "kind": "polymer_build",
                         "polymer_build": {
-                            "build_manifest": "outputs/pmma_50mer.build.json"
+                            "build_manifest": "outputs/polymer_50mer.build.json"
                         }
                     }
                 },
@@ -5187,7 +5187,7 @@ pub fn example_request(mode: &str) -> PackResult<Value> {
                     "source": {
                         "kind": "polymer_build",
                         "polymer_build": {
-                            "build_manifest": "outputs/pmma_50mer.build.json"
+                            "build_manifest": "outputs/polymer_50mer.build.json"
                         }
                     }
                 }

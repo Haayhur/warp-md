@@ -56,7 +56,7 @@ enum Command {
         out: Option<PathBuf>,
     },
     Example {
-        #[arg(long, default_value = "random_walk")]
+        #[arg(long, default_value = "aligned")]
         mode: String,
         #[arg(long, default_value = "source.bundle.json")]
         bundle_path: String,
@@ -227,9 +227,17 @@ fn run() -> Result<u8, String> {
         }
         Command::Run { request, stream } => {
             let text = fs::read_to_string(request).map_err(|err| err.to_string())?;
+            if !stream {
+                eprintln!("warp-build: run started; use --stream for structured NDJSON progress");
+            }
             let (code, value) = warp_build::run_request_json(&text, stream);
             if !stream {
                 print_value(&value, OutputFormat::Json)?;
+                let status = value
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown");
+                eprintln!("warp-build: run finished status={status} exit_code={code}");
             }
             Ok(code as u8)
         }
