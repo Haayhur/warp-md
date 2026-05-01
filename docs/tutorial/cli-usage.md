@@ -104,6 +104,12 @@ warp-md rg --topology top.pdb --traj traj.xtc --selection "protein" --out rg.npy
 warp-md rg --topology top.pdb --traj traj.xtc --selection "protein" --debug-errors
 ```
 
+For `.npz` outputs, warp-md also writes non-Python companion files next to the archive: a JSON manifest plus CSV tables for 1D/2D arrays. The result envelope includes Rust-native `artifact.plot_recommendations` with deterministic `plot_type`, `x`, `y`, `z`, `units`, and `title` fields so UIs can render common plots without importing Python.
+
+```bash
+warp-md plot warp_md_result.json --out-dir plots
+```
+
 {% hint style="success" %}
 **The envelope contract**: Every output includes `status`, `exit_code`, and results. Even errors return valid JSON with `status="error"` and a stable `error.code`. Your agent always knows what happened.
 {% endhint %}

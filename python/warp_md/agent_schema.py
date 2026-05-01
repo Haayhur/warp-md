@@ -360,6 +360,8 @@ class ArtifactMetadata(BaseModel):
     description: Optional[str] = None  # Human-readable artifact meaning from the contract
     units: Optional[Dict[str, str]] = None  # Units for each field
     preview_stats: Optional[Dict[str, object]] = None  # n_frames, n_bins, min, max, etc.
+    plot_recommendations: Optional[List[Dict[str, object]]] = None
+    companions: Optional[List[Dict[str, object]]] = None
 
 
 class RunResultEntry(BaseModel):
@@ -515,7 +517,9 @@ def run_result_json_schema() -> Dict[str, Any]:
     if native_schema is not None:
         return native_schema
     adapter = TypeAdapter(RunEnvelope)
-    adapter.rebuild(force=True)
+    rebuild = getattr(adapter, "rebuild", None)
+    if rebuild is not None:
+        rebuild(force=True)
     return adapter.json_schema()
 
 
@@ -524,7 +528,9 @@ def run_event_json_schema() -> Dict[str, Any]:
     if native_schema is not None:
         return native_schema
     adapter = TypeAdapter(RunEvent)
-    adapter.rebuild(force=True)
+    rebuild = getattr(adapter, "rebuild", None)
+    if rebuild is not None:
+        rebuild(force=True)
     return adapter.json_schema()
 
 
@@ -540,7 +546,9 @@ def validate_run_result_payload(payload: JsonObject) -> JsonObject:
         if isinstance(validated, dict):
             return validated
     adapter = TypeAdapter(RunEnvelope)
-    adapter.rebuild(force=True)
+    rebuild = getattr(adapter, "rebuild", None)
+    if rebuild is not None:
+        rebuild(force=True)
     validated = adapter.validate_python(payload)
     return validated.model_dump(mode="python", exclude_none=True)
 
@@ -557,7 +565,9 @@ def validate_run_event_payload(payload: JsonObject) -> JsonObject:
         if isinstance(validated, dict):
             return validated
     adapter = TypeAdapter(RunEvent)
-    adapter.rebuild(force=True)
+    rebuild = getattr(adapter, "rebuild", None)
+    if rebuild is not None:
+        rebuild(force=True)
     validated = adapter.validate_python(payload)
     return validated.model_dump(mode="python", exclude_none=True)
 

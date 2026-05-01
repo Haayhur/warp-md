@@ -1301,6 +1301,7 @@ version = "0.1.5"
 dependencies = [
  "numpy",
  "pyo3",
+ "pyo3-build-config",
  "schemars",
  "serde",
  "serde_json",

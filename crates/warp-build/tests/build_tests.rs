@@ -2987,6 +2987,56 @@ fn validate_records_preflight_cache_and_run_requires_cache() {
         .expect("record path");
     assert!(Path::new(record_path).exists());
 
+    let mut relocated_request = request.clone();
+    relocated_request["validation"] = json!({
+        "depth": "deep",
+        "cache_mode": "off"
+    });
+    relocated_request["artifacts"] = json!({
+        "coordinates": temp_path("preflight_cache_relocated_coords.pdb").to_string_lossy(),
+        "build_manifest": temp_path("preflight_cache_relocated_manifest.json").to_string_lossy(),
+        "charge_manifest": temp_path("preflight_cache_relocated_charge.json").to_string_lossy(),
+        "topology": temp_path("preflight_cache_relocated_topology.prmtop").to_string_lossy(),
+        "topology_graph": temp_path("preflight_cache_relocated_graph.json").to_string_lossy()
+    });
+    let (relocated_code, relocated_payload) = warp_build::validate_request_json(
+        &serde_json::to_string(&relocated_request).expect("serialize"),
+    );
+    assert_eq!(
+        relocated_code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&relocated_payload).unwrap()
+    );
+    assert_eq!(
+        relocated_payload["preflight_cache"]["input_digest"],
+        validate_payload["preflight_cache"]["input_digest"]
+    );
+    assert_eq!(
+        relocated_payload["preflight_cache"]["cache_key"],
+        validate_payload["preflight_cache"]["cache_key"]
+    );
+    assert_ne!(
+        relocated_payload["preflight_cache"]["request_digest"],
+        validate_payload["preflight_cache"]["request_digest"]
+    );
+
+    let mut changed_input_request = relocated_request.clone();
+    changed_input_request["target"]["n_repeat"] = json!(5);
+    let (changed_input_code, changed_input_payload) = warp_build::validate_request_json(
+        &serde_json::to_string(&changed_input_request).expect("serialize"),
+    );
+    assert_eq!(
+        changed_input_code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&changed_input_payload).unwrap()
+    );
+    assert_ne!(
+        changed_input_payload["preflight_cache"]["input_digest"],
+        validate_payload["preflight_cache"]["input_digest"]
+    );
+
     let final_coords = temp_path("preflight_cache_final_coords.pdb");
     let final_manifest = temp_path("preflight_cache_final_manifest.json");
     let final_charge = temp_path("preflight_cache_final_charge.json");

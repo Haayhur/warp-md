@@ -2,6 +2,8 @@ use super::*;
 
 use crate::io::load_system_auto;
 use schemars::schema_for;
+use serde::ser::SerializeStruct;
+use std::fmt::Write as _;
 
 const WARP_MD_AGENT_SCHEMA_VERSION: &str = "warp-md.agent.v1";
 const WARP_MD_RUN_REQUEST_TOP_LEVEL_FIELDS: &[&str] = &[
@@ -39,14 +41,200 @@ struct WarpMdFieldSpec {
     choices: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug)]
 struct WarpMdArtifactSpec {
     kind: String,
     format: String,
-    #[serde(default)]
     fields: Vec<String>,
-    #[serde(default)]
     description: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct PlotAxisSpec {
+    field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    units: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct PlotRecommendation {
+    plot_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    x: Option<PlotAxisSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    y: Option<PlotAxisSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    z: Option<PlotAxisSpec>,
+    title: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct ArtifactCompanionSpec {
+    format: String,
+    role: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fields: Vec<String>,
+}
+
+impl serde::Serialize for WarpMdArtifactSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let plot_recommendations = warp_md_default_plot_recommendations(self);
+        let companions = warp_md_default_companion_specs(self);
+        let mut field_count = 4;
+        if self.fields.is_empty() {
+            field_count -= 1;
+        }
+        if self.description.is_none() {
+            field_count -= 1;
+        }
+        if !plot_recommendations.is_empty() {
+            field_count += 1;
+        }
+        if !companions.is_empty() {
+            field_count += 1;
+        }
+        let mut state = serializer.serialize_struct("WarpMdArtifactSpec", field_count)?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("format", &self.format)?;
+        if !self.fields.is_empty() {
+            state.serialize_field("fields", &self.fields)?;
+        }
+        if let Some(description) = &self.description {
+            state.serialize_field("description", description)?;
+        }
+        if !plot_recommendations.is_empty() {
+            state.serialize_field("plot_recommendations", &plot_recommendations)?;
+        }
+        if !companions.is_empty() {
+            state.serialize_field("companions", &companions)?;
+        }
+        state.end()
+    }
+}
+
+fn warp_md_default_plot_recommendations(artifact: &WarpMdArtifactSpec) -> Vec<PlotRecommendation> {
+    let fields = &artifact.fields;
+    match artifact.kind.as_str() {
+        "timeseries" | "histogram" | "profile" if fields.len() >= 2 => fields[1..]
+            .iter()
+            .filter(|field| field.as_str() != "...")
+            .map(|field| PlotRecommendation {
+                plot_type: "line".into(),
+                x: Some(warp_md_plot_axis(&fields[0], None)),
+                y: Some(warp_md_plot_axis(field, None)),
+                z: None,
+                title: artifact
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| warp_md_title_from_field(field)),
+            })
+            .collect(),
+        "table" if fields.len() >= 2 => vec![PlotRecommendation {
+            plot_type: "bar".into(),
+            x: Some(warp_md_plot_axis(&fields[0], None)),
+            y: Some(warp_md_plot_axis(&fields[1], None)),
+            z: None,
+            title: artifact
+                .description
+                .clone()
+                .unwrap_or_else(|| warp_md_title_from_field(&fields[1])),
+        }],
+        "grid" if !fields.is_empty() => vec![PlotRecommendation {
+            plot_type: "volume_grid".into(),
+            x: None,
+            y: None,
+            z: Some(warp_md_plot_axis(&fields[0], None)),
+            title: artifact
+                .description
+                .clone()
+                .unwrap_or_else(|| warp_md_title_from_field(&fields[0])),
+        }],
+        "artifact" if fields.len() >= 2 => vec![PlotRecommendation {
+            plot_type: "line".into(),
+            x: Some(warp_md_plot_axis(&fields[0], None)),
+            y: Some(warp_md_plot_axis(&fields[1], None)),
+            z: None,
+            title: artifact
+                .description
+                .clone()
+                .unwrap_or_else(|| warp_md_title_from_field(&fields[1])),
+        }],
+        _ => Vec::new(),
+    }
+}
+
+fn warp_md_default_companion_specs(artifact: &WarpMdArtifactSpec) -> Vec<ArtifactCompanionSpec> {
+    if artifact.format.as_str() != "npz" {
+        return Vec::new();
+    }
+    vec![
+        ArtifactCompanionSpec {
+            format: "json".into(),
+            role: "npz_companion_manifest".into(),
+            fields: artifact.fields.clone(),
+        },
+        ArtifactCompanionSpec {
+            format: "csv".into(),
+            role: "array_table".into(),
+            fields: artifact.fields.clone(),
+        },
+    ]
+}
+
+fn warp_md_plot_axis(field: &str, source: Option<&str>) -> PlotAxisSpec {
+    PlotAxisSpec {
+        field: field.into(),
+        units: warp_md_field_units(field),
+        source: source.map(str::to_string),
+    }
+}
+
+fn warp_md_field_units(field: &str) -> Option<String> {
+    let unit = if field.ends_with("_ps") {
+        "ps"
+    } else if field.ends_with("_nm2") || field.ends_with("_nm_2") {
+        "nm^2"
+    } else if field.ends_with("_nm") || field == "position" || field == "distance_nm" {
+        "nm"
+    } else if field.ends_with("_a3") {
+        "angstrom^3"
+    } else if field.ends_with("_hz") {
+        "Hz"
+    } else if field.ends_with("_kJ_per_mol") {
+        "kJ/mol"
+    } else if field.ends_with("_S_per_cm") {
+        "S/cm"
+    } else if field.ends_with("_g_cm3") {
+        "g/cm^3"
+    } else if matches!(
+        field,
+        "probability" | "gr" | "acf" | "correlation" | "q_value" | "structure_factor" | "cos_theta"
+    ) {
+        "dimensionless"
+    } else {
+        return None;
+    };
+    Some(unit.into())
+}
+
+fn warp_md_title_from_field(field: &str) -> String {
+    field
+        .replace('_', " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -243,8 +431,23 @@ struct ArtifactMetadata {
     units: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preview_stats: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plot_recommendations: Option<Vec<PlotRecommendation>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    companions: Option<Vec<ArtifactCompanionMetadata>>,
     #[serde(flatten)]
     extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct ArtifactCompanionMetadata {
+    path: String,
+    format: String,
+    role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    columns: Vec<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -1830,6 +2033,356 @@ fn warp_md_validate_event_value(payload: serde_json::Value) -> serde_json::Value
     }
 }
 
+#[derive(Clone, Debug)]
+struct PlotSeries {
+    x: Vec<f64>,
+    y: Vec<f64>,
+}
+
+fn warp_md_render_plots_value(
+    payload: serde_json::Value,
+    out_dir: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let root = payload
+        .as_object()
+        .ok_or_else(|| "result envelope must be a JSON object".to_string())?;
+    let base_dir = std::path::PathBuf::from(out_dir.unwrap_or("plots"));
+    std::fs::create_dir_all(&base_dir)
+        .map_err(|err| format!("failed to create plot output directory: {err}"))?;
+
+    let mut artifacts = Vec::new();
+    let mut skipped = Vec::new();
+    let Some(results) = root.get("results").and_then(serde_json::Value::as_array) else {
+        return Ok(serde_json::json!({
+            "status": "ok",
+            "plot_count": 0,
+            "artifacts": artifacts,
+            "skipped": [{"reason": "result envelope has no results array"}],
+        }));
+    };
+
+    for (result_index, result) in results.iter().enumerate() {
+        let analysis = result
+            .get("analysis")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("analysis");
+        let Some(artifact) = result
+            .get("artifact")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        let source_artifact = artifact
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| result.get("out").and_then(serde_json::Value::as_str))
+            .unwrap_or("");
+        let Some(recommendations) = artifact
+            .get("plot_recommendations")
+            .and_then(serde_json::Value::as_array)
+        else {
+            skipped.push(serde_json::json!({
+                "analysis": analysis,
+                "reason": "artifact has no plot_recommendations",
+            }));
+            continue;
+        };
+        for (plot_index, rec) in recommendations.iter().enumerate() {
+            let plot_type = rec
+                .get("plot_type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("line");
+            if plot_type != "line" && plot_type != "bar" {
+                skipped.push(serde_json::json!({
+                    "analysis": analysis,
+                    "plot_type": plot_type,
+                    "reason": "plot_type is not supported by the SVG renderer",
+                }));
+                continue;
+            }
+            let title = rec
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(analysis);
+            match warp_md_series_from_recommendation(artifact, rec) {
+                Ok(series) if !series.y.is_empty() => {
+                    let filename = format!(
+                        "{}_{}_{}.svg",
+                        warp_md_slug(analysis),
+                        result_index,
+                        plot_index
+                    );
+                    let path = base_dir.join(filename);
+                    let svg = warp_md_svg_plot(title, plot_type, &series);
+                    std::fs::write(&path, svg)
+                        .map_err(|err| format!("failed to write plot SVG: {err}"))?;
+                    artifacts.push(serde_json::json!({
+                        "path": path.to_string_lossy(),
+                        "format": "svg",
+                        "role": "plot",
+                        "plot_type": plot_type,
+                        "title": title,
+                        "source_artifact": source_artifact,
+                    }));
+                }
+                Ok(_) => skipped.push(serde_json::json!({
+                    "analysis": analysis,
+                    "plot_type": plot_type,
+                    "reason": "plot series is empty",
+                })),
+                Err(reason) => skipped.push(serde_json::json!({
+                    "analysis": analysis,
+                    "plot_type": plot_type,
+                    "reason": reason,
+                })),
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "plot_count": artifacts.len(),
+        "artifacts": artifacts,
+        "skipped": skipped,
+    }))
+}
+
+fn warp_md_series_from_recommendation(
+    artifact: &serde_json::Map<String, serde_json::Value>,
+    rec: &serde_json::Value,
+) -> Result<PlotSeries, String> {
+    let y_field = rec
+        .get("y")
+        .and_then(|axis| axis.get("field"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "plot recommendation has no y.field".to_string())?;
+    let mut y = warp_md_read_companion_series(artifact, y_field)
+        .ok_or_else(|| format!("no CSV companion found for y field `{y_field}`"))?;
+    let x_axis = rec.get("x");
+    let x_field = x_axis
+        .and_then(|axis| axis.get("field"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("index");
+    let x_source = x_axis
+        .and_then(|axis| axis.get("source"))
+        .and_then(serde_json::Value::as_str);
+    let mut x = if x_source == Some("implicit_index") || x_field == "index" {
+        (0..y.len()).map(|value| value as f64).collect()
+    } else {
+        warp_md_read_companion_series(artifact, x_field)
+            .unwrap_or_else(|| (0..y.len()).map(|value| value as f64).collect())
+    };
+    if x.len() != y.len() {
+        let n = x.len().min(y.len());
+        x.truncate(n);
+        y.truncate(n);
+    }
+    Ok(PlotSeries { x, y })
+}
+
+fn warp_md_read_companion_series(
+    artifact: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Option<Vec<f64>> {
+    let companions = artifact.get("companions")?.as_array()?;
+    for companion in companions {
+        let item = companion.as_object()?;
+        if item.get("format").and_then(serde_json::Value::as_str) != Some("csv") {
+            continue;
+        }
+        let source_key = item.get("source_key").and_then(serde_json::Value::as_str);
+        let columns = item.get("columns").and_then(serde_json::Value::as_array);
+        let matched_column_index = columns.and_then(|values| {
+            values
+                .iter()
+                .position(|value| value.as_str().is_some_and(|name| name == field))
+        });
+        let selected_column =
+            matched_column_index.or_else(|| (source_key == Some(field)).then_some(0));
+        let path = item.get("path").and_then(serde_json::Value::as_str)?;
+        let Some(column_index) = selected_column else {
+            continue;
+        };
+        if let Ok(values) =
+            warp_md_read_csv_numeric_column(std::path::Path::new(path), column_index)
+        {
+            return Some(values);
+        }
+    }
+    None
+}
+
+fn warp_md_read_csv_numeric_column(
+    path: &std::path::Path,
+    column_index: usize,
+) -> Result<Vec<f64>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| format!("failed to read CSV companion {}: {err}", path.display()))?;
+    let mut values = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some(cell) = trimmed.split(',').nth(column_index) else {
+            continue;
+        };
+        match cell.trim().parse::<f64>() {
+            Ok(value) => values.push(value),
+            Err(_) => continue,
+        }
+    }
+    Ok(values)
+}
+
+fn warp_md_svg_plot(title: &str, plot_type: &str, series: &PlotSeries) -> String {
+    let width = 800.0;
+    let height = 480.0;
+    let left = 64.0;
+    let right = 24.0;
+    let top = 48.0;
+    let bottom = 56.0;
+    let plot_w = width - left - right;
+    let plot_h = height - top - bottom;
+    let (x_min, x_max) = warp_md_extent(&series.x);
+    let (y_min, y_max) = warp_md_extent(&series.y);
+    let sx = |x: f64| left + warp_md_normalize(x, x_min, x_max) * plot_w;
+    let sy = |y: f64| top + (1.0 - warp_md_normalize(y, y_min, y_max)) * plot_h;
+    let mut svg = String::new();
+    let _ = write!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0}" height="{height:.0}" viewBox="0 0 {width:.0} {height:.0}">"#
+    );
+    svg.push_str(r##"<rect width="100%" height="100%" fill="#ffffff"/>"##);
+    let _ = write!(
+        svg,
+        r##"<text x="{left:.1}" y="28" font-family="sans-serif" font-size="18" fill="#111111">{}</text>"##,
+        warp_md_xml_escape(title)
+    );
+    let _ = write!(
+        svg,
+        r##"<line x1="{left:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#222222" stroke-width="1"/>"##,
+        top + plot_h,
+        left + plot_w,
+        top + plot_h
+    );
+    let _ = write!(
+        svg,
+        r##"<line x1="{left:.1}" y1="{top:.1}" x2="{left:.1}" y2="{:.1}" stroke="#222222" stroke-width="1"/>"##,
+        top + plot_h
+    );
+    for i in 0..=4 {
+        let frac = i as f64 / 4.0;
+        let x = left + frac * plot_w;
+        let y = top + plot_h - frac * plot_h;
+        let xv = x_min + frac * (x_max - x_min);
+        let yv = y_min + frac * (y_max - y_min);
+        let _ = write!(
+            svg,
+            r##"<line x1="{x:.1}" y1="{top:.1}" x2="{x:.1}" y2="{:.1}" stroke="#dddddd" stroke-width="1"/>"##,
+            top + plot_h
+        );
+        let _ = write!(
+            svg,
+            r##"<line x1="{left:.1}" y1="{y:.1}" x2="{:.1}" y2="{y:.1}" stroke="#eeeeee" stroke-width="1"/>"##,
+            left + plot_w
+        );
+        let _ = write!(
+            svg,
+            r##"<text x="{x:.1}" y="{:.1}" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#444444">{xv:.3}</text>"##,
+            top + plot_h + 18.0
+        );
+        let _ = write!(
+            svg,
+            r##"<text x="{:.1}" y="{:.1}" text-anchor="end" font-family="sans-serif" font-size="11" fill="#444444">{yv:.3}</text>"##,
+            left - 8.0,
+            y + 4.0
+        );
+    }
+    if plot_type == "bar" {
+        let count = series.y.len().max(1) as f64;
+        let bar_w = (plot_w / count).max(1.0) * 0.8;
+        let baseline = sy(0.0_f64.max(y_min).min(y_max));
+        for (index, yv) in series.y.iter().copied().enumerate() {
+            let cx = left + (index as f64 + 0.5) * plot_w / count;
+            let y = sy(yv);
+            let h = (baseline - y).abs().max(1.0);
+            let y0 = y.min(baseline);
+            let _ = write!(
+                svg,
+                r##"<rect x="{:.1}" y="{y0:.1}" width="{bar_w:.1}" height="{h:.1}" fill="#2f6f9f"/>"##,
+                cx - bar_w / 2.0
+            );
+        }
+    } else if !series.x.is_empty() {
+        let points = series
+            .x
+            .iter()
+            .copied()
+            .zip(series.y.iter().copied())
+            .map(|(x, y)| format!("{:.2},{:.2}", sx(x), sy(y)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let _ = write!(
+            svg,
+            r##"<polyline points="{points}" fill="none" stroke="#2f6f9f" stroke-width="2"/>"##
+        );
+    }
+    svg.push_str("</svg>\n");
+    svg
+}
+
+fn warp_md_extent(values: &[f64]) -> (f64, f64) {
+    let mut min_v = f64::INFINITY;
+    let mut max_v = f64::NEG_INFINITY;
+    for value in values.iter().copied().filter(|value| value.is_finite()) {
+        min_v = min_v.min(value);
+        max_v = max_v.max(value);
+    }
+    if !min_v.is_finite() || !max_v.is_finite() {
+        return (0.0, 1.0);
+    }
+    if (max_v - min_v).abs() < f64::EPSILON {
+        return (min_v - 0.5, max_v + 0.5);
+    }
+    (min_v, max_v)
+}
+
+fn warp_md_normalize(value: f64, min_v: f64, max_v: f64) -> f64 {
+    if (max_v - min_v).abs() < f64::EPSILON {
+        0.5
+    } else {
+        ((value - min_v) / (max_v - min_v)).clamp(0.0, 1.0)
+    }
+}
+
+fn warp_md_xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn warp_md_slug(value: &str) -> String {
+    let slug: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = slug.trim_matches('_');
+    if trimmed.is_empty() {
+        "plot".into()
+    } else {
+        trimmed.into()
+    }
+}
+
 #[pyfunction]
 fn warp_md_agent_contract_catalog<'py>(py: Python<'py>) -> PyResult<PyObject> {
     let value = serde_json::to_value(warp_md_agent_contract_catalog_ref())
@@ -1959,6 +2512,20 @@ fn warp_md_agent_validate_event<'py>(py: Python<'py>, json: &str) -> PyResult<Py
 }
 
 #[pyfunction]
+#[pyo3(signature = (json, out_dir=None))]
+fn warp_md_agent_render_plots<'py>(
+    py: Python<'py>,
+    json: &str,
+    out_dir: Option<&str>,
+) -> PyResult<PyObject> {
+    let payload: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let result = warp_md_render_plots_value(payload, out_dir)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_value_to_py(py, &result)
+}
+
+#[pyfunction]
 #[pyo3(signature = (expr, field_type="selection", system_path=None))]
 fn warp_md_agent_lint_selection<'py>(
     py: Python<'py>,
@@ -1992,6 +2559,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(warp_md_agent_schema, m)?)?;
     m.add_function(wrap_pyfunction!(warp_md_agent_validate_result, m)?)?;
     m.add_function(wrap_pyfunction!(warp_md_agent_validate_event, m)?)?;
+    m.add_function(wrap_pyfunction!(warp_md_agent_render_plots, m)?)?;
     m.add_function(wrap_pyfunction!(warp_md_agent_lint_selection, m)?)?;
     m.add_function(wrap_pyfunction!(warp_md_agent_suggest_analyses, m)?)?;
     Ok(())
@@ -2127,6 +2695,7 @@ mod tests {
 
     #[test]
     fn request_validator_warns_when_topology_cannot_be_loaded() {
+        pyo3::prepare_freethreaded_python();
         let payload = serde_json::json!({
             "system": {"path": "missing-topology.pdb"},
             "trajectory": "traj.xtc",
@@ -2200,6 +2769,45 @@ mod tests {
         assert_eq!(result["valid"], false);
         let errors = result["errors"].as_array().expect("errors");
         assert!(errors.iter().any(|error| error["path"] == "status"));
+    }
+
+    #[test]
+    fn plot_renderer_reads_requested_csv_companion_column() {
+        let dir = std::env::temp_dir().join(format!(
+            "warp_md_plot_contract_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp plot dir");
+        let csv_path = dir.join("values.csv");
+        std::fs::write(&csv_path, "values_0,values_1\n1,10\n2,20\n3,30\n").expect("csv companion");
+        let artifact = serde_json::json!({
+            "companions": [
+                {
+                    "path": csv_path.to_string_lossy(),
+                    "format": "csv",
+                    "role": "array_table",
+                    "source_key": "values",
+                    "columns": ["values_0", "values_1"]
+                }
+            ]
+        });
+        let rec = serde_json::json!({
+            "plot_type": "line",
+            "x": {"field": "index", "source": "implicit_index"},
+            "y": {"field": "values_1"},
+            "title": "Selected column"
+        });
+        let series =
+            warp_md_series_from_recommendation(artifact.as_object().expect("artifact"), &rec)
+                .expect("plot series");
+
+        assert_eq!(series.x, vec![0.0, 1.0, 2.0]);
+        assert_eq!(series.y, vec![10.0, 20.0, 30.0]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

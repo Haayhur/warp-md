@@ -69,8 +69,121 @@ def test_run_config_emits_json_envelope(monkeypatch, tmp_path, capsys) -> None:
     )
     assert envelope["results"][0]["artifact"]["bytes"] > 0
     assert len(envelope["results"][0]["artifact"]["sha256"]) == 64
+    plot_rec = envelope["results"][0]["artifact"]["plot_recommendations"][0]
+    assert plot_rec["artifact"] == envelope["results"][0]["out"]
+    assert plot_rec["plot_type"] == "line"
+    assert plot_rec["x"]["field"] == "index"
+    assert plot_rec["y"]["field"] == "rg_nm"
+    assert plot_rec["y"]["units"] == "nm"
+    companions = envelope["results"][0]["artifact"]["companions"]
+    assert any(item["role"] == "npz_companion_manifest" for item in companions)
+    csv_companion = next(item for item in companions if item["format"] == "csv")
+    assert csv_companion["source_key"] == "rg_nm"
+    assert Path(csv_companion["path"]).exists()
+    assert Path(csv_companion["path"]).read_text().splitlines()[0] == "rg_nm"
     assert Path(envelope["results"][0]["out"]).exists()
     assert len(load_traj_calls) == 1
+
+
+def test_run_config_skips_csv_companion_for_string_arrays(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    cfg_path = _write_config(
+        tmp_path,
+        {
+            "system": "topology.pdb",
+            "trajectory": "traj.xtc",
+            "output_dir": str(tmp_path / "outputs"),
+            "analyses": [{"name": "dssp"}],
+        },
+    )
+
+    monkeypatch.setattr(cli_run, "_load_system", lambda spec: object())
+    monkeypatch.setattr(cli_run, "_load_trajectory", lambda spec, system: object())
+    monkeypatch.setattr(
+        cli_run,
+        "PLAN_BUILDERS",
+        {"dssp": lambda system, spec: _DummyPlan(np.array(["ALA", "GLY"]))},
+    )
+
+    code = cli_run.main(["run", str(cfg_path)])
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+
+    assert code == 0
+    assert envelope["status"] == "ok"
+    companions = envelope["results"][0]["artifact"]["companions"]
+    assert [item["format"] for item in companions] == ["json"]
+
+    manifest_path = Path(companions[0]["path"])
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["arrays"][0]["dtype"].startswith("<U")
+    assert manifest["arrays"][0]["csv_skipped"] == "non_numeric_dtype"
+    assert not (manifest_path.parent / "structure.csv").exists()
+
+    with np.load(envelope["results"][0]["out"]) as data:
+        assert data["structure"].tolist() == ["ALA", "GLY"]
+
+
+class _NativePlotRenderer:
+    def warp_md_agent_render_plots(self, payload_json, out_dir):
+        out_path = Path(out_dir) / "rg_0_0.svg"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text("<svg></svg>\n")
+        return {
+            "status": "ok",
+            "plot_count": 1,
+            "artifacts": [{"path": str(out_path), "format": "svg"}],
+            "skipped": [],
+        }
+
+
+def test_plot_command_renders_svg_from_result_envelope(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setattr(cli_run.contract, "_native", lambda: _NativePlotRenderer())
+    result_path = tmp_path / "warp_md_result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "results": [
+                    {
+                        "analysis": "rg",
+                        "out": str(tmp_path / "rg.npz"),
+                        "status": "ok",
+                        "artifact": {
+                            "path": str(tmp_path / "rg.npz"),
+                            "format": "npz",
+                            "plot_recommendations": [
+                                {
+                                    "plot_type": "line",
+                                    "x": {
+                                        "field": "index",
+                                        "units": "frame",
+                                        "source": "implicit_index",
+                                    },
+                                    "y": {"field": "rg_nm", "units": "nm"},
+                                    "title": "Radius of gyration",
+                                }
+                            ],
+                            "companions": [],
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    out_dir = tmp_path / "plots"
+
+    code = cli_run.main(["plot", str(result_path), "--out-dir", str(out_dir)])
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+
+    assert code == 0
+    assert envelope["status"] == "ok"
+    assert envelope["plot_count"] == 1
+    svg_path = Path(envelope["artifacts"][0]["path"])
+    assert svg_path.exists()
+    assert svg_path.read_text().startswith("<svg")
 
 
 def test_run_config_dry_run_skips_execution(monkeypatch, tmp_path, capsys) -> None:

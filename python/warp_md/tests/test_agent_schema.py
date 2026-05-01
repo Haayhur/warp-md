@@ -633,6 +633,12 @@ def test_contract_artifact_metadata():
     assert output["kind"] == "timeseries"
     assert output["format"] == "npz"
     assert output["description"] == "Time series of radius of gyration values"
+    plot = output["plot_recommendations"][0]
+    assert plot["plot_type"] == "line"
+    assert plot["x"] == {"field": "time_ps", "units": "ps"}
+    assert plot["y"] == {"field": "rg_nm", "units": "nm"}
+    assert output["companions"][0]["role"] == "npz_companion_manifest"
+    assert output["companions"][1]["role"] == "array_table"
 
 
 def test_artifact_metadata_preserves_contract_description():

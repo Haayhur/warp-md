@@ -181,6 +181,14 @@ warp-md run config.json --stream ndjson    # Real-time progress
 warp-md run config.json --debug-errors     # Include tracebacks
 ```
 
+### Plot Results
+
+```bash
+warp-md plot warp_md_result.json --out-dir plots
+```
+
+Reads `artifact.plot_recommendations` and companion CSV metadata from the result envelope, then emits deterministic SVG plots plus a JSON report.
+
 ### Discovery Commands
 
 ```bash

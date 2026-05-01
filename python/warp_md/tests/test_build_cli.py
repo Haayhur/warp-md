@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from warp_md import cli_run
 from warp_md import build as build_contract
 from warp_md import build_cli
@@ -90,3 +92,41 @@ def test_warp_md_build_forwards_to_build_cli(monkeypatch) -> None:
 
     assert exit_code == 7
     assert captured["argv"] == ["schema", "--kind", "request"]
+
+
+def test_build_cli_run_stream_suppresses_final_payload(monkeypatch, capsys, tmp_path) -> None:
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps({"schema_version": "warp-build.agent.v1"}), encoding="utf-8")
+    captured = {}
+
+    def fake_run(payload, *, stream=False):
+        captured["payload"] = payload
+        captured["stream"] = stream
+        return 0, {"status": "ok"}
+
+    monkeypatch.setattr(build_contract, "run", fake_run)
+
+    exit_code = build_cli.run_cli(["run", str(request), "--stream"])
+
+    assert exit_code == 0
+    assert captured["payload"]["schema_version"] == "warp-build.agent.v1"
+    assert captured["stream"] is True
+    assert capsys.readouterr().out == ""
+
+
+def test_build_cli_run_prints_final_payload_without_stream(monkeypatch, capsys, tmp_path) -> None:
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps({"schema_version": "warp-build.agent.v1"}), encoding="utf-8")
+
+    monkeypatch.setattr(
+        build_contract,
+        "run",
+        lambda payload, *, stream=False: (0, {"status": "ok", "stream": stream}),
+    )
+
+    exit_code = build_cli.run_cli(["run", str(request)])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert '"status": "ok"' in out
+    assert '"stream": false' in out.lower()

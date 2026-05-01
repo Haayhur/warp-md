@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -88,6 +89,8 @@ class ArtifactSpec:
     format: str  # npz, json, csv, etc.
     fields: List[str] = field(default_factory=list)
     description: str = ""
+    plot_recommendations: List[Dict[str, Any]] = field(default_factory=list)
+    companions: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         d = {"kind": self.kind, "format": self.format}
@@ -95,6 +98,10 @@ class ArtifactSpec:
             d["fields"] = self.fields
         if self.description:
             d["description"] = self.description
+        if self.plot_recommendations:
+            d["plot_recommendations"] = self.plot_recommendations
+        if self.companions:
+            d["companions"] = self.companions
         return d
 
 
@@ -149,6 +156,8 @@ class _CatalogArtifactPayload(BaseModel):
     format: str = ""
     fields: List[str] = Field(default_factory=list)
     description: str = ""
+    plot_recommendations: List[Dict[str, Any]] = Field(default_factory=list)
+    companions: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class _CatalogAnalysisPayload(BaseModel):
@@ -210,12 +219,113 @@ def _field_spec_from_dict(payload: Dict[str, Any]) -> FieldSpec:
 
 
 def _artifact_spec_from_payload(payload: _CatalogArtifactPayload) -> ArtifactSpec:
+    plot_recommendations = payload.plot_recommendations or _default_plot_recommendations(
+        payload.kind,
+        payload.fields,
+        payload.description,
+    )
+    companions = payload.companions or _default_companion_specs(payload.format, payload.fields)
     return ArtifactSpec(
         kind=payload.kind,
         format=payload.format,
         fields=payload.fields,
         description=payload.description,
+        plot_recommendations=plot_recommendations,
+        companions=companions,
     )
+
+
+def _default_plot_recommendations(
+    kind: ArtifactKind,
+    fields: List[str],
+    description: str,
+) -> List[Dict[str, Any]]:
+    title = description or ""
+    if kind in ("timeseries", "histogram", "profile") and len(fields) >= 2:
+        return [
+            {
+                "plot_type": "line",
+                "x": _plot_axis(fields[0]),
+                "y": _plot_axis(field),
+                "title": title or field.replace("_", " ").title(),
+            }
+            for field in fields[1:]
+            if field != "..."
+        ]
+    if kind == "table" and len(fields) >= 2:
+        return [
+            {
+                "plot_type": "bar",
+                "x": _plot_axis(fields[0]),
+                "y": _plot_axis(fields[1]),
+                "title": title or fields[1].replace("_", " ").title(),
+            }
+        ]
+    if kind == "grid" and fields:
+        return [
+            {
+                "plot_type": "volume_grid",
+                "z": _plot_axis(fields[0]),
+                "title": title or fields[0].replace("_", " ").title(),
+            }
+        ]
+    if kind == "artifact" and len(fields) >= 2:
+        return [
+            {
+                "plot_type": "line",
+                "x": _plot_axis(fields[0]),
+                "y": _plot_axis(fields[1]),
+                "title": title or fields[1].replace("_", " ").title(),
+            }
+        ]
+    return []
+
+
+def _default_companion_specs(fmt: str, fields: List[str]) -> List[Dict[str, Any]]:
+    if fmt != "npz":
+        return []
+    return [
+        {"format": "json", "role": "npz_companion_manifest", "fields": list(fields)},
+        {"format": "csv", "role": "array_table", "fields": list(fields)},
+    ]
+
+
+def _plot_axis(field: str) -> Dict[str, str]:
+    axis = {"field": field}
+    unit = _field_units(field)
+    if unit:
+        axis["units"] = unit
+    return axis
+
+
+def _field_units(field: str) -> Optional[str]:
+    if field.endswith("_ps"):
+        return "ps"
+    if field.endswith("_nm2") or field.endswith("_nm_2"):
+        return "nm^2"
+    if field.endswith("_nm") or field in {"position", "distance_nm"}:
+        return "nm"
+    if field.endswith("_a3"):
+        return "angstrom^3"
+    if field.endswith("_hz"):
+        return "Hz"
+    if field.endswith("_kJ_per_mol"):
+        return "kJ/mol"
+    if field.endswith("_S_per_cm"):
+        return "S/cm"
+    if field.endswith("_g_cm3"):
+        return "g/cm^3"
+    if field in {
+        "probability",
+        "gr",
+        "acf",
+        "correlation",
+        "q_value",
+        "structure_factor",
+        "cos_theta",
+    }:
+        return "dimensionless"
+    return None
 
 
 def _analysis_contract_from_payload(payload: _CatalogAnalysisPayload) -> AnalysisContract:
@@ -311,7 +421,9 @@ def get_plan_schema(plan_name: str) -> Dict[str, Any]:
         except Exception as exc:
             raise ValueError(f"unknown plan: {plan_name}") from exc
         if isinstance(payload, dict):
-            return payload
+            return _analysis_contract_from_payload(
+                _CatalogAnalysisPayload.model_validate(payload)
+            ).to_dict()
     try:
         canonical = _resolve_analysis_name(plan_name)
     except ValueError:
@@ -891,7 +1003,13 @@ def lint_selection(
                     error=f"Selection syntax error: {sel_exc}",
                 )
         except Exception as load_exc:
-            warnings_list.append(f"Could not load topology for atom count: {load_exc}")
+            fallback_count = _fallback_pdb_selection_count(system_path, expr_stripped)
+            if fallback_count is None:
+                warnings_list.append(f"Could not load topology for atom count: {load_exc}")
+            else:
+                matched_atoms, total_atoms = fallback_count
+                if matched_atoms == 0:
+                    warnings_list.append("Selection matched zero atoms")
 
     return SelectionLintResult(
         valid=True,
@@ -901,6 +1019,49 @@ def lint_selection(
         total_atoms=total_atoms,
         warnings=warnings_list,
     )
+
+
+def _fallback_pdb_selection_count(
+    system_path: str,
+    expr: str,
+) -> Optional[tuple[int, int]]:
+    path = Path(system_path)
+    if path.suffix.lower() != ".pdb" or not path.exists():
+        return None
+    atoms: List[Dict[str, str]] = []
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+        atoms.append(
+            {
+                "name": line[12:16].strip(),
+                "resname": line[17:20].strip(),
+                "record": line[:6].strip(),
+            }
+        )
+    if not atoms:
+        return None
+
+    selected = set(range(len(atoms)))
+    for clause in expr.split(" and "):
+        parts = clause.strip().split()
+        if clause.strip() in ("all", "*"):
+            clause_indices = set(range(len(atoms)))
+        elif clause.strip() == "protein":
+            clause_indices = {
+                idx for idx, atom in enumerate(atoms)
+                if atom["record"] == "ATOM" and atom["resname"] not in {"HOH", "SOL", "WAT"}
+            }
+        elif len(parts) == 2 and parts[0] in {"name", "resname"}:
+            field, value = parts
+            clause_indices = {
+                idx for idx, atom in enumerate(atoms)
+                if atom[field] == value
+            }
+        else:
+            return None
+        selected &= clause_indices
+    return len(selected), len(atoms)
 
 
 # Keyword mapping for goal-to-analysis suggestions
@@ -1214,6 +1375,19 @@ def suggest_analyses(
     )
 
 
+def render_plots(payload: JsonObject, out_dir: str = "plots") -> JsonObject:
+    """Render deterministic SVG plots from a result envelope."""
+    native = _native()
+    if native is not None and hasattr(native, "warp_md_agent_render_plots"):
+        result = native.warp_md_agent_render_plots(json.dumps(payload), out_dir)
+        if isinstance(result, dict):
+            return result
+    raise RuntimeError(
+        "warp-md plot requires native traj_py bindings with "
+        "warp_md_agent_render_plots; rebuild with maturin develop"
+    )
+
+
 __all__ = [
     "ANALYSIS_METADATA",
     "get_plan_schema",
@@ -1224,6 +1398,7 @@ __all__ = [
     "capabilities",
     "lint_selection",
     "suggest_analyses",
+    "render_plots",
     "ValidationResult",
     "ValidationErrorDetail",
     "SelectionLintResult",

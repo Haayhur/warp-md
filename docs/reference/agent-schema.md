@@ -186,7 +186,20 @@ Every run produces a JSON envelope — success or failure. Your agent always kno
         "path": "results/rg.npz",
         "format": "npz",
         "bytes": 40960,
-        "sha256": "a1b2c3d4..."
+        "sha256": "a1b2c3d4...",
+        "plot_recommendations": [
+          {
+            "artifact": "results/rg.npz",
+            "plot_type": "line",
+            "x": {"field": "time_ps", "units": "ps"},
+            "y": {"field": "rg_nm", "units": "nm"},
+            "title": "Time series of radius of gyration values"
+          }
+        ],
+        "companions": [
+          {"path": "results/rg/manifest.json", "format": "json", "role": "npz_companion_manifest"},
+          {"path": "results/rg/rg_nm.csv", "format": "csv", "role": "array_table", "source_key": "rg_nm"}
+        ]
       }
     }
   ]
@@ -236,6 +249,8 @@ Every successfully saved result includes:
 | `format` | File format (`npz`, `npy`, `csv`, `json`) |
 | `bytes` | File size |
 | `sha256` | Content hash for verification |
+| `plot_recommendations` | Rust-native deterministic UI hints: artifact path, plot type, x/y/z fields, units, and title |
+| `companions` | Non-Python companion artifacts for `.npz` outputs, including a JSON manifest and CSV tables for 1D/2D arrays |
 
 ---
 

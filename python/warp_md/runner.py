@@ -296,7 +296,7 @@ def run_analyses(
 
         try:
             output = plan.run(traj, system, chunk_frames=chunk, device=dev)
-            saved_path = _save_output(out_path, output)
+            saved_path = _save_output(out_path, output, analysis_name=name)
         except Exception as exc:
             if effective_fail_fast:
                 return _error_envelope_model(

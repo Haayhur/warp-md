@@ -423,3 +423,69 @@ fn example_bundle_out_materializes_runnable_example_flow() {
     assert_eq!(run_payload["status"], "ok");
     assert_eq!(run_payload["schema_version"], "warp-build.agent.v1");
 }
+
+#[test]
+fn run_stream_emits_ordered_ndjson_events_to_stderr() {
+    let (_dir, bundle) = make_bundle_dir("run_stream_cli");
+    let request = temp_path("run_stream_request.json");
+    let coords = temp_path("run_stream_coords.pdb");
+    let manifest = temp_path("run_stream_manifest.json");
+    let charge = temp_path("run_stream_charge.json");
+    write_json(
+        &request,
+        &json!({
+            "schema_version": "warp-build.agent.v1",
+            "request_id": "cli-stream-001",
+            "source_ref": {
+                "bundle_id": "pmma_param_bundle_v1",
+                "bundle_path": bundle.to_string_lossy(),
+            },
+            "target": {
+                "mode": "linear_homopolymer",
+                "repeat_unit": "A",
+                "n_repeat": 3,
+                "termini": {"head": "default", "tail": "default"},
+                "stereochemistry": {"mode": "inherit"},
+            },
+            "realization": {
+                "conformation_mode": "extended"
+            },
+            "artifacts": {
+                "coordinates": coords.to_string_lossy(),
+                "build_manifest": manifest.to_string_lossy(),
+                "charge_manifest": charge.to_string_lossy(),
+            }
+        }),
+    );
+
+    let output = warp_build()
+        .args(["run", "--stream"])
+        .arg(&request)
+        .output()
+        .expect("run warp-build stream");
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let events: Vec<Value> = String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("parse stream event"))
+        .collect();
+    assert!(
+        events.len() >= 5,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(events.first().unwrap()["event"], "run_started");
+    assert_eq!(events.first().unwrap()["request_id"], "cli-stream-001");
+    assert!(events.iter().any(|event| event["event"] == "source_loaded"));
+    assert!(events
+        .iter()
+        .any(|event| event["event"] == "chain_growth_started"));
+    assert!(events
+        .iter()
+        .any(|event| event["event"] == "manifest_written"));
+    assert_eq!(events.last().unwrap()["event"], "run_completed");
+    assert!(coords.exists());
+    assert!(manifest.exists());
+    assert!(charge.exists());
+}

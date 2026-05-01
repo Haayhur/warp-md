@@ -107,6 +107,37 @@ A successful build emits:
 
 The build manifest is the canonical handoff artifact for downstream `warp-pack`.
 
+## End-to-End Verification
+
+Use the lightweight verifier when you need behavior evidence beyond unit tests:
+
+```bash
+python scripts/validation/verify_warp_build_e2e.py \
+  --warp-build-bin target/debug/warp-build \
+  --workdir results/manifest/warp_build_e2e
+```
+
+The verifier runs the native CLI, materializes an example bundle, inspects it,
+records a deep preflight cache, runs with `--stream` and `cache_mode=require`,
+then checks emitted artifacts, manifest digests, topology graph consistency,
+QC status, stream event ordering, and basic coordinate sanity. It also builds a
+branched PMMA fixture as a non-linear polymer form and verifies the handoff
+manifest/topology graph records branch depth. It exits nonzero if the binary is
+stale or the observed behavior no longer matches the contract.
+
+For broader generated-bundle audits, including Python-generated 3mer training
+data from simple linear templates through bulky, star, graph, and fixture
+branched cases:
+
+```bash
+python scripts/validation/audit_warp_build_usecases.py \
+  --warp-build-bin target/debug/warp-build
+```
+
+This writes a CSV and summary JSON under
+`results/manifest/warp_build_usecase_audit/` and preserves failing debug
+coordinates for clash diagnosis.
+
 Successful handoff tiers:
 
 - `md_ready`: transferable source topology + charge handoff available

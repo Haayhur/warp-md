@@ -489,7 +489,7 @@ def run_config(
             chunk = item.get("chunk_frames", default_chunk)
             try:
                 output = plan.run(traj, system, chunk_frames=chunk, device=device)
-                saved_path = _save_output(out_path, output)
+                saved_path = _save_output(out_path, output, analysis_name=name)
             except Exception as exc:
                 if fail_fast:
                     raise RunContractError(
@@ -820,7 +820,7 @@ def run_single_analysis(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
         try:
             output = plan.run(traj, system, chunk_frames=args.chunk_frames, device=args.device)
             out_path = Path(args.out or f"{args.analysis}.npz")
-            saved_path = _save_output(str(out_path), output)
+            saved_path = _save_output(str(out_path), output, analysis_name=plan_name)
         except Exception as exc:
             raise RunContractError(
                 _EXIT_RUNTIME_EXEC,
@@ -1236,6 +1236,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="alias for --format json",
     )
 
+    plot_cmd = sub.add_parser(
+        "plot",
+        help="render deterministic SVG plots from a result envelope",
+    )
+    plot_cmd.add_argument("result", help="path to warp-md result JSON envelope")
+    plot_cmd.add_argument(
+        "--out-dir",
+        default="plots",
+        help="directory for generated SVG plots",
+    )
+    plot_cmd.add_argument(
+        "--format",
+        choices=["json", "yaml"],
+        default="json",
+        help="output format",
+    )
+    plot_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="alias for --format json",
+    )
+
     template = sub.add_parser("contract-template", help="generate request template")
     template.add_argument("analysis", help="analysis name")
     template.add_argument(
@@ -1409,6 +1431,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         return _validate_command(args)
     if args.cmd == "plan-schema":
         return _plan_schema_command(args)
+    if args.cmd == "plot":
+        payload = json.loads(Path(args.result).read_text())
+        result = contract.render_plots(payload, out_dir=args.out_dir)
+        fmt = "json" if args.json else args.format
+        _format_output(result, fmt)
+        return 0
     if args.cmd == "contract-template":
         return _template_command(args)
     if args.cmd == "normalize":
