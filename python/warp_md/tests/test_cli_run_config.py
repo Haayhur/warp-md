@@ -25,6 +25,15 @@ def _write_config(tmp_path: Path, payload: dict) -> Path:
     return cfg_path
 
 
+def _write_topology(path: Path) -> None:
+    path.write_text(
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1       1.458   0.000   0.000  1.00  0.00           C\n"
+        "END\n",
+        encoding="utf-8",
+    )
+
+
 def test_run_config_emits_json_envelope(monkeypatch, tmp_path, capsys) -> None:
     cfg_path = _write_config(
         tmp_path,
@@ -184,6 +193,68 @@ def test_plot_command_renders_svg_from_result_envelope(monkeypatch, tmp_path, ca
     svg_path = Path(envelope["artifacts"][0]["path"])
     assert svg_path.exists()
     assert svg_path.read_text().startswith("<svg")
+
+
+def test_schema_command_supports_plot_manifest(capsys) -> None:
+    code = cli_run.main(["schema", "--kind", "plot-manifest"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert code == 0
+    assert payload["title"] == "PlotManifest"
+
+
+def test_bundle_plan_command_outputs_expanded_request(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setattr(contract, "_native", lambda: None)
+    top = tmp_path / "topology.pdb"
+    _write_topology(top)
+    traj = tmp_path / "traj.xtc"
+    traj.write_bytes(b"placeholder")
+    energy = tmp_path / "energy.csv"
+    energy.write_text("time,potential_energy\n0,-1.0\n", encoding="utf-8")
+    cfg_path = _write_config(
+        tmp_path,
+        {
+            "system": str(top),
+            "trajectory": str(traj),
+            "inputs": {"energy_table": {"path": str(energy)}},
+            "analyses": [{"name": "rg", "selection": "all"}],
+        },
+    )
+
+    code = cli_run.main(["bundle-plan", "standard_md_report", str(cfg_path)])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert code == 0
+    assert payload["bundle"] == "standard_md_report"
+    assert any(item["name"] == "rg" for item in payload["analyses"])
+    assert "request" in payload
+
+
+def test_inspect_inputs_reports_external_table_and_missing_traj(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setattr(contract, "_native", lambda: None)
+    top = tmp_path / "topology.pdb"
+    _write_topology(top)
+    state = tmp_path / "state.xvg"
+    state.write_text("# state\n@ xaxis label \"time\"\n0 300 0.99\n", encoding="utf-8")
+    cfg_path = _write_config(
+        tmp_path,
+        {
+            "system": str(top),
+            "trajectory": str(tmp_path / "missing.xtc"),
+            "inputs": {"state_table": {"path": str(state), "format": "xvg"}},
+            "analyses": [{"name": "rg", "selection": "all"}],
+        },
+    )
+
+    code = cli_run.main(["inspect-inputs", str(cfg_path)])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert code == 2
+    assert payload["external_tables"]["state_table"]["columns"] == ["column_1", "column_2", "column_3"]
+    assert any(error["code"] == "E_INPUT_MISSING" for error in payload["errors"])
 
 
 def test_run_config_dry_run_skips_execution(monkeypatch, tmp_path, capsys) -> None:

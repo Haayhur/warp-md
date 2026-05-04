@@ -1009,6 +1009,32 @@ def _capabilities_command(args) -> int:
     return 0
 
 
+def _bundle_plan_command(args) -> int:
+    """Handle bundle-plan command."""
+    try:
+        payload = _read_request(args.request, args.stdin)
+        result = contract.bundle_plan(args.bundle, payload)
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 2
+    fmt = "json" if args.json else args.format
+    _format_output(result, fmt)
+    return 0 if result.get("status") in {"ok", "partial"} else 2
+
+
+def _inspect_inputs_command(args) -> int:
+    """Handle inspect-inputs command."""
+    try:
+        payload = _read_request(args.request, args.stdin)
+        result = contract.inspect_inputs(payload)
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 2
+    fmt = "json" if args.json else args.format
+    _format_output(result, fmt)
+    return 0 if result.get("status") == "ok" else 2
+
+
 def _lint_selection_command(args) -> int:
     """Handle lint-selection command."""
     result = contract.lint_selection(
@@ -1046,6 +1072,22 @@ def _suggest_command(args) -> int:
     fmt = "json" if args.json else args.format
     _format_output(output, fmt)
     return 0
+
+
+def _add_request_format_args(cmd: argparse.ArgumentParser, *, stdin_help: str) -> None:
+    cmd.add_argument("request", nargs="?", help="path to request.json")
+    cmd.add_argument("--stdin", action="store_true", help=stdin_help)
+    cmd.add_argument(
+        "--format",
+        choices=["json", "yaml"],
+        default="json",
+        help="output format",
+    )
+    cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="alias for --format json",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1186,7 +1228,7 @@ def build_parser() -> argparse.ArgumentParser:
     schema = sub.add_parser("schema", help="print run-config JSON schema for agents")
     schema.add_argument(
         "--kind",
-        choices=["request", "result", "event"],
+        choices=["request", "result", "event", "plot-manifest"],
         default="request",
         help="schema kind",
     )
@@ -1208,19 +1250,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Contract validation commands
     validate_cmd = sub.add_parser("validate", help="validate run config")
-    validate_cmd.add_argument("request", nargs="?", help="path to request.json")
-    validate_cmd.add_argument("--stdin", action="store_true", help="read from stdin")
-    validate_cmd.add_argument(
-        "--format",
-        choices=["json", "yaml"],
-        default="json",
-        help="output format",
-    )
-    validate_cmd.add_argument(
-        "--json",
-        action="store_true",
-        help="alias for --format json",
-    )
+    _add_request_format_args(validate_cmd, stdin_help="read from stdin")
 
     plan_schema = sub.add_parser("plan-schema", help="get analysis contract schema")
     plan_schema.add_argument("name", help="analysis name")
@@ -1278,23 +1308,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     normalize = sub.add_parser("normalize", help="canonicalize request")
-    normalize.add_argument("request", nargs="?", help="path to request.json")
-    normalize.add_argument("--stdin", action="store_true", help="read from stdin")
+    _add_request_format_args(normalize, stdin_help="read from stdin")
     normalize.add_argument(
         "--strip-unknown",
         action="store_true",
         help="remove unknown fields",
-    )
-    normalize.add_argument(
-        "--format",
-        choices=["json", "yaml"],
-        default="json",
-        help="output format",
-    )
-    normalize.add_argument(
-        "--json",
-        action="store_true",
-        help="alias for --format json",
     )
 
     capabilities = sub.add_parser("capabilities", help="print capabilities fingerprint")
@@ -1309,6 +1327,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="alias for --format json",
     )
+
+    bundle_plan = sub.add_parser("bundle-plan", help="expand an advertised analysis bundle")
+    bundle_plan.add_argument("bundle", help="bundle name, e.g. standard_md_report")
+    _add_request_format_args(bundle_plan, stdin_help="read request from stdin")
+
+    inspect_inputs = sub.add_parser("inspect-inputs", help="inspect request inputs without running analyses")
+    _add_request_format_args(inspect_inputs, stdin_help="read request from stdin")
 
     # Selection linting
     lint_selection = sub.add_parser("lint-selection", help="validate selection expression")
@@ -1443,6 +1468,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return _normalize_command(args)
     if args.cmd == "capabilities":
         return _capabilities_command(args)
+    if args.cmd == "bundle-plan":
+        return _bundle_plan_command(args)
+    if args.cmd == "inspect-inputs":
+        return _inspect_inputs_command(args)
     if args.cmd == "lint-selection":
         return _lint_selection_command(args)
     if args.cmd == "suggest":

@@ -1,5 +1,8 @@
 import json
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -7,8 +10,12 @@ from pydantic import ValidationError
 from warp_md.agent_schema import (
     AGENT_REQUEST_SCHEMA_VERSION,
     ArtifactMetadata,
+    ErrorCode,
+    RunRequest,
+    plot_manifest_json_schema,
     run_event_json_schema,
     render_run_request_schema,
+    render_agent_schema,
     run_request_json_schema,
     validate_run_event_payload,
     validate_run_result_payload,
@@ -119,6 +126,15 @@ def test_render_schema_json():
     payload = json.loads(text)
     assert payload["title"] == "RunRequest"
     assert "analyses" in payload.get("properties", {})
+    assert "inputs" in payload.get("properties", {})
+
+
+def test_plot_manifest_schema_available():
+    payload = plot_manifest_json_schema()
+    assert payload["title"] == "PlotManifest"
+    assert "artifacts" in payload.get("properties", {})
+    rendered = json.loads(render_agent_schema("plot-manifest"))
+    assert rendered["title"] == "PlotManifest"
 
 
 def test_schema_declares_analysis_name_enum():
@@ -138,6 +154,221 @@ def test_validate_run_request_enforces_docking_required_fields():
                 "analyses": [{"name": "docking", "receptor_mask": "protein"}],
             }
         )
+
+
+def test_validate_run_request_accepts_external_inputs():
+    req = validate_run_request(
+        {
+            "system": "topology.pdb",
+            "trajectory": "traj.xtc",
+            "inputs": {"energy_table": {"path": "energy.xvg", "format": "xvg"}},
+            "analyses": [{"name": "rg", "selection": "protein"}],
+        }
+    )
+    assert req.inputs == {"energy_table": {"path": "energy.xvg", "format": "xvg"}}
+
+
+def test_validate_run_request_accepts_string_external_inputs():
+    req = validate_run_request(
+        {
+            "system": "topology.pdb",
+            "trajectory": "traj.xtc",
+            "inputs": {"energy_table": "energy.csv"},
+            "analyses": [{"name": "rg", "selection": "protein"}],
+        }
+    )
+    assert req.inputs == {"energy_table": {"path": "energy.csv"}}
+
+
+def test_contract_capabilities_expose_bundles():
+    bundles = contract.capabilities()["analysis_bundles"]
+    names = {bundle["name"] for bundle in bundles}
+    assert {"standard_md_report", "protein_md_report", "solvent_ion_report", "polymer_report"} <= names
+
+
+def test_contract_capabilities_error_codes_match_schema_literal():
+    assert tuple(contract.capabilities()["error_codes"]) == contract.ERROR_CODES
+    assert tuple(ErrorCode.__args__) == contract.ERROR_CODES
+
+
+def test_agent_contract_snapshot_is_current():
+    repo_root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [sys.executable, "scripts/generate_agent_contract_snapshot.py", "--check"],
+        cwd=repo_root,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_python_fallback_contract_metadata_comes_from_snapshot():
+    from warp_md import _agent_contract_snapshot
+
+    assert contract.ERROR_CODES == tuple(_agent_contract_snapshot.ERROR_CODES)
+    assert contract.ANALYSIS_BUNDLES == _agent_contract_snapshot.ANALYSIS_BUNDLES
+
+
+def test_python_request_schema_fields_match_run_request_model():
+    schema_fields = set(run_request_json_schema()["properties"])
+    model_fields = set(RunRequest.model_fields)
+    assert schema_fields == model_fields
+
+
+def test_native_contract_parity_when_bindings_are_available():
+    native = contract._native()
+    if native is None:
+        pytest.skip("native traj_py bindings are unavailable")
+
+    native_request_schema = native.warp_md_agent_schema("request")
+    python_request_schema = run_request_json_schema()
+    assert set(native_request_schema["properties"]) == set(python_request_schema["properties"])
+
+    native_caps = native.warp_md_agent_capabilities()
+    python_caps = contract.capabilities()
+    assert native_caps["error_codes"] == python_caps["error_codes"]
+    assert {
+        item["name"]: item
+        for item in native_caps["analysis_bundles"]
+    } == {
+        item["name"]: item
+        for item in python_caps["analysis_bundles"]
+    }
+
+
+def test_plan_schema_includes_input_requirements():
+    schema = contract.get_plan_schema("rg")
+    requirements = schema["input_requirements"]
+    assert requirements["required"] == ["topology", "trajectory"]
+    assert requirements["requires_selections"] is True
+    assert requirements["selection_fields"] == ["selection"]
+
+
+def test_parse_external_tables_normalizes_columns(tmp_path):
+    csv_path = tmp_path / "energy.csv"
+    csv_path.write_text("Time (ps),Potential Energy\n0,-1.0\n", encoding="utf-8")
+    tsv_path = tmp_path / "state.tsv"
+    tsv_path.write_text("time\ttemperature K\n0\t300\n", encoding="utf-8")
+    xvg_path = tmp_path / "state.xvg"
+    xvg_path.write_text("@ title \"state\"\n# comment\n0 300 0.99\n", encoding="utf-8")
+
+    assert contract.parse_external_table({"path": str(csv_path)})["columns"] == [
+        "time_ps",
+        "potential_energy",
+    ]
+    assert contract.parse_external_table({"path": str(tsv_path)})["columns"] == [
+        "time",
+        "temperature_k",
+    ]
+    assert contract.parse_external_table({"path": str(xvg_path)})["columns"] == [
+        "column_1",
+        "column_2",
+        "column_3",
+    ]
+
+
+def test_bundle_plan_expands_valid_members_and_external_plots(monkeypatch, tmp_path):
+    monkeypatch.setattr(contract, "_native", lambda: None)
+    top = tmp_path / "topology.pdb"
+    _write_selection_topology(top)
+    traj = tmp_path / "traj.xtc"
+    traj.write_bytes(b"placeholder")
+    energy = tmp_path / "energy.csv"
+    energy.write_text("time,potential_energy\n0,-1.0\n", encoding="utf-8")
+    request = {
+        "system": str(top),
+        "trajectory": str(traj),
+        "inputs": {"energy_table": {"path": str(energy)}},
+        "analyses": [{"name": "rg", "selection": "all"}],
+    }
+
+    plan = contract.bundle_plan("standard_md_report", request)
+
+    assert plan["status"] in {"ok", "partial"}
+    assert any(item["name"] == "rg" for item in plan["analyses"])
+    assert any(plot["source_input"] == "energy_table" for plot in plan["plot_recommendations"])
+
+
+def test_bundle_plan_uses_actual_energy_column(monkeypatch, tmp_path):
+    monkeypatch.setattr(contract, "_native", lambda: None)
+    top = tmp_path / "topology.pdb"
+    _write_selection_topology(top)
+    traj = tmp_path / "traj.xtc"
+    traj.write_bytes(b"placeholder")
+    energy = tmp_path / "energy.csv"
+    energy.write_text("time,potential\n0,-1.0\n", encoding="utf-8")
+    request = {
+        "system": str(top),
+        "trajectory": str(traj),
+        "inputs": {"energy_table": str(energy)},
+        "analyses": [{"name": "rg", "selection": "all"}],
+    }
+
+    plan = contract.bundle_plan("standard_md_report", request)
+
+    energy_plot = next(
+        plot
+        for plot in plan["plot_recommendations"]
+        if plot["source_input"] == "energy_table"
+    )
+    assert energy_plot["y"]["field"] == "potential"
+
+
+def test_bundle_plan_reports_missing_external_table_columns(monkeypatch, tmp_path):
+    monkeypatch.setattr(contract, "_native", lambda: None)
+    top = tmp_path / "topology.pdb"
+    _write_selection_topology(top)
+    traj = tmp_path / "traj.xtc"
+    traj.write_bytes(b"placeholder")
+    energy = tmp_path / "energy.csv"
+    energy.write_text("time,volume\n0,10\n", encoding="utf-8")
+
+    plan = contract.bundle_plan(
+        "standard_md_report",
+        {
+            "system": str(top),
+            "trajectory": str(traj),
+            "inputs": {"energy_table": {"path": str(energy)}},
+            "analyses": [{"name": "rg", "selection": "all"}],
+        },
+    )
+
+    assert any(item["code"] == "E_EXTERNAL_TABLE_COLUMN" for item in plan["skipped"])
+
+
+def test_external_table_errors_distinguish_format_from_load(monkeypatch, tmp_path):
+    monkeypatch.setattr(contract, "_native", lambda: None)
+    top = tmp_path / "topology.pdb"
+    _write_selection_topology(top)
+    traj = tmp_path / "traj.xtc"
+    traj.write_bytes(b"placeholder")
+
+    unsupported = tmp_path / "energy.edr"
+    unsupported.write_text("binary-ish", encoding="utf-8")
+    unsupported_plan = contract.bundle_plan(
+        "standard_md_report",
+        {
+            "system": str(top),
+            "trajectory": str(traj),
+            "inputs": {"energy_table": {"path": str(unsupported)}},
+            "analyses": [{"name": "rg", "selection": "all"}],
+        },
+    )
+
+    empty_csv = tmp_path / "energy.csv"
+    empty_csv.write_text("", encoding="utf-8")
+    load_plan = contract.bundle_plan(
+        "standard_md_report",
+        {
+            "system": str(top),
+            "trajectory": str(traj),
+            "inputs": {"energy_table": {"path": str(empty_csv)}},
+            "analyses": [{"name": "rg", "selection": "all"}],
+        },
+    )
+
+    assert any(item["code"] == "E_UNSUPPORTED_FORMAT" for item in unsupported_plan["skipped"])
+    assert any(item["code"] == "E_EXTERNAL_TABLE_LOAD" for item in load_plan["skipped"])
 
 
 def test_event_schema_includes_progress_fields():

@@ -13,6 +13,7 @@ const WARP_MD_RUN_REQUEST_TOP_LEVEL_FIELDS: &[&str] = &[
     "topology",
     "trajectory",
     "traj",
+    "inputs",
     "device",
     "stream",
     "chunk_frames",
@@ -238,24 +239,164 @@ fn warp_md_title_from_field(field: &str) -> String {
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
+struct InputRequirements {
+    required: Vec<String>,
+    optional: Vec<String>,
+    requires_box: bool,
+    requires_velocities: bool,
+    requires_charges: bool,
+    requires_selections: bool,
+    supports_no_trajectory: bool,
+    selection_fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct AnalysisBundle {
+    name: &'static str,
+    description: &'static str,
+    analyses: &'static [&'static str],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_tables: Option<&'static [&'static str]>,
+}
+
+const WARP_MD_ANALYSIS_BUNDLES: &[AnalysisBundle] = &[
+    AnalysisBundle {
+        name: "standard_md_report",
+        description: "General MD report: structure, transport, density, and external state/energy series.",
+        analyses: &["rg", "rmsd", "rdf", "msd", "density"],
+        external_tables: Some(&["energy_table", "state_table"]),
+    },
+    AnalysisBundle {
+        name: "protein_md_report",
+        description: "Protein trajectory report: fold stability, secondary structure, hydrogen bonds, contacts.",
+        analyses: &["rg", "rmsd", "dssp", "hbond", "native_contacts"],
+        external_tables: None,
+    },
+    AnalysisBundle {
+        name: "solvent_ion_report",
+        description: "Solvent and ion report: RDF, diffusion, electrostatics, and hydration structure.",
+        analyses: &["rdf", "msd", "conductivity", "dielectric", "water_count", "watershell"],
+        external_tables: None,
+    },
+    AnalysisBundle {
+        name: "polymer_report",
+        description: "Polymer report: size, chain geometry, persistence, and free volume.",
+        analyses: &[
+            "rg",
+            "chain_rg",
+            "end_to_end",
+            "contour_length",
+            "persistence_length",
+            "bondi_ffv",
+        ],
+        external_tables: None,
+    },
+];
+
+const WARP_MD_BOX_REQUIRED_ANALYSES: &[&str] = &[
+    "bondi_ffv",
+    "conductivity",
+    "density",
+    "dielectric",
+    "free_volume",
+    "gist",
+    "rdf",
+    "structure_factor",
+    "volmap",
+    "water_count",
+    "watershell",
+];
+
+const WARP_MD_VELOCITY_REQUIRED_ANALYSES: &[&str] = &["equipartition"];
+
+const WARP_MD_ERROR_CODES: &[&str] = &[
+    "E_CONFIG_LOAD",
+    "E_CONFIG_VALIDATION",
+    "E_CONFIG_VERSION",
+    "E_CONFIG_MISSING_FIELD",
+    "E_ANALYSIS_UNKNOWN",
+    "E_ANALYSIS_SPEC",
+    "E_SELECTION_EMPTY",
+    "E_SELECTION_INVALID",
+    "E_SYSTEM_LOAD",
+    "E_TRAJECTORY_LOAD",
+    "E_TRAJECTORY_EOF",
+    "E_RUNTIME_EXEC",
+    "E_OUTPUT_DIR",
+    "E_OUTPUT_WRITE",
+    "E_DEVICE_UNAVAILABLE",
+    "E_ATLAS_FETCH",
+    "E_INPUT_MISSING",
+    "E_UNSUPPORTED_FORMAT",
+    "E_TOPOLOGY_TRAJECTORY_MISMATCH",
+    "E_TOPOLOGY_ATOM_MISSING",
+    "E_NO_FRAMES",
+    "E_EXTERNAL_TABLE_LOAD",
+    "E_EXTERNAL_TABLE_COLUMN",
+    "E_PLOT_RENDER",
+    "E_BUNDLE_PARTIAL",
+    "E_INTERNAL",
+];
+
+#[derive(Clone, Debug)]
 struct WarpMdAnalysisContract {
     name: String,
-    #[serde(default)]
     aliases: Vec<String>,
-    #[serde(default)]
     description: String,
-    #[serde(default)]
     required_fields: Vec<String>,
-    #[serde(default)]
     optional_fields: Vec<String>,
-    #[serde(default)]
     fields: std::collections::BTreeMap<String, WarpMdFieldSpec>,
-    #[serde(default)]
     outputs: Vec<WarpMdArtifactSpec>,
-    #[serde(default)]
     tags: Vec<String>,
-    #[serde(default)]
     examples: Vec<serde_json::Value>,
+}
+
+impl serde::Serialize for WarpMdAnalysisContract {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let input_requirements = warp_md_input_requirements(self);
+        let mut state = serializer.serialize_struct("WarpMdAnalysisContract", 10)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("aliases", &self.aliases)?;
+        state.serialize_field("description", &self.description)?;
+        state.serialize_field("required_fields", &self.required_fields)?;
+        state.serialize_field("optional_fields", &self.optional_fields)?;
+        state.serialize_field("fields", &self.fields)?;
+        state.serialize_field("outputs", &self.outputs)?;
+        state.serialize_field("input_requirements", &input_requirements)?;
+        state.serialize_field("tags", &self.tags)?;
+        state.serialize_field("examples", &self.examples)?;
+        state.end()
+    }
+}
+
+fn warp_md_input_requirements(contract: &WarpMdAnalysisContract) -> InputRequirements {
+    let selection_fields: Vec<String> = contract
+        .fields
+        .iter()
+        .filter_map(|(name, spec)| match spec.semantic_type.as_str() {
+            "selection" | "mask" => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    let requires_box = WARP_MD_BOX_REQUIRED_ANALYSES.contains(&contract.name.as_str());
+    let requires_velocities = WARP_MD_VELOCITY_REQUIRED_ANALYSES.contains(&contract.name.as_str());
+    let requires_charges = contract
+        .required_fields
+        .iter()
+        .any(|field| field == "charges");
+    InputRequirements {
+        required: vec!["topology".into(), "trajectory".into()],
+        optional: Vec::new(),
+        requires_box,
+        requires_velocities,
+        requires_charges,
+        requires_selections: !selection_fields.is_empty(),
+        supports_no_trajectory: false,
+        selection_fields,
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -396,6 +537,8 @@ struct RunRequest {
     trajectory: Option<IoSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     traj: Option<IoSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inputs: Option<std::collections::BTreeMap<String, IoSpec>>,
     #[serde(default = "default_device_auto")]
     #[schemars(default = "default_device_auto")]
     device: String,
@@ -451,6 +594,70 @@ struct ArtifactCompanionMetadata {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct PlotArtifact {
+    path: String,
+    format: String,
+    #[serde(default = "default_plot_role")]
+    #[schemars(default = "default_plot_role")]
+    role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plot_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_artifact: Option<String>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+fn default_plot_role() -> String {
+    "plot".into()
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct PlotSkippedItem {
+    reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    analysis: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plot_type: Option<String>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum PlotManifestStatus {
+    Ok,
+    Error,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct PlotManifest {
+    #[serde(default = "default_result_schema_version")]
+    #[schemars(default = "default_result_schema_version")]
+    schema_version: String,
+    #[serde(default = "default_plot_manifest_status")]
+    #[schemars(default = "default_plot_manifest_status")]
+    status: PlotManifestStatus,
+    plot_count: u64,
+    #[serde(default)]
+    artifacts: Vec<PlotArtifact>,
+    #[serde(default)]
+    skipped: Vec<PlotSkippedItem>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+fn default_result_schema_version() -> String {
+    WARP_MD_AGENT_SCHEMA_VERSION.to_string()
+}
+
+fn default_plot_manifest_status() -> PlotManifestStatus {
+    PlotManifestStatus::Ok
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum RunResultStatus {
     Ok,
@@ -466,16 +673,6 @@ struct RunResultEntry {
     artifact: Option<ArtifactMetadata>,
     #[serde(flatten)]
     extra: std::collections::BTreeMap<String, serde_json::Value>,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-struct RunErrorDetail {
-    #[serde(rename = "type")]
-    detail_type: String,
-    field: String,
-    message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    context: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -497,6 +694,15 @@ enum ErrorCode {
     EOutputWrite,
     EDeviceUnavailable,
     EAtlasFetch,
+    EInputMissing,
+    EUnsupportedFormat,
+    ETopologyTrajectoryMismatch,
+    ETopologyAtomMissing,
+    ENoFrames,
+    EExternalTableLoad,
+    EExternalTableColumn,
+    EPlotRender,
+    EBundlePartial,
     EInternal,
 }
 
@@ -796,13 +1002,17 @@ fn warp_md_request_schema_value() -> Result<serde_json::Value, String> {
 }
 
 fn warp_md_agent_schema_value(kind: &str) -> Result<serde_json::Value, String> {
-    let mut value = match kind.trim().to_ascii_lowercase().as_str() {
-        "request" => return warp_md_request_schema_value(),
+    let target = kind.trim().to_ascii_lowercase();
+    if target == "request" {
+        return warp_md_request_schema_value();
+    }
+    let mut value = match target.as_str() {
         "result" => warp_md_schema_value::<RunEnvelope>()?,
         "event" => warp_md_schema_value::<RunEventSchema>()?,
-        other => {
+        "plot-manifest" | "plot_manifest" => warp_md_schema_value::<PlotManifest>()?,
+        _ => {
             return Err(format!(
-                "schema target must be 'request', 'result', or 'event', got '{other}'"
+                "schema target must be 'request', 'result', 'event', or 'plot-manifest', got '{target}'"
             ))
         }
     };
@@ -2411,6 +2621,8 @@ fn warp_md_agent_capabilities<'py>(py: Python<'py>) -> PyResult<PyObject> {
         "schema_version": WARP_MD_AGENT_SCHEMA_VERSION,
         "available_plans": available_plans,
         "plan_catalog_hash": warp_md_catalog_hash(),
+        "analysis_bundles": WARP_MD_ANALYSIS_BUNDLES,
+        "error_codes": WARP_MD_ERROR_CODES,
         "supports_streaming": true,
         "supports_selection_linting": true,
     });
@@ -2610,6 +2822,12 @@ mod tests {
         let contract = warp_md_contract_for_name("bondi-ffv").expect("bondi_ffv contract");
         assert_eq!(contract.name, "bondi_ffv");
         assert!(contract.fields.contains_key("bondi_scale"));
+        let value = serde_json::to_value(&contract).expect("contract json");
+        assert_eq!(
+            value["input_requirements"]["required"],
+            serde_json::json!(["topology", "trajectory"])
+        );
+        assert_eq!(value["input_requirements"]["requires_box"], true);
     }
 
     #[test]
@@ -2638,6 +2856,7 @@ mod tests {
         let schema = warp_md_agent_schema_value("request").expect("request schema");
         assert!(schema.get("$defs").is_some());
         assert_eq!(schema["title"], "RunRequest");
+        assert!(schema["properties"].get("inputs").is_some());
         let analysis_name = &schema["$defs"]["AnalysisRequest"]["properties"]["name"]["enum"];
         let values = analysis_name.as_array().expect("analysis enum");
         assert!(values.iter().any(|value| value == "rg"));
@@ -2646,6 +2865,31 @@ mod tests {
             schema["$defs"]["StreamMode"]["enum"],
             serde_json::json!(["none", "ndjson"])
         );
+    }
+
+    #[test]
+    fn plot_manifest_schema_is_available() {
+        let schema = warp_md_agent_schema_value("plot-manifest").expect("plot manifest schema");
+        assert_eq!(schema["title"], "PlotManifest");
+        assert!(schema["properties"].get("artifacts").is_some());
+    }
+
+    #[test]
+    fn capabilities_expose_analysis_bundles() {
+        let value = serde_json::json!({
+            "analysis_bundles": WARP_MD_ANALYSIS_BUNDLES,
+            "error_codes": WARP_MD_ERROR_CODES,
+        });
+        let bundles = value["analysis_bundles"].as_array().expect("bundles");
+        assert!(bundles
+            .iter()
+            .any(|item| item["name"] == "standard_md_report"));
+        assert!(bundles.iter().any(|item| item["name"] == "polymer_report"));
+        assert!(value["error_codes"]
+            .as_array()
+            .expect("error codes")
+            .iter()
+            .any(|item| item == "E_EXTERNAL_TABLE_COLUMN"));
     }
 
     #[test]

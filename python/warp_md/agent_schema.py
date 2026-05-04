@@ -9,33 +9,8 @@ from . import contract as _contract
 from ._json_types import JsonObject, JsonValue
 from .contract_constants import AGENT_REQUEST_SCHEMA_VERSION, AGENT_RESULT_SCHEMA_VERSION
 
-# Structured error codes for agent consumption
-ErrorCode = Literal[
-    # Validation errors (exit code 2)
-    "E_CONFIG_LOAD",            # Failed to load config file
-    "E_CONFIG_VALIDATION",      # Schema validation failed
-    "E_CONFIG_VERSION",         # Unsupported schema version
-    "E_CONFIG_MISSING_FIELD",   # Required field missing
-    
-    # Analysis specification errors (exit code 3)
-    "E_ANALYSIS_UNKNOWN",       # Unknown analysis name
-    "E_ANALYSIS_SPEC",          # Invalid analysis parameters
-    "E_SELECTION_EMPTY",        # Mask matched no atoms
-    "E_SELECTION_INVALID",      # Mask syntax error
-    
-    # Runtime errors (exit code 4)
-    "E_SYSTEM_LOAD",            # Failed to load topology
-    "E_TRAJECTORY_LOAD",        # Failed to load trajectory
-    "E_TRAJECTORY_EOF",         # Unexpected end of trajectory
-    "E_RUNTIME_EXEC",           # Analysis execution failed
-    "E_OUTPUT_DIR",             # Failed to create output directory
-    "E_OUTPUT_WRITE",           # Failed to write output file
-    "E_DEVICE_UNAVAILABLE",     # Requested device not available
-    "E_ATLAS_FETCH",            # Failed to fetch ATLAS asset
-    
-    # Internal errors (exit code 5)
-    "E_INTERNAL",               # Unexpected internal error
-]
+# Structured error codes for agent consumption.
+ErrorCode = Literal.__getitem__(_contract.ERROR_CODES)
 
 _ANALYSIS_NAMES = tuple(sorted(_contract.ANALYSIS_METADATA))
 AnalysisName = Literal.__getitem__(_ANALYSIS_NAMES)
@@ -123,7 +98,10 @@ def _native_agent_schema(target: str) -> Optional[JsonObject]:
     native = _contract._native()
     if native is None or not hasattr(native, "warp_md_agent_schema"):
         return None
-    payload = native.warp_md_agent_schema(target)
+    try:
+        payload = native.warp_md_agent_schema(target)
+    except Exception:
+        return None
     return payload if isinstance(payload, dict) else None
 
 
@@ -272,6 +250,7 @@ class RunRequest(BaseModel):
     stream: Literal["none", "ndjson"] = "none"
     chunk_frames: Optional[int] = Field(default=None, ge=1)
     output_dir: str = "."
+    inputs: Optional[Dict[str, Dict[str, Any]]] = None
     checkpoint: Optional[CheckpointConfig] = None
     fail_fast: bool = True
     analyses: list[AnalysisRequest] = Field(min_length=1)
@@ -306,6 +285,18 @@ class RunRequest(BaseModel):
     def _coerce_traj(cls, value: Any) -> Optional[JsonObject]:
         return _coerce_io_spec(value, "traj")
 
+    @field_validator("inputs", mode="before")
+    @classmethod
+    def _coerce_inputs(cls, value: Any) -> Optional[Dict[str, JsonObject]]:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise TypeError("inputs must be an object")
+        return {
+            str(key): _coerce_io_spec(item, f"inputs.{key}") or {}
+            for key, item in value.items()
+        }
+
     @model_validator(mode="after")
     def _cross_validate(self) -> "RunRequest":
         if self.system is not None and self.topology is not None:
@@ -329,7 +320,7 @@ class RunRequest(BaseModel):
 
 def validate_run_request(payload: Dict[str, Any]) -> RunRequest:
     native = _contract._native()
-    if native is not None and hasattr(native, "warp_md_agent_validate_request"):
+    if "inputs" not in payload and native is not None and hasattr(native, "warp_md_agent_validate_request"):
         normalized = _consume_native_validation_payload(
             native.warp_md_agent_validate_request(json.dumps(payload), False),
             "RunRequest",
@@ -343,7 +334,7 @@ def validate_run_request(payload: Dict[str, Any]) -> RunRequest:
 
 def run_request_json_schema() -> Dict[str, Any]:
     native_schema = _native_agent_schema("request")
-    if native_schema is not None:
+    if native_schema is not None and "inputs" in native_schema.get("properties", {}):
         return native_schema
     return RunRequest.model_json_schema()
 
@@ -360,8 +351,67 @@ class ArtifactMetadata(BaseModel):
     description: Optional[str] = None  # Human-readable artifact meaning from the contract
     units: Optional[Dict[str, str]] = None  # Units for each field
     preview_stats: Optional[Dict[str, object]] = None  # n_frames, n_bins, min, max, etc.
-    plot_recommendations: Optional[List[Dict[str, object]]] = None
-    companions: Optional[List[Dict[str, object]]] = None
+    plot_recommendations: Optional[List["PlotRecommendation"]] = None
+    companions: Optional[List["ArtifactCompanionMetadata"]] = None
+
+
+class PlotAxisSpec(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    field: str
+    units: Optional[str] = None
+    source: Optional[str] = None
+
+
+class PlotRecommendation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    plot_type: str
+    x: Optional[PlotAxisSpec] = None
+    y: Optional[PlotAxisSpec] = None
+    z: Optional[PlotAxisSpec] = None
+    title: str
+    artifact: Optional[str] = None
+    shape: Optional[List[int]] = None
+
+
+class ArtifactCompanionMetadata(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    path: str
+    format: str
+    role: str
+    source_key: Optional[str] = None
+    columns: List[str] = Field(default_factory=list)
+
+
+class PlotArtifact(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    path: str
+    format: str
+    role: str = "plot"
+    plot_type: Optional[str] = None
+    title: Optional[str] = None
+    source_artifact: Optional[str] = None
+
+
+class PlotSkippedItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    reason: str
+    analysis: Optional[str] = None
+    plot_type: Optional[str] = None
+
+
+class PlotManifest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: str = AGENT_RESULT_SCHEMA_VERSION
+    status: Literal["ok", "error"] = "ok"
+    plot_count: int = Field(ge=0)
+    artifacts: List[PlotArtifact] = Field(default_factory=list)
+    skipped: List[PlotSkippedItem] = Field(default_factory=list)
 
 
 class RunResultEntry(BaseModel):
@@ -534,6 +584,15 @@ def run_event_json_schema() -> Dict[str, Any]:
     return adapter.json_schema()
 
 
+def plot_manifest_json_schema() -> Dict[str, Any]:
+    native_schema = _native_agent_schema("plot-manifest")
+    if native_schema is None:
+        native_schema = _native_agent_schema("plot_manifest")
+    if native_schema is not None:
+        return native_schema
+    return PlotManifest.model_json_schema()
+
+
 def validate_run_result_payload(payload: JsonObject) -> JsonObject:
     native = _contract._native()
     if native is not None and hasattr(native, "warp_md_agent_validate_result"):
@@ -580,8 +639,10 @@ def render_agent_schema(target: str = "request", fmt: str = "json") -> str:
         schema = run_result_json_schema()
     elif target_l == "event":
         schema = run_event_json_schema()
+    elif target_l in ("plot-manifest", "plot_manifest"):
+        schema = plot_manifest_json_schema()
     else:
-        raise ValueError("schema target must be 'request', 'result', or 'event'")
+        raise ValueError("schema target must be 'request', 'result', 'event', or 'plot-manifest'")
 
     fmt_l = fmt.lower()
     if fmt_l == "json":

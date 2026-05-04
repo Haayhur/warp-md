@@ -624,6 +624,7 @@ fn write_output_infers_format_from_path_when_missing() {
     assert_eq!(written.format, "cif");
     let cif_text = fs::read_to_string(&cif_path).expect("cif read");
     assert!(cif_text.contains("data_warp_pack"));
+    assert!(cif_text.contains("_cell.length_a 10.000"));
     let _ = fs::remove_file(&cif_path);
 
     let ent_path = temp_path("out_inferred.ent");
@@ -638,4 +639,27 @@ fn write_output_infers_format_from_path_when_missing() {
     let ent_text = fs::read_to_string(&ent_path).expect("ent read");
     assert!(ent_text.contains("ATOM"));
     let _ = fs::remove_file(&ent_path);
+}
+
+#[test]
+fn cif_output_writes_cell_parameters() {
+    let mut out = sample_output();
+    out.box_size = [300.0, 300.0, 300.0];
+    let cif_path = temp_path("out_cell.cif");
+    let cif_spec = OutputSpec {
+        path: cif_path.to_string_lossy().to_string(),
+        format: "cif".into(),
+        scale: Some(1.0),
+    };
+
+    write_output(&out, &cif_spec, true, 0.0, false, false).expect("cif write");
+
+    let cif_text = fs::read_to_string(&cif_path).expect("cif read");
+    assert!(cif_text.contains("_cell.length_a 300.000"));
+    assert!(cif_text.contains("_cell.length_b 300.000"));
+    assert!(cif_text.contains("_cell.length_c 300.000"));
+    assert!(cif_text.contains("_cell.angle_alpha 90.00"));
+    assert!(cif_text.contains("_cell.angle_beta 90.00"));
+    assert!(cif_text.contains("_cell.angle_gamma 90.00"));
+    let _ = fs::remove_file(&cif_path);
 }

@@ -73,9 +73,17 @@ pub fn read_pdbx(path: &Path) -> PackResult<MoleculeData> {
     })
 }
 
-pub fn write_pdbx(out: &PackOutput, path: &str, scale: f32, _box_sides_fix: f32) -> PackResult<()> {
+pub fn write_pdbx(out: &PackOutput, path: &str, scale: f32, box_sides_fix: f32) -> PackResult<()> {
     let mut file = File::create(path)?;
     writeln!(file, "data_warp_pack")?;
+    let ((a, b, c), (alpha, beta, gamma)) = pdbx_box_parameters(out, box_sides_fix, scale);
+    writeln!(file, "_cell.length_a {:.3}", a)?;
+    writeln!(file, "_cell.length_b {:.3}", b)?;
+    writeln!(file, "_cell.length_c {:.3}", c)?;
+    writeln!(file, "_cell.angle_alpha {:.2}", alpha)?;
+    writeln!(file, "_cell.angle_beta {:.2}", beta)?;
+    writeln!(file, "_cell.angle_gamma {:.2}", gamma)?;
+    writeln!(file, "_symmetry.space_group_name_H-M 'P 1'")?;
     writeln!(file, "loop_")?;
     writeln!(file, "_atom_site.group_PDB")?;
     writeln!(file, "_atom_site.id")?;
@@ -105,6 +113,40 @@ pub fn write_pdbx(out: &PackOutput, path: &str, scale: f32, _box_sides_fix: f32)
         )?;
     }
     Ok(())
+}
+
+fn pdbx_box_parameters(
+    out: &PackOutput,
+    box_sides_fix: f32,
+    scale: f32,
+) -> ((f32, f32, f32), (f32, f32, f32)) {
+    let box_vectors = out.box_vectors.unwrap_or([
+        [out.box_size[0] + box_sides_fix, 0.0, 0.0],
+        [0.0, out.box_size[1] + box_sides_fix, 0.0],
+        [0.0, 0.0, out.box_size[2] + box_sides_fix],
+    ]);
+    let a = vector_norm(box_vectors[0]) * scale;
+    let b = vector_norm(box_vectors[1]) * scale;
+    let c = vector_norm(box_vectors[2]) * scale;
+    let alpha = angle_deg(box_vectors[1], box_vectors[2]);
+    let beta = angle_deg(box_vectors[0], box_vectors[2]);
+    let gamma = angle_deg(box_vectors[0], box_vectors[1]);
+    ((a, b, c), (alpha, beta, gamma))
+}
+
+fn vector_norm(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+fn angle_deg(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let na = vector_norm(a);
+    let nb = vector_norm(b);
+    if na == 0.0 || nb == 0.0 {
+        return 90.0;
+    }
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cos = (dot / (na * nb)).clamp(-1.0, 1.0);
+    cos.acos().to_degrees()
 }
 
 fn atom_from_row(columns: &[String], row: &[String]) -> Option<AtomRecord> {

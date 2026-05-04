@@ -11,15 +11,18 @@ This module provides:
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, Iterable, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import traj_py
+from . import _agent_contract_snapshot as _AGENT_CONTRACT_SNAPSHOT
 from ._contract_catalog_snapshot import CATALOG as _FALLBACK_CONTRACT_CATALOG
 from ._json_types import JsonObject
 from .contract_constants import AGENT_REQUEST_SCHEMA_VERSION
@@ -106,6 +109,30 @@ class ArtifactSpec:
 
 
 @dataclass
+class InputRequirements:
+    required: List[str] = field(default_factory=list)
+    optional: List[str] = field(default_factory=list)
+    requires_box: bool = False
+    requires_velocities: bool = False
+    requires_charges: bool = False
+    requires_selections: bool = False
+    supports_no_trajectory: bool = False
+    selection_fields: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "required": list(self.required),
+            "optional": list(self.optional),
+            "requires_box": self.requires_box,
+            "requires_velocities": self.requires_velocities,
+            "requires_charges": self.requires_charges,
+            "requires_selections": self.requires_selections,
+            "supports_no_trajectory": self.supports_no_trajectory,
+            "selection_fields": list(self.selection_fields),
+        }
+
+
+@dataclass
 class AnalysisContract:
     """Complete contract metadata for a single analysis."""
     name: str
@@ -115,6 +142,7 @@ class AnalysisContract:
     optional_fields: List[str] = field(default_factory=list)
     field_types: Dict[str, FieldSpec] = field(default_factory=dict)
     outputs: List[ArtifactSpec] = field(default_factory=list)
+    input_requirements: InputRequirements = field(default_factory=InputRequirements)
     tags: List[str] = field(default_factory=list)
     examples: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -127,6 +155,7 @@ class AnalysisContract:
             "optional_fields": self.optional_fields,
             "fields": {k: v.to_dict() for k, v in self.field_types.items()},
             "outputs": [o.to_dict() for o in self.outputs],
+            "input_requirements": self.input_requirements.to_dict(),
             "tags": self.tags,
             "examples": self.examples,
         }
@@ -170,6 +199,7 @@ class _CatalogAnalysisPayload(BaseModel):
     optional_fields: List[str] = Field(default_factory=list)
     fields: Dict[str, _CatalogFieldPayload] = Field(default_factory=dict)
     outputs: List[_CatalogArtifactPayload] = Field(default_factory=list)
+    input_requirements: Dict[str, Any] = Field(default_factory=dict)
     tags: List[str] = Field(default_factory=list)
     examples: List[Dict[str, object]] = Field(default_factory=list)
 
@@ -328,20 +358,68 @@ def _field_units(field: str) -> Optional[str]:
     return None
 
 
+_BOX_REQUIRED_ANALYSES = set(_AGENT_CONTRACT_SNAPSHOT.BOX_REQUIRED_ANALYSES)
+_VELOCITY_REQUIRED_ANALYSES = set(_AGENT_CONTRACT_SNAPSHOT.VELOCITY_REQUIRED_ANALYSES)
+_NO_TRAJECTORY_ANALYSES: set[str] = set()
+_EXTERNAL_TABLE_ANALYSES = {"energy_table", "state_table"}
+_ENERGY_TABLE_COLUMNS = ("energy", "potential", "potential_energy")
+_STATE_TABLE_COLUMNS = ("temperature", "density")
+_SOLVENT_SELECTION_CANDIDATES = ("resname SOL", "resname WAT", "resname HOH")
+_POLYMER_SELECTION_CANDIDATES = ("polymer", "not resname SOL", "all")
+ERROR_CODES = tuple(_AGENT_CONTRACT_SNAPSHOT.ERROR_CODES)
+
+ANALYSIS_BUNDLES: Dict[str, Dict[str, Any]] = dict(_AGENT_CONTRACT_SNAPSHOT.ANALYSIS_BUNDLES)
+
+
 def _analysis_contract_from_payload(payload: _CatalogAnalysisPayload) -> AnalysisContract:
+    fields = {
+        name: _field_spec_from_payload(spec)
+        for name, spec in payload.fields.items()
+    }
     return AnalysisContract(
         name=payload.name,
         aliases=payload.aliases,
         description=payload.description,
         required_fields=payload.required_fields,
         optional_fields=payload.optional_fields,
-        field_types={
-            name: _field_spec_from_payload(spec)
-            for name, spec in payload.fields.items()
-        },
+        field_types=fields,
         outputs=[_artifact_spec_from_payload(spec) for spec in payload.outputs],
+        input_requirements=_input_requirements_from_payload(payload, fields),
         tags=payload.tags,
         examples=payload.examples,
+    )
+
+
+def _input_requirements_from_payload(
+    payload: _CatalogAnalysisPayload,
+    fields: Dict[str, FieldSpec],
+) -> InputRequirements:
+    raw = payload.input_requirements or {}
+    selection_fields = [
+        name
+        for name, spec in fields.items()
+        if spec.semantic_type in ("selection", "mask")
+    ]
+    required = list(raw.get("required", ["topology", "trajectory"]))
+    optional = list(raw.get("optional", []))
+    name = payload.name
+    if name in _EXTERNAL_TABLE_ANALYSES:
+        required = ["energy_table" if name == "energy_table" else "state_table"]
+    return InputRequirements(
+        required=required,
+        optional=optional,
+        requires_box=bool(raw.get("requires_box", name in _BOX_REQUIRED_ANALYSES)),
+        requires_velocities=bool(
+            raw.get("requires_velocities", name in _VELOCITY_REQUIRED_ANALYSES)
+        ),
+        requires_charges=bool(
+            raw.get("requires_charges", "charges" in payload.required_fields)
+        ),
+        requires_selections=bool(raw.get("requires_selections", bool(selection_fields))),
+        supports_no_trajectory=bool(
+            raw.get("supports_no_trajectory", name in _NO_TRAJECTORY_ANALYSES)
+        ),
+        selection_fields=list(raw.get("selection_fields", selection_fields)),
     )
 
 
@@ -863,14 +941,532 @@ def capabilities() -> Dict[str, Any]:
         payload = native.warp_md_agent_capabilities()
         if isinstance(payload, dict):
             payload.setdefault("cli_version", _resolve_cli_version())
+            payload.setdefault("analysis_bundles", _analysis_bundles_payload())
+            payload.setdefault("error_codes", list(ERROR_CODES))
             return payload
     return {
         "schema_version": AGENT_REQUEST_SCHEMA_VERSION,
         "cli_version": _resolve_cli_version(),
         "available_plans": sorted(ANALYSIS_METADATA.keys()),
         "plan_catalog_hash": _compute_catalog_hash(),
+        "analysis_bundles": _analysis_bundles_payload(),
+        "error_codes": list(ERROR_CODES),
         "supports_streaming": True,
         "supports_selection_linting": True,
+    }
+
+
+def _analysis_bundles_payload() -> List[Dict[str, Any]]:
+    return [
+        {"name": name, **_analysis_bundle_payload(spec)}
+        for name, spec in ANALYSIS_BUNDLES.items()
+    ]
+
+
+def _analysis_bundle_payload(spec: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {
+        "description": str(spec.get("description", "")),
+        "analyses": list(spec.get("analyses", [])),
+    }
+    if "external_tables" in spec:
+        payload["external_tables"] = list(spec["external_tables"])
+    return payload
+
+
+def _analysis_bundle_specs() -> Dict[str, Dict[str, Any]]:
+    native = _native()
+    if native is not None:
+        payload = native.warp_md_agent_capabilities()
+        if isinstance(payload, dict) and isinstance(payload.get("analysis_bundles"), list):
+            bundles: Dict[str, Dict[str, Any]] = {}
+            for item in payload["analysis_bundles"]:
+                if isinstance(item, dict) and isinstance(item.get("name"), str):
+                    bundles[str(item["name"])] = _analysis_bundle_payload(item)
+            if bundles:
+                return bundles
+    return ANALYSIS_BUNDLES
+
+
+def _external_input_spec(payload: JsonObject, kind: str) -> Optional[JsonObject]:
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict):
+        return None
+    spec = inputs.get(kind)
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        return {"path": spec}
+    if isinstance(spec, dict):
+        return dict(spec)
+    return None
+
+
+def _normalize_column_name(name: str, index: int) -> str:
+    base = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
+    return base or f"column_{index + 1}"
+
+
+def _dedupe_column_names(names: Iterable[str]) -> List[str]:
+    seen: Dict[str, int] = {}
+    output: List[str] = []
+    for idx, name in enumerate(names):
+        base = _normalize_column_name(name, idx)
+        count = seen.get(base, 0) + 1
+        seen[base] = count
+        output.append(base if count == 1 else f"{base}_{count}")
+    return output
+
+
+def _looks_number(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _split_table_line(line: str, delimiter: Optional[str]) -> List[str]:
+    if delimiter is None:
+        return [part for part in line.strip().split() if part]
+    return [part.strip() for part in next(csv.reader([line], delimiter=delimiter))]
+
+
+class UnsupportedExternalTableFormat(ValueError):
+    pass
+
+
+def _infer_external_table_format(path: Path, explicit: Optional[str]) -> str:
+    if explicit:
+        fmt = explicit.lower().lstrip(".")
+    else:
+        fmt = path.suffix.lower().lstrip(".")
+    if fmt not in {"csv", "tsv", "xvg"}:
+        raise UnsupportedExternalTableFormat(
+            f"unsupported external table format: {fmt or path.suffix}"
+        )
+    return fmt
+
+
+def parse_external_table(spec: Union[str, JsonObject]) -> JsonObject:
+    """Lightly inspect a CSV, TSV, or XVG table and return normalized columns."""
+    table_spec = {"path": spec} if isinstance(spec, str) else dict(spec)
+    raw_path = table_spec.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("external table path is required")
+    path = Path(raw_path)
+    if not path.exists():
+        raise FileNotFoundError(f"external table not found: {path}")
+    fmt = _infer_external_table_format(path, table_spec.get("format"))
+    text_lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if fmt == "xvg":
+        lines = [
+            line
+            for line in text_lines
+            if line.strip() and not line.lstrip().startswith(("#", "@"))
+        ]
+        delimiter: Optional[str] = None
+    else:
+        lines = [line for line in text_lines if line.strip()]
+        delimiter = "\t" if fmt == "tsv" else ","
+        if fmt == "csv" and lines:
+            sample = lines[0]
+            delimiter = "\t" if "\t" in sample and "," not in sample else ","
+    if not lines:
+        raise ValueError(f"external table has no data rows: {path}")
+
+    first = _split_table_line(lines[0], delimiter)
+    header = any(not _looks_number(part) for part in first)
+    if header:
+        columns = _dedupe_column_names(first)
+        row_count = max(0, len(lines) - 1)
+    else:
+        columns = _dedupe_column_names(f"column_{idx + 1}" for idx in range(len(first)))
+        row_count = len(lines)
+    return {
+        "path": str(path),
+        "format": fmt,
+        "columns": columns,
+        "row_count": row_count,
+    }
+
+
+def _table_has_any_column(table: JsonObject, candidates: Iterable[str]) -> bool:
+    columns = set(str(column) for column in table.get("columns", []))
+    return any(column in columns for column in candidates)
+
+
+def _first_table_column(table: JsonObject, candidates: Iterable[str]) -> Optional[str]:
+    columns = set(str(column) for column in table.get("columns", []))
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def _external_table_column_errors(tables: Dict[str, JsonObject]) -> List[JsonObject]:
+    errors: List[JsonObject] = []
+    energy = tables.get("energy_table")
+    if energy is not None and not _table_has_any_column(energy, _ENERGY_TABLE_COLUMNS):
+        errors.append({
+            "input": "energy_table",
+            "code": "E_EXTERNAL_TABLE_COLUMN",
+            "message": f"energy_table requires one of: {', '.join(_ENERGY_TABLE_COLUMNS)}",
+            "columns": list(energy.get("columns", [])),
+        })
+    state = tables.get("state_table")
+    if state is not None and not _table_has_any_column(state, _STATE_TABLE_COLUMNS):
+        errors.append({
+            "input": "state_table",
+            "code": "E_EXTERNAL_TABLE_COLUMN",
+            "message": f"state_table requires one of: {', '.join(_STATE_TABLE_COLUMNS)}",
+            "columns": list(state.get("columns", [])),
+        })
+    return errors
+
+
+def _analysis_skip(analysis: str, code: str, reason: str) -> JsonObject:
+    return {"analysis": analysis, "code": code, "reason": reason}
+
+
+def _request_system_spec(payload: JsonObject) -> Optional[JsonObject]:
+    spec = payload.get("system", payload.get("topology"))
+    if isinstance(spec, str):
+        return {"path": spec}
+    if isinstance(spec, dict):
+        return dict(spec)
+    return None
+
+
+def _request_trajectory_spec(payload: JsonObject) -> Optional[JsonObject]:
+    spec = payload.get("trajectory", payload.get("traj"))
+    if isinstance(spec, str):
+        return {"path": spec}
+    if isinstance(spec, dict):
+        return dict(spec)
+    return None
+
+
+def _input_path_exists(spec: Optional[JsonObject]) -> bool:
+    if not spec:
+        return False
+    path = spec.get("path")
+    return isinstance(path, str) and Path(path).exists()
+
+
+def _required_input_missing(
+    name: str,
+    system_spec: Optional[JsonObject],
+    trajectory_spec: Optional[JsonObject],
+    tables: Dict[str, JsonObject],
+) -> bool:
+    if name == "topology":
+        return not _input_path_exists(system_spec)
+    if name == "trajectory":
+        return not _input_path_exists(trajectory_spec)
+    if name in {"energy_table", "state_table"}:
+        return name not in tables
+    return False
+
+
+def _selection_is_valid(expr: str, system_path: Optional[str]) -> bool:
+    if not expr:
+        return False
+    lint = lint_selection(expr, system_path=system_path)
+    if not lint.valid:
+        return False
+    if lint.matched_atoms is not None and lint.matched_atoms <= 0:
+        return False
+    return True
+
+
+def _first_valid_selection(candidates: Iterable[str], system_path: Optional[str]) -> Optional[str]:
+    if not system_path:
+        return None
+    for expr in candidates:
+        if _selection_is_valid(expr, system_path):
+            return expr
+    return None
+
+
+def _default_analysis_spec(
+    name: str,
+    bundle: str,
+    payload: JsonObject,
+) -> tuple[Optional[JsonObject], Optional[JsonObject]]:
+    system_spec = _request_system_spec(payload)
+    system_path = str(system_spec.get("path")) if system_spec and system_spec.get("path") else None
+
+    def need_valid_selection(expr: str) -> Optional[str]:
+        return expr if _selection_is_valid(expr, system_path) else None
+
+    if name in {"rg", "rmsd", "msd"}:
+        selection = "protein" if bundle == "protein_md_report" else "all"
+        if not need_valid_selection(selection):
+            return None, _analysis_skip(name, "E_SELECTION_EMPTY", f"default selection `{selection}` did not match")
+        spec: JsonObject = {"name": name, "selection": selection}
+        if name == "rmsd":
+            spec.update({"reference": 0, "align": True})
+        return spec, None
+
+    if name == "rdf":
+        if bundle == "solvent_ion_report":
+            solvent = _first_valid_selection(_SOLVENT_SELECTION_CANDIDATES, system_path)
+            if not solvent:
+                return None, _analysis_skip(name, "E_SELECTION_EMPTY", "no supported solvent selection matched")
+            return {"name": "rdf", "sel_a": solvent, "sel_b": solvent, "bins": 200, "r_max": 1.0}, None
+        if not need_valid_selection("all"):
+            return None, _analysis_skip(name, "E_SELECTION_EMPTY", "default selection `all` did not match")
+        return {"name": "rdf", "sel_a": "all", "sel_b": "all", "bins": 200, "r_max": 1.0}, None
+
+    if name == "density":
+        if not need_valid_selection("all"):
+            return None, _analysis_skip(name, "E_SELECTION_EMPTY", "default selection `all` did not match")
+        return {"name": "density", "mask": "all"}, None
+
+    if name == "dssp":
+        selection = need_valid_selection("protein")
+        if not selection:
+            return None, _analysis_skip(name, "E_SELECTION_EMPTY", "default selection `protein` did not match")
+        return {"name": "dssp", "mask": selection}, None
+
+    if name in {"water_count", "watershell"}:
+        solvent = _first_valid_selection(_SOLVENT_SELECTION_CANDIDATES, system_path)
+        if not solvent:
+            return None, _analysis_skip(name, "E_SELECTION_EMPTY", "no supported solvent selection matched")
+        spec = {"name": name}
+        if name == "water_count":
+            spec.update({
+                "water_selection": solvent,
+                "center_selection": "all",
+                "box_unit": 0.1,
+                "region_size": [1.0, 1.0, 1.0],
+            })
+        if name == "watershell":
+            solute = need_valid_selection("protein")
+            if not solute:
+                return None, _analysis_skip(name, "E_SELECTION_EMPTY", "default solute selection `protein` did not match")
+            spec.update({"solute_mask": solute, "solvent_mask": solvent})
+        return spec, None
+
+    if name in {"conductivity", "dielectric"}:
+        return None, _analysis_skip(name, "E_BUNDLE_PARTIAL", f"{name} requires charge metadata or explicit parameters")
+
+    if name in {"hbond", "native_contacts"}:
+        return None, _analysis_skip(name, "E_BUNDLE_PARTIAL", f"{name} needs analysis-specific selections/reference data")
+
+    if name in {"chain_rg", "end_to_end", "contour_length", "persistence_length", "bondi_ffv"}:
+        selection = _first_valid_selection(_POLYMER_SELECTION_CANDIDATES, system_path)
+        if not selection:
+            return None, _analysis_skip(name, "E_SELECTION_EMPTY", "no conservative polymer selection matched")
+        return {"name": name, "selection": selection}, None
+
+    return None, _analysis_skip(name, "E_BUNDLE_PARTIAL", "no conservative default available")
+
+
+def _external_plot_recommendations(tables: Dict[str, JsonObject]) -> List[JsonObject]:
+    plots: List[JsonObject] = []
+    energy = tables.get("energy_table")
+    energy_column = _first_table_column(energy, _ENERGY_TABLE_COLUMNS) if energy else None
+    if energy and energy_column:
+        plots.append({
+            "source_input": "energy_table",
+            "plot_type": "line",
+            "x": {"field": "time" if "time" in energy.get("columns", []) else energy["columns"][0]},
+            "y": {"field": energy_column},
+            "title": "Potential Energy",
+        })
+    state = tables.get("state_table")
+    for field, title in (("temperature", "Temperature"), ("density", "Density")):
+        if state and field in state.get("columns", []):
+            plots.append({
+                "source_input": "state_table",
+                "plot_type": "line",
+                "x": {"field": "time" if "time" in state.get("columns", []) else state["columns"][0]},
+                "y": {"field": field},
+                "title": title,
+            })
+    return plots
+
+
+def _inspect_external_tables(payload: JsonObject) -> tuple[Dict[str, JsonObject], List[JsonObject]]:
+    tables: Dict[str, JsonObject] = {}
+    errors: List[JsonObject] = []
+    for kind in ("energy_table", "state_table"):
+        spec = _external_input_spec(payload, kind)
+        if spec is None:
+            continue
+        try:
+            tables[kind] = parse_external_table(spec)
+        except UnsupportedExternalTableFormat as exc:
+            errors.append({"input": kind, "code": "E_UNSUPPORTED_FORMAT", "message": str(exc)})
+        except Exception as exc:
+            errors.append({"input": kind, "code": "E_EXTERNAL_TABLE_LOAD", "message": str(exc)})
+    return tables, errors
+
+
+def bundle_plan(bundle: str, payload: JsonObject) -> JsonObject:
+    """Expand an advertised analysis bundle into a validated request plus typed skips."""
+    bundles = _analysis_bundle_specs()
+    if bundle not in bundles:
+        raise ValueError(f"unknown bundle: {bundle}")
+    normalized = normalize_request(payload, strip_unknown=False)
+    tables, table_errors = _inspect_external_tables(normalized)
+    analyses: List[JsonObject] = []
+    skipped: List[JsonObject] = [*table_errors, *_external_table_column_errors(tables)]
+    for name in bundles[bundle].get("analyses", []):
+        if name not in ANALYSIS_METADATA:
+            skipped.append(_analysis_skip(name, "E_ANALYSIS_UNKNOWN", "analysis is not available"))
+            continue
+        spec, skip = _default_analysis_spec(name, bundle, normalized)
+        if spec is not None:
+            analyses.append(spec)
+        elif skip is not None:
+            skipped.append(skip)
+    expanded = dict(normalized)
+    expanded["analyses"] = analyses
+    status = "ok" if not skipped else ("partial" if analyses else "error")
+    return {
+        "schema_version": AGENT_REQUEST_SCHEMA_VERSION,
+        "bundle": bundle,
+        "status": status,
+        "request": expanded,
+        "analyses": analyses,
+        "skipped": skipped,
+        "external_tables": tables,
+        "plot_recommendations": _external_plot_recommendations(tables),
+    }
+
+
+def _frame_count(traj: Any) -> Optional[int]:
+    for attr in ("n_frames", "frames"):
+        value = getattr(traj, attr, None)
+        if isinstance(value, int):
+            return value
+    try:
+        return len(traj)
+    except Exception:
+        return None
+
+
+def inspect_inputs(payload: JsonObject) -> JsonObject:
+    """Lightly validate input availability and report valid/skipped analyses."""
+    normalized = normalize_request(payload, strip_unknown=False)
+    system_spec = _request_system_spec(normalized)
+    trajectory_spec = _request_trajectory_spec(normalized)
+    errors: List[JsonObject] = []
+    warnings: List[str] = []
+    system = None
+    system_path = (
+        str(system_spec.get("path"))
+        if system_spec and system_spec.get("path")
+        else None
+    )
+    if not _input_path_exists(system_spec):
+        errors.append({
+            "code": "E_INPUT_MISSING",
+            "path": "system",
+            "message": "topology/system input is missing",
+        })
+    else:
+        try:
+            from .cli_api import _load_system
+            system = _load_system(system_spec or {})
+        except Exception as exc:
+            errors.append({"code": "E_SYSTEM_LOAD", "path": "system", "message": str(exc)})
+    if not _input_path_exists(trajectory_spec):
+        errors.append({
+            "code": "E_INPUT_MISSING",
+            "path": "trajectory",
+            "message": "trajectory input is missing",
+        })
+    elif system is not None:
+        try:
+            from .cli_api import _load_trajectory
+            traj = _load_trajectory(trajectory_spec or {}, system)
+            n_frames = _frame_count(traj)
+            if n_frames == 0:
+                errors.append({
+                    "code": "E_NO_FRAMES",
+                    "path": "trajectory",
+                    "message": "trajectory has no frames",
+                })
+        except Exception as exc:
+            errors.append({"code": "E_TRAJECTORY_LOAD", "path": "trajectory", "message": str(exc)})
+    tables, table_errors = _inspect_external_tables(normalized)
+    errors.extend(table_errors)
+    errors.extend(_external_table_column_errors(tables))
+
+    valid_analyses: List[JsonObject] = []
+    skipped: List[JsonObject] = []
+    for idx, analysis in enumerate(normalized.get("analyses", [])):
+        if not isinstance(analysis, dict):
+            skipped.append({
+                "analysis": None,
+                "code": "E_ANALYSIS_SPEC",
+                "reason": "analysis entry is not an object",
+            })
+            continue
+        name = str(analysis.get("name", ""))
+        try:
+            canonical = _resolve_analysis_name(name)
+        except ValueError:
+            skipped.append(_analysis_skip(name, "E_ANALYSIS_UNKNOWN", "unknown analysis"))
+            continue
+        contract = ANALYSIS_METADATA[canonical]
+        missing_inputs = [
+            item
+            for item in contract.input_requirements.required
+            if _required_input_missing(item, system_spec, trajectory_spec, tables)
+        ]
+        if missing_inputs:
+            skipped.append(
+                _analysis_skip(
+                    canonical,
+                    "E_INPUT_MISSING",
+                    f"missing inputs: {', '.join(missing_inputs)}",
+                )
+            )
+            continue
+        selection_errors = []
+        for field_name in contract.input_requirements.selection_fields:
+            value = analysis.get(field_name)
+            if isinstance(value, str) and system_path and not _selection_is_valid(value, system_path):
+                selection_errors.append(field_name)
+        if selection_errors:
+            skipped.append(
+                _analysis_skip(
+                    canonical,
+                    "E_SELECTION_EMPTY",
+                    f"empty/invalid selections: {', '.join(selection_errors)}",
+                )
+            )
+            continue
+        valid_analyses.append({"index": idx, "name": canonical})
+
+    bundle_summaries = []
+    for name in _analysis_bundle_specs():
+        planned = bundle_plan(name, normalized)
+        bundle_summaries.append({
+            "name": name,
+            "status": planned["status"],
+            "valid_count": len(planned["analyses"]),
+            "skipped": planned["skipped"],
+        })
+
+    return {
+        "schema_version": AGENT_REQUEST_SCHEMA_VERSION,
+        "status": "ok" if not errors else "error",
+        "system": {"present": _input_path_exists(system_spec), "path": system_path},
+        "trajectory": {
+            "present": _input_path_exists(trajectory_spec),
+            "path": trajectory_spec.get("path") if trajectory_spec else None,
+        },
+        "external_tables": tables,
+        "valid_analyses": valid_analyses,
+        "skipped_analyses": skipped,
+        "bundles": bundle_summaries,
+        "errors": errors,
+        "warnings": warnings,
     }
 
 
@@ -1396,6 +1992,11 @@ __all__ = [
     "normalize_request",
     "generate_template",
     "capabilities",
+    "ANALYSIS_BUNDLES",
+    "ERROR_CODES",
+    "bundle_plan",
+    "inspect_inputs",
+    "parse_external_table",
     "lint_selection",
     "suggest_analyses",
     "render_plots",
