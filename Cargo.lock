@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "traj-core"
-version = "0.1.5"
+version = "0.4.6"
 dependencies = [
  "fxhash",
  "nalgebra",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "traj-engine"
-version = "0.1.5"
+version = "0.4.6"
 dependencies = [
  "bytemuck",
  "libloading",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "traj-gpu"
-version = "0.1.5"
+version = "0.4.6"
 dependencies = [
  "cudarc",
  "traj-core",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "traj-io"
-version = "0.1.5"
+version = "0.4.6"
 dependencies = [
  "bytemuck",
  "cc",
@@ -1496,11 +1496,11 @@ dependencies = [
 
 [[package]]
 name = "traj-kernels"
-version = "0.1.5"
+version = "0.4.6"
 
 [[package]]
 name = "traj-py"
-version = "0.1.5"
+version = "0.4.6"
 dependencies = [
  "numpy",
  "pyo3",
@@ -1574,7 +1574,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "warp-build"
-version = "0.1.0"
+version = "0.4.6"
 dependencies = [
  "clap",
  "rand",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "warp-cg"
-version = "0.1.5"
+version = "0.4.6"
 dependencies = [
  "anyhow",
  "chemfiles",
@@ -1615,11 +1615,11 @@ dependencies = [
 
 [[package]]
 name = "warp-common"
-version = "0.1.0"
+version = "0.4.6"
 
 [[package]]
 name = "warp-pack"
-version = "0.1.0"
+version = "0.4.6"
 dependencies = [
  "clap",
  "rand",
@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "warp-pep"
-version = "0.1.0"
+version = "0.4.6"
 dependencies = [
  "clap",
  "serde",
@@ -1652,7 +1652,7 @@ dependencies = [
 
 [[package]]
 name = "warp-structure"
-version = "0.1.0"
+version = "0.4.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -1663,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "warp-topology-graph"
-version = "0.1.0"
+version = "0.4.6"
 dependencies = [
  "schemars",
  "serde",
