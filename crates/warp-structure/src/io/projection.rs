@@ -12,7 +12,7 @@ use super::pdb::read_pdb_with_options;
 use super::pdbqt::read_pdbqt;
 use super::MoleculeData;
 
-const SUPPORTED_SYSTEM_FORMATS_TEXT: &str = "pdb, pdbqt, gro";
+const SUPPORTED_SYSTEM_FORMATS_TEXT: &str = "pdb, pdbqt, gro, prmtop, top";
 
 fn path_format_token(path: &Path, format: Option<&str>) -> String {
     format
@@ -29,7 +29,7 @@ fn path_format_token(path: &Path, format: Option<&str>) -> String {
 
 fn resolved_system_format(path: &Path, format: Option<&str>) -> StructureResult<String> {
     let token = path_format_token(path, format);
-    if matches!(token.as_str(), "pdb" | "pdbqt" | "gro") {
+    if matches!(token.as_str(), "pdb" | "pdbqt" | "gro" | "prmtop" | "top") {
         Ok(token)
     } else {
         Err(StructureError::Parse(format!(
@@ -79,8 +79,43 @@ pub fn read_system_auto(path: &Path, format: Option<&str>) -> StructureResult<Sy
         },
         "pdbqt" => read_pdbqt_system(path),
         "gro" => read_gro_system(path),
+        "prmtop" | "top" => {
+            let topo = super::amber::read_prmtop_topology(path)?;
+            system_from_prmtop(&topo)
+        }
         _ => unreachable!("validated system format"),
     }
+}
+
+pub fn system_from_prmtop(topo: &super::amber::AmberTopology) -> StructureResult<System> {
+    if topo.atom_names.is_empty() {
+        return Err(StructureError::Invalid(
+            "cannot project empty prmtop topology into system".into(),
+        ));
+    }
+
+    let mut interner = StringInterner::new();
+    let mut atoms = AtomTable::default();
+    let n_atoms = topo.atom_names.len();
+
+    for i in 0..n_atoms {
+        let name = topo.atom_names[i].trim();
+        let atomic_number = topo.atomic_numbers.get(i).copied().unwrap_or(0);
+        let element = super::amber::atomic_number_to_symbol(atomic_number)
+            .unwrap_or_else(|| name.chars().next().unwrap_or('X').to_string());
+        let (resid, resname) = super::amber::residue_for_atom(i, topo);
+        let mass = topo.masses.get(i).copied().unwrap_or(0.0);
+
+        atoms.name_id.push(interner.intern_upper(name));
+        atoms.resname_id.push(interner.intern_upper(resname.trim()));
+        atoms.resid.push(resid);
+        atoms.chain_id.push(interner.intern_upper("A"));
+        atoms.element_id.push(interner.intern_upper(&element));
+        atoms.mass.push(mass);
+    }
+
+    let system = System::with_atoms(atoms, interner, None);
+    Ok(system)
 }
 
 pub fn system_from_molecule(molecule: &MoleculeData) -> StructureResult<System> {
@@ -239,5 +274,48 @@ ENDMDL\n",
         let position = system.positions0.as_ref().expect("positions0");
         assert_eq!(system.n_atoms(), 1);
         assert!((position[0][1] - 2.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn read_system_auto_parses_prmtop_correctly() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("test.prmtop");
+        let mut file = File::create(&path).expect("create prmtop");
+        file.write_all(
+            b"%FLAG TITLE\n\
+              %FORMAT(20a4)\n\
+              TEST PRMTOP\n\
+              %FLAG POINTERS\n\
+              %FORMAT(10I8)\n\
+                     2       1       0       0       0       0       0       0       0       0\n\
+              %FLAG ATOM_NAME\n\
+              %FORMAT(20a4)\n\
+              H1  H2  \n\
+              %FLAG CHARGE\n\
+              %FORMAT(5E16.8)\n\
+                4.20000000E-01  4.20000000E-01\n\
+              %FLAG MASS\n\
+              %FORMAT(5E16.8)\n\
+                1.00800000E+00  1.00800000E+00\n\
+              %FLAG RESIDUE_LABEL\n\
+              %FORMAT(20a4)\n\
+              SOL \n\
+              %FLAG RESIDUE_POINTER\n\
+              %FORMAT(10I8)\n\
+                     1\n\
+              %FLAG ATOMIC_NUMBER\n\
+              %FORMAT(10I8)\n\
+                     1       1\n\
+              %FLAG ATOM_TYPE_INDEX\n\
+              %FORMAT(10I8)\n\
+                     1       1\n"
+        ).expect("write prmtop");
+
+        let system = read_system_auto(&path, None).expect("read auto system prmtop");
+        assert_eq!(system.n_atoms(), 2);
+        assert_eq!(system.interner.resolve(system.atoms.name_id[0]), Some("H1"));
+        assert_eq!(system.interner.resolve(system.atoms.resname_id[0]), Some("SOL"));
+        assert_eq!(system.atoms.resid[0], 1);
+        assert_eq!(system.atoms.mass[0], 1.008);
     }
 }

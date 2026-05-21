@@ -9,10 +9,8 @@ use serde_json::{json, Value};
 use crate::mapping::{map_molecule, MappingResult};
 use crate::molecule::Molecule;
 use crate::optimize::{optimize_bonded_terms, OptimizationConfig, OptimizationReport};
-use crate::parameters::{calculate_bonded_stats, AngleStats, BondStats, BondedStats, DihedralStats};
-use crate::trajectory::{
-    map_native_trajectory, map_trajectory_first_frame, BeadMapping, NativeTrajectoryOptions,
-};
+use crate::parameters::{AngleStats, BondStats, BondedStats, DihedralStats};
+use crate::trajectory::{map_native_trajectory, BeadMapping, NativeTrajectoryOptions};
 use crate::xtb::{run_xtb_pipeline_with_config, XtbRunConfig};
 
 pub const AGENT_SCHEMA_VERSION: &str = "warp-cg.agent.v1";
@@ -42,7 +40,7 @@ pub struct CgRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TrajectorySource {
-    /// External trajectory path accepted by chemfiles/warp-md loaders, e.g. xtc, dcd, trr, pdb.
+    /// External trajectory path accepted by warp-md loaders, e.g. xtc, dcd, trr, pdb, xyz.
     pub path: String,
     #[serde(default)]
     pub topology: Option<String>,
@@ -703,30 +701,17 @@ fn run_request(request: &CgRequest, started: Instant) -> Result<CgResult> {
             atom_indices: mapping.atom_groups.clone(),
         };
         let source = normalized_trajectory_source(request, &input_traj);
-        if reference_kind == "external" || request.trajectory_source.is_some() {
-            let report = map_native_trajectory(
-                Path::new(&input_traj),
-                Some(&output_path),
-                &bead_mapping,
-                &mapping.connections,
-                &native_options(request, source.as_ref()),
-            )?;
-            bond_stats = report.bond_stats;
-            angle_stats = report.angle_stats;
-            dihedral_stats = report.dihedral_stats;
-            first_cg_coords = report.first_cg_coords;
-        } else {
-            first_cg_coords =
-                map_trajectory_first_frame(&input_traj, &output_path.to_string_lossy(), &bead_mapping)?;
-            let bonded_stats = calculate_bonded_stats(
-                &output_path.to_string_lossy(),
-                mapping.bead_names.len(),
-                &mapping.connections,
-            )?;
-            bond_stats = bonded_stats.bonds;
-            angle_stats = bonded_stats.angles;
-            dihedral_stats = bonded_stats.dihedrals;
-        }
+        let report = map_native_trajectory(
+            Path::new(&input_traj),
+            Some(&output_path),
+            &bead_mapping,
+            &mapping.connections,
+            &native_options(request, source.as_ref()),
+        )?;
+        bond_stats = report.bond_stats;
+        angle_stats = report.angle_stats;
+        dihedral_stats = report.dihedral_stats;
+        first_cg_coords = report.first_cg_coords;
         artifacts.push(CgArtifact {
             path: output_path.to_string_lossy().to_string(),
             kind: "coarse_grained_trajectory".to_string(),

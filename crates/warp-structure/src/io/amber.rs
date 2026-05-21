@@ -781,7 +781,7 @@ fn topology_data(
     (name, element, resname, resid, charge)
 }
 
-fn residue_for_atom(atom_idx: usize, topo: &AmberTopology) -> (i32, String) {
+pub(crate) fn residue_for_atom(atom_idx: usize, topo: &AmberTopology) -> (i32, String) {
     let mut resid = 1usize;
     for (i, start) in topo.residue_pointers.iter().enumerate() {
         if *start <= atom_idx + 1 {
@@ -798,7 +798,7 @@ fn residue_for_atom(atom_idx: usize, topo: &AmberTopology) -> (i32, String) {
     (resid as i32, resname)
 }
 
-fn atomic_number_to_symbol(z: i32) -> Option<String> {
+pub(crate) fn atomic_number_to_symbol(z: i32) -> Option<String> {
     const TABLE: [&str; 119] = [
         "", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S",
         "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga",

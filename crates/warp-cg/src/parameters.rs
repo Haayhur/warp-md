@@ -1,5 +1,4 @@
 use anyhow::Result;
-use chemfiles::{Frame, Trajectory};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -58,66 +57,23 @@ pub fn calculate_bonded_stats(
     n_beads: usize,
     connections: &[(usize, usize)],
 ) -> Result<BondedStats> {
-    let mut traj = Trajectory::open(traj_path, 'r')?;
-    let mut frame = Frame::new();
+    let mapping = crate::trajectory::BeadMapping {
+        bead_names: (0..n_beads).map(|idx| format!("B{}", idx)).collect(),
+        atom_indices: (0..n_beads).map(|idx| vec![idx]).collect(),
+    };
+    let report = crate::trajectory::map_native_trajectory(
+        std::path::Path::new(traj_path),
+        None,
+        &mapping,
+        connections,
+        &crate::trajectory::NativeTrajectoryOptions::default(),
+    )?;
 
-    let mut bond_values: HashMap<(usize, usize), Vec<f64>> = HashMap::new();
-    for &(i, j) in connections {
-        let key = if i < j { (i, j) } else { (j, i) };
-        bond_values.insert(key, Vec::new());
-    }
-    let (angles, dihedrals) = bonded_term_definitions(n_beads, connections);
-    let mut angle_values: HashMap<(usize, usize, usize), Vec<f64>> = angles
-        .into_iter()
-        .map(|angle| (angle, Vec::new()))
-        .collect();
-    let mut dihedral_values: HashMap<(usize, usize, usize, usize), Vec<f64>> = dihedrals
-        .into_iter()
-        .map(|dihedral| (dihedral, Vec::new()))
-        .collect();
-
-    while traj.read(&mut frame).is_ok() {
-        let positions = frame.positions();
-        for (&(i, j), values) in bond_values.iter_mut() {
-            if i < positions.len() && j < positions.len() {
-                let pi = positions[i];
-                let pj = positions[j];
-                let dist =
-                    ((pi[0] - pj[0]).powi(2) + (pi[1] - pj[1]).powi(2) + (pi[2] - pj[2]).powi(2))
-                        .sqrt();
-                values.push(dist);
-            }
-        }
-        for (&(i, j, k), values) in angle_values.iter_mut() {
-            if i < positions.len() && j < positions.len() && k < positions.len() {
-                values.push(angle_deg(
-                    position_to_f32(positions[i]),
-                    position_to_f32(positions[j]),
-                    position_to_f32(positions[k]),
-                ));
-            }
-        }
-        for (&(i, j, k, l), values) in dihedral_values.iter_mut() {
-            if i < positions.len()
-                && j < positions.len()
-                && k < positions.len()
-                && l < positions.len()
-            {
-                values.push(dihedral_deg(
-                    position_to_f32(positions[i]),
-                    position_to_f32(positions[j]),
-                    position_to_f32(positions[k]),
-                    position_to_f32(positions[l]),
-                ));
-            }
-        }
-    }
-
-    Ok(bonded_stats_from_values(
-        bond_values,
-        angle_values,
-        dihedral_values,
-    ))
+    Ok(BondedStats {
+        bonds: report.bond_stats,
+        angles: report.angle_stats,
+        dihedrals: report.dihedral_stats,
+    })
 }
 
 pub fn calculate_bond_stats_from_frames(
@@ -278,10 +234,6 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f64 {
     let dy = f64::from(a[1] - b[1]);
     let dz = f64::from(a[2] - b[2]);
     (dx * dx + dy * dy + dz * dz).sqrt()
-}
-
-fn position_to_f32(position: [f64; 3]) -> [f32; 3] {
-    [position[0] as f32, position[1] as f32, position[2] as f32]
 }
 
 pub fn angle_deg(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f64 {

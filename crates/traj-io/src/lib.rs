@@ -8,7 +8,9 @@ mod selection_support;
 pub mod tng;
 pub mod trr;
 pub mod xtc;
+pub mod xyz_traj;
 pub use selection_support::{validate_and_materialize_selection, validate_selection};
+
 
 use traj_core::error::TrajResult;
 use traj_core::frame::{Box3, FrameChunkBuilder};

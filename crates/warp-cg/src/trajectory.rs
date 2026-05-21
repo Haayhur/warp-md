@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use chemfiles::{Atom, Frame, Trajectory};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -13,6 +12,7 @@ use traj_io::pdb_traj::PdbTrajReader;
 use traj_io::tng::TngReader;
 use traj_io::trr::{TrrReader, TrrWriter};
 use traj_io::xtc::{XtcReader, XtcWriter};
+use traj_io::xyz_traj::XyzTrajReader;
 use traj_io::TrajReader;
 use warp_structure::io::read_system_auto;
 
@@ -60,46 +60,14 @@ pub fn map_trajectory_first_frame(
     output_path: &str,
     mapping: &BeadMapping,
 ) -> Result<Option<Vec<[f32; 3]>>> {
-    let mut input = Trajectory::open(input_path, 'r')?;
-    let mut output = Trajectory::open(output_path, 'w')?;
-
-    let mut frame = Frame::new();
-    let mut first_cg_coords = None;
-    while let Ok(_) = input.read(&mut frame) {
-        let mut cg_frame = Frame::new();
-
-        let positions = frame.positions();
-        let mut cg_coords = Vec::new();
-
-        for (i, bead_atoms) in mapping.atom_indices.iter().enumerate() {
-            let mut cog = [0.0; 3];
-            for &atom_idx in bead_atoms {
-                if atom_idx < positions.len() {
-                    let pos = positions[atom_idx];
-                    cog[0] += pos[0];
-                    cog[1] += pos[1];
-                    cog[2] += pos[2];
-                }
-            }
-            let count = bead_atoms.len() as f64;
-            if count > 0.0 {
-                cog[0] /= count;
-                cog[1] /= count;
-                cog[2] /= count;
-            }
-
-            let atom = Atom::new(mapping.bead_names[i].as_str());
-            cg_frame.add_atom(&atom, cog, None);
-            cg_coords.push([cog[0] as f32, cog[1] as f32, cog[2] as f32]);
-        }
-
-        if first_cg_coords.is_none() {
-            first_cg_coords = Some(cg_coords);
-        }
-        output.write(&cg_frame)?;
-    }
-
-    Ok(first_cg_coords)
+    let report = map_native_trajectory(
+        Path::new(input_path),
+        Some(Path::new(output_path)),
+        mapping,
+        &[],
+        &NativeTrajectoryOptions::default(),
+    )?;
+    Ok(report.first_cg_coords)
 }
 
 pub fn map_native_trajectory(
@@ -414,6 +382,7 @@ fn open_reader(
         "cpt" => Box::new(CptReader::open(path)?),
         "trr" => Box::new(TrrReader::open(path)?),
         "pdb" | "pdbqt" => Box::new(PdbTrajReader::open(path)?),
+        "xyz" => Box::new(XyzTrajReader::open(path)?),
         other => return Err(anyhow!("unsupported trajectory format: {other}")),
     };
     Ok(reader)
@@ -620,6 +589,87 @@ mod tests {
 
         assert_eq!(report.frames_read, 2);
         assert_eq!(report.frames_written, 2);
+        assert!(out.is_file());
+    }
+
+    #[test]
+    fn native_mapping_supports_prmtop_topology() {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path().join("system.prmtop");
+        fs::write(
+            &top,
+            concat!(
+                "%FLAG TITLE\n",
+                "%FORMAT(20a4)\n",
+                "TEST PRMTOP\n",
+                "%FLAG POINTERS\n",
+                "%FORMAT(10I8)\n",
+                "       2       1       0       0       0       0       0       0       0       0\n",
+                "%FLAG ATOM_NAME\n",
+                "%FORMAT(20a4)\n",
+                "H1  H2  \n",
+                "%FLAG CHARGE\n",
+                "%FORMAT(5E16.8)\n",
+                "  4.20000000E-01  4.20000000E-01\n",
+                "%FLAG MASS\n",
+                "%FORMAT(5E16.8)\n",
+                "  1.00800000E+00  1.00800000E+00\n",
+                "%FLAG RESIDUE_LABEL\n",
+                "%FORMAT(20a4)\n",
+                "SOL \n",
+                "%FLAG RESIDUE_POINTER\n",
+                "%FORMAT(10I8)\n",
+                "       1\n",
+                "%FLAG ATOMIC_NUMBER\n",
+                "%FORMAT(10I8)\n",
+                "       1       1\n",
+                "%FLAG ATOM_TYPE_INDEX\n",
+                "%FORMAT(10I8)\n",
+                "       1       1\n"
+            ),
+        )
+        .unwrap();
+
+        let traj = dir.path().join("solvated.xtc");
+        let mut writer = XtcWriter::create(&traj, 2).unwrap();
+        writer
+            .write_frame(
+                &[
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                ],
+                Box3::Orthorhombic {
+                    lx: 10.0,
+                    ly: 10.0,
+                    lz: 10.0,
+                },
+                0,
+                Some(0.0),
+            )
+            .unwrap();
+        writer.flush().unwrap();
+
+        let out = dir.path().join("sol_cg.xtc");
+        let report = map_native_trajectory(
+            &traj,
+            Some(&out),
+            &BeadMapping {
+                bead_names: vec!["SP1".to_string()],
+                atom_indices: vec![vec![0]],
+            },
+            &[],
+            &NativeTrajectoryOptions {
+                topology: Some(top.to_string_lossy().to_string()),
+                topology_format: Some("prmtop".to_string()),
+                format: Some("xtc".to_string()),
+                target_selection: Some("resname SOL".to_string()),
+                ..NativeTrajectoryOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.frames_read, 1);
+        assert_eq!(report.frames_written, 1);
         assert!(out.is_file());
     }
 }
