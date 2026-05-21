@@ -72,25 +72,16 @@ jobs:
           python -m pip install maturin==1.5.1
           python -m pip install pytest
 
-      - name: Create CMake wrapper
-        run: |
-          echo '#!/bin/bash' > cmake-wrapper
-          echo 'REAL_CMAKE=$(which cmake)' >> cmake-wrapper
-          echo 'exec "$REAL_CMAKE" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 "$@"' >> cmake-wrapper
-          chmod +x cmake-wrapper
-
       - name: Build CPU wheels (manylinux2014)
         uses: PyO3/maturin-action@v1
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
           CMAKE_ARGS: "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-          CMAKE: /io/cmake-wrapper
         with:
           command: build
           docker-options: >-
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
             -e CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-            -e CMAKE=/io/cmake-wrapper
           args: >-
             --release
             --out target/wheels
@@ -101,6 +92,13 @@ jobs:
             --interpreter /opt/python/cp313-cp313/bin/python
           manylinux: 2_28
           target: x86_64
+          before-script-linux: |
+            set -eux
+            CMAKE_PATH=$(which cmake)
+            mv "$CMAKE_PATH" "${CMAKE_PATH}.real"
+            echo '#!/bin/bash' > "$CMAKE_PATH"
+            echo "exec ${CMAKE_PATH}.real -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \"\$@\"" >> "$CMAKE_PATH"
+            chmod +x "$CMAKE_PATH"
 
       - name: Install CPU wheel and run pack export tests
         run: |
@@ -316,13 +314,6 @@ jobs:
           path.write_text(data)
           PY
 
-      - name: Create CMake wrapper
-        run: |
-          echo '#!/bin/bash' > cmake-wrapper
-          echo 'REAL_CMAKE=$(which cmake)' >> cmake-wrapper
-          echo 'exec "$REAL_CMAKE" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 "$@"' >> cmake-wrapper
-          chmod +x cmake-wrapper
-
       - name: Build CUDA wheels (manylinux_2_28)
         uses: PyO3/maturin-action@v1
         env:
@@ -330,13 +321,11 @@ jobs:
           PATH: /usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
           CMAKE_ARGS: "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-          CMAKE: /io/cmake-wrapper
         with:
           command: build
           docker-options: >-
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
             -e CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-            -e CMAKE=/io/cmake-wrapper
           args: >-
             --release --features cuda,extension-module
             --out target/wheels
@@ -348,6 +337,11 @@ jobs:
           manylinux: 2_28
           before-script-linux: |
             set -eux
+            CMAKE_PATH=$(which cmake)
+            mv "$CMAKE_PATH" "${CMAKE_PATH}.real"
+            echo '#!/bin/bash' > "$CMAKE_PATH"
+            echo "exec ${CMAKE_PATH}.real -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \"\$@\"" >> "$CMAKE_PATH"
+            chmod +x "$CMAKE_PATH"
             yum -y install dnf-plugins-core
             dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
             dnf clean expire-cache
