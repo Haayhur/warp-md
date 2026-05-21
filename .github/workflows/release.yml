@@ -96,8 +96,21 @@ jobs:
             set -eux
             CMAKE_PATH=$(which cmake)
             mv "$CMAKE_PATH" "${CMAKE_PATH}.real"
-            echo '#!/bin/bash' > "$CMAKE_PATH"
-            echo "exec ${CMAKE_PATH}.real -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \"\$@\"" >> "$CMAKE_PATH"
+            cat << 'EOF' > "$CMAKE_PATH"
+            #!/bin/bash
+            is_build=0
+            for arg in "$@"; do
+              if [ "$arg" = "--build" ]; then
+                is_build=1
+                break
+              fi
+            done
+            if [ "$is_build" -eq 1 ]; then
+              exec "${0}.real" "$@"
+            else
+              exec "${0}.real" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 "$@"
+            fi
+            EOF
             chmod +x "$CMAKE_PATH"
 
       - name: Install CPU wheel and run pack export tests
@@ -339,8 +352,21 @@ jobs:
             set -eux
             CMAKE_PATH=$(which cmake)
             mv "$CMAKE_PATH" "${CMAKE_PATH}.real"
-            echo '#!/bin/bash' > "$CMAKE_PATH"
-            echo "exec ${CMAKE_PATH}.real -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \"\$@\"" >> "$CMAKE_PATH"
+            cat << 'EOF' > "$CMAKE_PATH"
+            #!/bin/bash
+            is_build=0
+            for arg in "$@"; do
+              if [ "$arg" = "--build" ]; then
+                is_build=1
+                break
+              fi
+            done
+            if [ "$is_build" -eq 1 ]; then
+              exec "${0}.real" "$@"
+            else
+              exec "${0}.real" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 "$@"
+            fi
+            EOF
             chmod +x "$CMAKE_PATH"
             yum -y install dnf-plugins-core
             dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
