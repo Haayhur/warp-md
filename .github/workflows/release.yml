@@ -88,7 +88,7 @@ jobs:
             --interpreter /opt/python/cp311-cp311/bin/python
             --interpreter /opt/python/cp312-cp312/bin/python
             --interpreter /opt/python/cp313-cp313/bin/python
-          manylinux: 2014
+          manylinux: 2_28
           target: x86_64
 
       - name: Install CPU wheel and run pack export tests
