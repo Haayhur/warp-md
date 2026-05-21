@@ -11,6 +11,7 @@ members = [
   "crates/warp-structure",
   "crates/warp-build",
   "crates/warp-pack",
+  "crates/warp-cg",
   "crates/warp-pep",
   "crates/warp-topology-graph",
 ]
@@ -18,3 +19,4 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "MIT"
+rust-version = "1.75"

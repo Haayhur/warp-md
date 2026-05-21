@@ -1,16 +1,20 @@
 [package]
 name = "traj-io"
-version = "0.1.5"
+version = "0.4.6"
 edition = "2021"
 license = "MIT"
 build = "build.rs"
+
+[features]
+default = ["hdf5-vendored"]
+hdf5-vendored = ["hdf5_metno/static", "hdf5_metno/zlib"]
 
 [dependencies]
 traj-core = { path = "../traj-core" }
 warp-structure = { path = "../warp-structure" }
 xdrfile = "0.3"
 bytemuck = { version = "1.15", features = ["extern_crate_alloc"] }
-hdf5_metno = { package = "hdf5-metno", version = "0.12.4", features = ["static", "zlib"] }
+hdf5_metno = { package = "hdf5-metno", version = "0.12.4" }
 ndarray = "0.15.6"
 
 [dev-dependencies]

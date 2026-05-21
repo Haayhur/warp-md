@@ -114,6 +114,7 @@ Under the hood, warp-md is a family of Rust crates:
 | `traj-py` | Python bindings (PyO3, 96 Plan classes) |
 | `warp-build` | Native polymer construction stage, build manifests, topology graphs |
 | `warp-pack` | World-build engine for solvent, ions, box, and morphology |
+| `warp-cg` | Martini coarse-graining mapper with native trajectory mapping, xTB references, bonded tuning, ITP/TOP output, and JSON agent contract |
 | `warp-pep` | Peptide builder + mutation engine (internal coordinate geometry) |
 
 ---

@@ -50,6 +50,12 @@ jobs:
           update(Path("pyproject.toml"))
           for cargo in Path("crates").rglob("Cargo.toml"):
             update(cargo)
+
+          # Stamp __version__ in Python package
+          init = Path("python/warp_md/__init__.py")
+          text = init.read_text()
+          text = re.sub(r'__version__ = ".*?"', f'__version__ = "{version}"', text)
+          init.write_text(text)
           PY
 
       - name: Set up Python
@@ -156,6 +162,12 @@ jobs:
           update(Path("pyproject.toml"))
           for cargo in Path("crates").rglob("Cargo.toml"):
             update(cargo)
+
+          # Stamp __version__ in Python package
+          init = Path("python/warp_md/__init__.py")
+          text = init.read_text()
+          text = re.sub(r'__version__ = ".*?"', f'__version__ = "{version}"', text)
+          init.write_text(text)
           PY
 
       - name: Set up Python
@@ -275,6 +287,12 @@ jobs:
           update(Path("pyproject.toml"))
           for cargo in Path("crates").rglob("Cargo.toml"):
             update(cargo)
+
+          # Stamp __version__ in Python package
+          init = Path("python/warp_md/__init__.py")
+          text = init.read_text()
+          text = re.sub(r'__version__ = ".*?"', f'__version__ = "{version}"', text)
+          init.write_text(text)
           PY
 
       - name: Switch package name to warp-md-cuda

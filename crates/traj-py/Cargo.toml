@@ -1,6 +1,6 @@
 [package]
 name = "traj-py"
-version = "0.1.5"
+version = "0.4.6"
 edition = "2021"
 license = "MIT"
 
@@ -10,11 +10,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 traj-core = { path = "../traj-core" }
-traj-io = { path = "../traj-io" }
-traj-engine = { path = "../traj-engine" }
+traj-io = { path = "../traj-io", default-features = false }
+traj-engine = { path = "../traj-engine", default-features = false }
 warp-structure = { path = "../warp-structure" }
 warp-build = { path = "../warp-build" }
 warp-pack = { path = "../warp-pack" }
+warp-cg = { path = "../warp-cg", default-features = false }
 warp-pep = { path = "../warp-pep" }
 pyo3 = { version = "0.21" }
 numpy = "0.21"
@@ -28,6 +29,8 @@ schemars = { version = "0.8.22", features = ["derive"] }
 pyo3-build-config = { version = "0.21", features = ["resolve-config"] }
 
 [features]
+default = ["hdf5-vendored"]
+hdf5-vendored = ["traj-io/hdf5-vendored", "traj-engine/hdf5-vendored", "warp-cg/hdf5-vendored"]
 cuda = ["traj-engine/cuda"]
 extension-module = ["pyo3/extension-module"]
 auto-initialize = ["pyo3/auto-initialize"]

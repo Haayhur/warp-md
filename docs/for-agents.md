@@ -26,6 +26,7 @@ warp-md rg --topology protein.pdb --traj traj.xtc --selection "protein"
 | **Trajectory Analysis** | `warp-md` | Calculate Rg, RMSD, RDF, conductivity (96+ analyses) |
 | **Polymer Construction** | `warp-build` | Build chains, sequence polymers, and emit manifests for world-build |
 | **Molecular Packing** | `warp-pack` | Solvate proteins, build simulation boxes |
+| **Coarse Graining** | `warp-cg` | Map SMILES and trajectories to Martini beads |
 | **Peptide Building** | `warp-pep` | Construct peptides, introduce mutations |
 
 ---
@@ -44,9 +45,136 @@ warp-build run build_request.json --stream
 # Packing
 warp-pack --config pack.yaml --stream --output packed.pdb
 
+# Martini coarse graining
+warp-cg run cg_request.json --stream ndjson
+
 # Peptide building
 warp-pep build -s ACDEFG --preset alpha-helix --output helix.pdb --stream
 ```
+
+Minimal `warp-cg` request with a solvated external trajectory source and native
+bonded-parameter tuning:
+
+```json
+{
+  "schema_version": "warp-cg.agent.v1",
+  "name": "benzene",
+  "smiles": "c1ccccc1",
+  "trajectory_source": {
+    "path": "traj.xtc",
+    "topology": "topology.pdb",
+    "kind": "external",
+    "target_selection": "resname BENZ",
+    "stride": 1,
+    "mass_weighted": true
+  },
+  "output": {
+    "out_dir": "results/cg/benzene",
+    "mapped_trajectory": "benzene_cg.xtc",
+    "write_mapping_json": true,
+    "write_cg_pdb": true,
+    "write_topology_itp": true,
+    "write_topology_top": true,
+    "write_bonded_parameter_map": true
+  },
+  "parameter_tuning": {
+    "enabled": true,
+    "source": "external_trajectory",
+    "method": "bayesian_optimization",
+    "objective": "bonded_parameter_parity"
+  }
+}
+```
+
+`parameter_tuning` supports native `bayesian_optimization` and `pso` methods for
+bonded parameter fitting against mapped reference bond, angle, and dihedral
+statistics. Set `reference_source.kind` to `xtb` when the agent should initiate
+an xTB reference optimization/MD run instead of using an external trajectory.
+If no bonded reference statistics are available, tuning returns a structured
+`skipped` report rather than fabricating parameters.
+When provided, `parameter_tuning.max_evaluations` and `swarm_size` must be
+positive integers.
+
+For solvated systems, keep the full topology in `trajectory_source.topology` and
+identify the molecule to coarse-grain with either `target_selection` or
+`atom_indices`, not both. `mass_weighted: true` requires a topology and uses
+atomic masses from the selected target atoms.
+When `trajectory_source.kind` is present it must be `external`.
+`environment_selection` is accepted as forward-compatible metadata for solvent
+or environment context, but mapping currently uses `target_selection` or
+`atom_indices`.
+Path and selection fields must be non-empty strings.
+
+Supported native trajectory inputs include `xtc`, `dcd`, `trr`, `gro`, `g96`,
+`h5md`, `tng`, `cpt`, `pdb`, and `pdbqt`. Supported mapped trajectory outputs
+include `xtc`, `dcd`, `trr`, `gro`, `g96`, `h5md`, and single-frame `cpt`.
+
+Agent-visible `warp-cg` artifacts:
+
+If `output` is omitted, warp-cg writes mapping JSON, CG PDB, Martini ITP,
+Martini TOP, and the bonded parameter map by default. If `output` is partially
+specified, set `write_topology_top` explicitly when a top-level Gromacs topology
+wrapper is required.
+
+| Kind | Meaning |
+|------|---------|
+| `martini_mapping_json` | Deterministic bead-to-atom mapping and bead graph |
+| `coarse_grained_pdb` | Bead-level PDB for quick downstream setup |
+| `coarse_grained_trajectory` | Native mapped trajectory in the requested output format |
+| `bond_stats_json` | Bond distribution statistics from mapped reference frames |
+| `bonded_stats_json` | Bond, angle, and dihedral distribution statistics |
+| `bonded_parameter_map_json` | Crosswalk from stats/tuning parameter names to ITP rows |
+| `bonded_parameter_tuning_report` | BO/PSO trace, bounds, and best bonded parameters |
+| `martini_topology_itp` | Martini-style atoms, bonds, angles, and dihedrals |
+| `martini_topology_top` | Top-level Gromacs topology wrapper including the generated ITP |
+| `xtb_optimized_xyz` | xTB optimized atomistic reference structure |
+| `xtb_reference_trajectory` | xTB reference trajectory when xTB MD succeeds |
+
+xTB-initiated reference example:
+
+```json
+{
+  "schema_version": "warp-cg.agent.v1",
+  "name": "ethanol",
+  "smiles": "CCO",
+  "reference_source": {
+    "kind": "xtb",
+    "xtb": {
+      "temperature_k": 298.15,
+      "time_ps": 2.0,
+      "timestep_fs": 1.0,
+      "dump_fs": 100.0,
+      "gfn": "gfnff",
+      "seed": 42,
+      "work_dir": "results/cg/ethanol/xtb"
+    }
+  },
+  "output": {
+    "out_dir": "results/cg/ethanol",
+    "mapped_trajectory": "ethanol_cg.xtc",
+    "write_mapping_json": true,
+    "write_cg_pdb": true,
+    "write_topology_itp": true,
+    "write_topology_top": true,
+    "write_bonded_parameter_map": true
+  },
+  "parameter_tuning": {
+    "enabled": true,
+    "source": "xtb",
+    "method": "pso",
+    "swarm_size": 12,
+    "max_evaluations": 48,
+    "objective": "bonded_parameter_parity"
+  }
+}
+```
+
+Runnable request templates live in `examples/warp_cg/`:
+
+| File | Use |
+|------|-----|
+| `solvated_external_bo_request.json` | Solvated external trajectory with `target_selection`, mass-weighted mapping, BO tuning, and Martini ITP output |
+| `xtb_pso_request.json` | xTB-initiated reference workflow with PSO tuning and mapped `gro` output |
 
 ### Python API
 

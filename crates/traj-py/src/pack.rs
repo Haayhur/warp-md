@@ -471,6 +471,43 @@ fn pack_agent_run<'py>(
 }
 
 #[pyfunction]
+#[pyo3(signature = (kind="request"))]
+fn cg_agent_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
+    let text =
+        warp_cg::agent::schema_json(kind).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_string_to_py(py, text)
+}
+
+#[pyfunction]
+fn cg_agent_example<'py>(py: Python<'py>) -> PyResult<PyObject> {
+    let value = warp_cg::agent::example_request();
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn cg_agent_capabilities<'py>(py: Python<'py>) -> PyResult<PyObject> {
+    let value = warp_cg::agent::capabilities();
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn cg_agent_validate<'py>(py: Python<'py>, json: &str) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_cg::agent::validate_request_json(json);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
+#[pyo3(signature = (json, stream_ndjson=false))]
+fn cg_agent_run<'py>(
+    py: Python<'py>,
+    json: &str,
+    stream_ndjson: bool,
+) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_cg::agent::run_request_json(json, stream_ndjson);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
 #[pyo3(signature = (data0, data1, mode="distance"))]
 fn crank_delta<'py>(
     py: Python<'py>,
@@ -985,6 +1022,11 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pack_resolve_chemistry, m)?)?;
     m.add_function(wrap_pyfunction!(pack_agent_validate, m)?)?;
     m.add_function(wrap_pyfunction!(pack_agent_run, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_agent_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_agent_example, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_agent_capabilities, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_agent_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_agent_run, m)?)?;
     m.add_function(wrap_pyfunction!(crank_delta, m)?)?;
     m.add_function(wrap_pyfunction!(rotdif_fit, m)?)?;
     m.add_function(wrap_pyfunction!(gist_apply_pme_scaling, m)?)?;

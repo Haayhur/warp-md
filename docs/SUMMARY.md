@@ -25,6 +25,7 @@
 * [Agent Framework Integrations](guides/agent-frameworks.md)
 * [Streaming Progress API](guides/streaming-progress.md)
 * [Molecule Packing](guides/packing.md)
+* [warp-cg](guides/warp-cg.md)
 * [CUDA & GPU Acceleration](guides/cuda-gpu.md)
 
 ## API Reference
