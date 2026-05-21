@@ -72,16 +72,25 @@ jobs:
           python -m pip install maturin==1.5.1
           python -m pip install pytest
 
+      - name: Create CMake wrapper
+        run: |
+          echo '#!/bin/bash' > cmake-wrapper
+          echo 'REAL_CMAKE=$(which cmake)' >> cmake-wrapper
+          echo 'exec "$REAL_CMAKE" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 "$@"' >> cmake-wrapper
+          chmod +x cmake-wrapper
+
       - name: Build CPU wheels (manylinux2014)
         uses: PyO3/maturin-action@v1
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
           CMAKE_ARGS: "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+          CMAKE: /io/cmake-wrapper
         with:
           command: build
           docker-options: >-
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
             -e CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+            -e CMAKE=/io/cmake-wrapper
           args: >-
             --release
             --out target/wheels
@@ -307,6 +316,13 @@ jobs:
           path.write_text(data)
           PY
 
+      - name: Create CMake wrapper
+        run: |
+          echo '#!/bin/bash' > cmake-wrapper
+          echo 'REAL_CMAKE=$(which cmake)' >> cmake-wrapper
+          echo 'exec "$REAL_CMAKE" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 "$@"' >> cmake-wrapper
+          chmod +x cmake-wrapper
+
       - name: Build CUDA wheels (manylinux_2_28)
         uses: PyO3/maturin-action@v1
         env:
@@ -314,11 +330,13 @@ jobs:
           PATH: /usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
           CMAKE_ARGS: "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+          CMAKE: /io/cmake-wrapper
         with:
           command: build
           docker-options: >-
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
             -e CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+            -e CMAKE=/io/cmake-wrapper
           args: >-
             --release --features cuda,extension-module
             --out target/wheels
