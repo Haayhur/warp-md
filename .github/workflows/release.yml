@@ -76,10 +76,12 @@ jobs:
         uses: PyO3/maturin-action@v1
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+          CMAKE_ARGS: "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
         with:
           command: build
           docker-options: >-
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+            -e CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
           args: >-
             --release
             --out target/wheels
@@ -311,10 +313,12 @@ jobs:
           CUDA_HOME: /usr/local/cuda
           PATH: /usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+          CMAKE_ARGS: "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
         with:
           command: build
           docker-options: >-
             -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+            -e CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
           args: >-
             --release --features cuda,extension-module
             --out target/wheels
