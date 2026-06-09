@@ -725,7 +725,11 @@ pub struct PreflightSummary {
 pub struct RunSummary {
     pub build_mode: String,
     pub n_repeat: usize,
+    pub n_repeat_requested: Option<usize>,
+    pub requested_total_residues: usize,
     pub atom_count: usize,
+    pub middle_repeat_units: usize,
+    pub terminal_units: usize,
     pub total_repeat_units: usize,
     pub total_residues: usize,
     pub conformation_mode: String,
@@ -849,6 +853,10 @@ pub struct AppliedCapSummary {
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct BuildManifestSummary {
     pub atom_count: usize,
+    pub n_repeat_requested: Option<usize>,
+    pub requested_total_residues: usize,
+    pub middle_repeat_units: usize,
+    pub terminal_units: usize,
     pub total_repeat_units: usize,
     pub total_residues: usize,
     pub net_charge_e: Option<f32>,
@@ -2181,6 +2189,27 @@ fn reported_n_repeat(normalization: Option<&TargetNormalizationSummary>, fallbac
         .unwrap_or(fallback)
 }
 
+fn requested_count(normalization: Option<&TargetNormalizationSummary>, fallback: usize) -> usize {
+    normalization
+        .map(|value| value.sequence.len())
+        .unwrap_or(fallback)
+}
+
+fn n_repeat_requested(normalization: Option<&TargetNormalizationSummary>) -> Option<usize> {
+    normalization.and_then(|value| value.requested_n_repeat.or(value.requested_total_units))
+}
+
+fn terminal_units(normalization: Option<&TargetNormalizationSummary>) -> usize {
+    normalization
+        .map(|value| {
+            value
+                .sequence
+                .len()
+                .saturating_sub(value.resolved_repeat_units)
+        })
+        .unwrap_or(0)
+}
+
 fn build_metadata_summary() -> BuildMetadataSummary {
     BuildMetadataSummary {
         git_commit: option_env!("VERGEN_GIT_SHA").map(str::to_string),
@@ -2244,6 +2273,7 @@ enum TopologyArtifactMode {
 
 fn handoff_level_and_limitations(
     topology_mode: TopologyArtifactMode,
+    forcefield_ref_available: bool,
     net_charge: Option<f32>,
     salvaged: bool,
     parameter_source: &TrainingSourceAssessment,
@@ -2301,6 +2331,11 @@ fn handoff_level_and_limitations(
         match topology_mode {
             TopologyArtifactMode::SourceTransfer if net_charge.is_some() => "md_ready",
             TopologyArtifactMode::ForcefieldRef if net_charge.is_some() => "forcefield_backed",
+            TopologyArtifactMode::SyntheticUffLike
+                if forcefield_ref_available && synthetic_production_conformation =>
+            {
+                "openmm_ffxml_ready"
+            }
             TopologyArtifactMode::SyntheticUffLike if synthetic_production_conformation => {
                 "minimizable_synthetic"
             }
@@ -9137,6 +9172,14 @@ pub fn capabilities() -> Value {
         "supported_validation_cache_modes": ["off", "record", "prefer", "require"],
         "default_validation_cache_mode": "off",
         "supported_qc_policies": ["strict", "salvage"],
+        "target_count_semantics": {
+            "linear_homopolymer": {
+                "n_repeat": "total_final_residues_when_terminal_aware",
+                "total_units": "alias_for_total_final_residues_when_terminal_aware",
+                "middle_repeat_units": "repeat-token units after terminal expansion",
+                "terminal_units": "explicit head/tail units added by terminal-aware source bundles"
+            }
+        },
         "artifact_outputs": [
             "coordinates",
             "raw_coordinates",
@@ -9227,6 +9270,14 @@ pub fn inspect_source_json(path: &str) -> (i32, Value) {
                     "sequence_token_support": bundle.capabilities.sequence_token_support,
                     "charge_transfer_supported": bundle.capabilities.charge_transfer_supported,
                     "topology_transfer_supported": topology_supported,
+                    "target_count_semantics": {
+                        "linear_homopolymer": {
+                            "n_repeat": "total_final_residues_when_terminal_aware",
+                            "total_units": "alias_for_total_final_residues_when_terminal_aware",
+                            "middle_repeat_units": "repeat-token units after terminal expansion",
+                            "terminal_units": "explicit head/tail units added by terminal-aware source bundles"
+                        }
+                    },
                     "artifact_validation": {
                         "valid": artifact_errors.is_empty(),
                         "checked": ["source_coordinates", "source_topology_ref", "source_charge_manifest", "forcefield_ref", "junction_selectors"],
@@ -10339,6 +10390,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
     let acceptance_state = acceptance_state(any_salvaged);
     let (handoff_level, limitations) = handoff_level_and_limitations(
         topology_mode,
+        forcefield_output_path.is_some(),
         net_charge,
         any_salvaged,
         &parameter_source_decision,
@@ -10470,6 +10522,10 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         md_ready_handoff,
         summary: BuildManifestSummary {
             atom_count: built.output.atoms.len(),
+            n_repeat_requested: n_repeat_requested(resolved.normalization.as_ref()),
+            requested_total_residues: requested_count(resolved.normalization.as_ref(), n_repeat),
+            middle_repeat_units: resolved_repeat_units(resolved.normalization.as_ref(), n_repeat),
+            terminal_units: terminal_units(resolved.normalization.as_ref()),
             total_repeat_units: resolved_repeat_units(resolved.normalization.as_ref(), n_repeat),
             total_residues: n_repeat,
             net_charge_e: net_charge,
@@ -10615,7 +10671,17 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             summary: RunSummary {
                 build_mode: req.target.mode.clone(),
                 n_repeat: reported_n_repeat(resolved.normalization.as_ref(), n_repeat),
+                n_repeat_requested: n_repeat_requested(resolved.normalization.as_ref()),
+                requested_total_residues: requested_count(
+                    resolved.normalization.as_ref(),
+                    n_repeat
+                ),
                 atom_count: built.output.atoms.len(),
+                middle_repeat_units: resolved_repeat_units(
+                    resolved.normalization.as_ref(),
+                    n_repeat
+                ),
+                terminal_units: terminal_units(resolved.normalization.as_ref()),
                 total_repeat_units: resolved_repeat_units(
                     resolved.normalization.as_ref(),
                     n_repeat

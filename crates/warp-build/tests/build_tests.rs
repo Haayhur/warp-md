@@ -710,7 +710,15 @@ fn schema_and_inspect_source_work() {
         payload["sequence_token_support"]["tokens"],
         json!(["H", "A", "B", "T", "M2"])
     );
+    assert_eq!(
+        payload["target_count_semantics"]["linear_homopolymer"]["n_repeat"],
+        "total_final_residues_when_terminal_aware"
+    );
     let caps = warp_build::capabilities();
+    assert_eq!(
+        caps["target_count_semantics"]["linear_homopolymer"]["n_repeat"],
+        "total_final_residues_when_terminal_aware"
+    );
     assert_eq!(
         caps["executable_target_modes"],
         json!([
@@ -953,6 +961,14 @@ fn run_build_writes_polymer_artifacts() {
         serde_json::from_str(&fs::read_to_string(&build_manifest).expect("read manifest"))
             .expect("parse manifest");
     assert_eq!(manifest["schema_version"], "warp-build.manifest.v1");
+    assert_eq!(payload["summary"]["n_repeat_requested"], 4);
+    assert_eq!(payload["summary"]["requested_total_residues"], 4);
+    assert_eq!(payload["summary"]["middle_repeat_units"], 2);
+    assert_eq!(payload["summary"]["terminal_units"], 2);
+    assert_eq!(manifest["summary"]["n_repeat_requested"], 4);
+    assert_eq!(manifest["summary"]["requested_total_residues"], 4);
+    assert_eq!(manifest["summary"]["middle_repeat_units"], 2);
+    assert_eq!(manifest["summary"]["terminal_units"], 2);
     assert_eq!(manifest["summary"]["total_repeat_units"], 2);
     assert_eq!(manifest["summary"]["total_residues"], 4);
     assert_eq!(manifest["realization"]["seed"], 12345);
