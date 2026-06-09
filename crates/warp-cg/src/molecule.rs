@@ -64,6 +64,30 @@ impl Molecule {
         Ok(mol)
     }
 
+    pub fn from_elements_and_bonds(elements: &[String], bonds: &[(usize, usize)]) -> Self {
+        let mut graph = MolGraph::new_undirected();
+        let node_map = elements
+            .iter()
+            .map(|element| {
+                graph.add_node(Atom {
+                    symbol: element.clone(),
+                    atomic_number: symbol_to_atomic_number(element),
+                    formal_charge: 0,
+                    num_h: 0,
+                    is_in_ring: false,
+                })
+            })
+            .collect::<Vec<_>>();
+        for &(a, b) in bonds {
+            if a < node_map.len() && b < node_map.len() {
+                graph.add_edge(node_map[a], node_map[b], BondType::Single);
+            }
+        }
+        let mut mol = Molecule { graph };
+        mol.perceive_rings();
+        mol
+    }
+
     fn perceive_rings(&mut self) {
         let mut in_ring = HashSet::new();
         for idx in self.graph.node_indices() {
@@ -112,5 +136,21 @@ pub(crate) fn atomic_number_to_symbol(z: u8) -> &'static str {
         35 => "Br",
         53 => "I",
         _ => "X",
+    }
+}
+
+pub(crate) fn symbol_to_atomic_number(symbol: &str) -> u8 {
+    match symbol.trim().to_ascii_uppercase().as_str() {
+        "H" => 1,
+        "C" => 6,
+        "N" => 7,
+        "O" => 8,
+        "F" => 9,
+        "P" => 15,
+        "S" => 16,
+        "CL" => 17,
+        "BR" => 35,
+        "I" => 53,
+        _ => 0,
     }
 }

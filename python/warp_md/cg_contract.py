@@ -6,7 +6,7 @@ from typing import Any, Dict, Tuple
 from . import traj_py
 
 
-CG_AGENT_SCHEMA_VERSION = "warp-cg.agent.v1"
+CG_AGENT_SCHEMA_VERSION = "warp-cg.agent.v2"
 CG_AGENT_RESULT_VERSION = CG_AGENT_SCHEMA_VERSION
 
 

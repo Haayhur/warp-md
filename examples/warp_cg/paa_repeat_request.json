@@ -1,0 +1,13 @@
+{
+  "schema_version": "warp-cg.agent.v2",
+  "name": "paa_repeat",
+  "repeat_smiles": "C(C(=O)O)",
+  "mapping": {
+    "mode": "auto",
+    "repeat_unit_hint": "PAA",
+    "terminal_aware": true
+  },
+  "output": {
+    "out_dir": "results/cg/paa_repeat"
+  }
+}

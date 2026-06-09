@@ -19,7 +19,15 @@ Core inputs:
 
 | Field | Purpose |
 |-------|---------|
-| `smiles` | Atomistic molecule source for bead mapping |
+| `smiles` | Small-molecule template input |
+| `repeat_smiles` | Polymer repeat-unit template input |
+| `source` | Built-system or APS handoff input; accepts polymer build manifests, polymer pack manifests, coordinates/topology, coordinates/topology/charge manifest, or source manifests |
+| `mapping.mode` | Mapping strategy: `auto` for source graph partitioning, `template` for replaying a `warp-cg.mapping_template.v1` file, or repeat/small-molecule mapping |
+| `mapping.strategy` | Auto-mapping strategy, currently `polymer_residue_graph` |
+| `mapping.target_bead_size` | Target heavy-atom count per auto-generated bead |
+| `mapping.preserve_functional_groups` | Hint for auto mapping to keep graph-detected functional groups together where possible |
+| `mapping.template` | Mapping-template path for `mapping.mode=template` |
+| `mapping.repeat_unit_hint` | Polymer repeat label such as `PAA` or `PES` |
 | `trajectory_source` | External trajectory/topology to map with warp-md native IO |
 | `trajectory_source.kind` | Must be `external` when provided |
 | `trajectory_source.target_selection` | Selection for the target molecule inside a solvated topology |
@@ -27,9 +35,10 @@ Core inputs:
 | `trajectory_source.environment_selection` | Forward-compatible solvent/environment metadata; mapping currently uses target selection or atom indices |
 | `trajectory_source.mass_weighted` | Use topology masses for bead centers |
 | `reference_source.kind=xtb` | Initiate xTB optimization/MD as the reference source |
-| `parameter_tuning` | Fit bonded parameters with BO or PSO |
-| `parameter_tuning.max_evaluations` | Positive evaluation budget for BO/PSO |
-| `parameter_tuning.swarm_size` | Positive PSO swarm size when provided |
+| `optimization` | Preferred explicit optimization object; supports `source=aa_trajectory` and `source=xtb` |
+| `optimization.target_terms` | Bonded terms to optimize: `bonds`, `angles`, and/or `dihedrals` |
+| `optimization.max_evaluations` | Positive evaluation budget for BO/PSO |
+| `optimization.swarm_size` | Positive PSO swarm size when provided |
 | `output.write_topology_itp` | Write the molecule-level Martini-style ITP |
 | `output.write_topology_top` | Write a top-level Gromacs topology wrapper; requires `write_topology_itp=true` and should be set explicitly in partial `output` objects |
 | `output.write_cg_pdb` | Write a bead-level CG PDB coordinate artifact for quick downstream setup |
@@ -39,21 +48,73 @@ Core inputs:
 If no bonded reference statistics are available, parameter tuning returns a
 structured `skipped` report rather than inventing fitted parameters.
 
+Requests must provide at least one identity/handoff field: `smiles`,
+`repeat_smiles`, or `source`. Template replay is source-driven: use
+`source` plus `mapping.mode="template"` and `mapping.template`. Source-manifest
+requests can be validated and executed without SMILES. When `source` is present,
+the run path supports two modes. `mapping.mode="auto"` converts SMILES inputs or source
+topology/coordinates into the same internal molecular graph mapper. Source runs
+apply that mapper per residue, write terminal-aware residue bead templates, emit
+residue-to-bead and AA-to-CG provenance, and build a full-chain CG PDB/ITP/TOP
+when requested. They also write `<name>_mapping_template.json` so future runs can
+replay the discovered mapping. `mapping.mode="template"` loads a
+`warp-cg.mapping_template.v1` file and matches bead atom names against each
+source residue role, failing on missing or duplicated required atoms.
+
 Core artifacts:
 
 | Artifact kind | Contents |
 |---------------|----------|
 | `martini_mapping_json` | Bead names, atom groups, and bead graph |
+| `mapping_template_json` | Reusable generated or replayed `warp-cg.mapping_template.v1` template |
 | `coarse_grained_pdb` | Bead-level PDB with first mapped-frame coordinates when available, otherwise deterministic scaffold coordinates |
 | `coarse_grained_trajectory` | Mapped CG trajectory |
+| `aa_to_cg_mapping_provenance` | Source coordinates/topology plus residue-to-bead and atom-to-bead provenance for source-driven polymer mapping |
 | `bond_stats_json` | Bond means/stds from mapped frames |
 | `bonded_stats_json` | Bond, angle, and dihedral statistics |
 | `bonded_parameter_map_json` | Machine-readable mapping from bonded stats/tuning names to `[ bonds ]`, `[ angles ]`, and `[ dihedrals ]` ITP rows |
-| `bonded_parameter_tuning_report` | BO/PSO bounds, trace, and best parameters |
+| `bonded_optimization_report` | BO/PSO bounds, trace, and best parameters |
 | `martini_topology_itp` | Martini-style atoms, bonds, angles, and dihedrals |
 | `martini_topology_top` | Top-level Gromacs topology wrapper including the generated ITP |
 | `xtb_optimized_xyz` | xTB optimized reference structure |
 | `xtb_reference_trajectory` | xTB MD trajectory when produced |
+
+Result manifests include normalized agent-facing fields:
+`summary.input_mode`, `summary.mapping_mode`, `summary.aa_atom_count`,
+`summary.cg_bead_count`, `summary.mapped_residue_count`,
+`summary.optimized_terms`, `summary.optimization_source`, and
+`artifact_paths`.
+
+`warp-cg validate` reports source file existence, coordinate/topology atom
+counts when readable, coordinate/topology count mismatches, target-selection
+evaluation when a topology is available, template-mode replay preconditions,
+bonded-stat preconditions, xTB executable availability, and a
+runtime/cost estimate for requested optimization.
+
+## Source handoff request
+
+```json
+{
+  "schema_version": "warp-cg.agent.v2",
+  "name": "paa_50mer",
+  "source": {
+    "kind": "polymer_pack_manifest",
+    "path": "polymer_pack_manifest.json",
+    "target_selection": "polymer"
+  },
+  "mapping": {
+    "mode": "auto",
+    "strategy": "polymer_residue_graph",
+    "target_bead_size": 4,
+    "preserve_functional_groups": true,
+    "repeat_unit_hint": "PAA",
+    "terminal_aware": true
+  },
+  "output": {
+    "out_dir": "cg/paa_50mer"
+  }
+}
+```
 
 ## Solvated external trajectory
 
@@ -64,7 +125,7 @@ Path and selection fields must be non-empty strings.
 
 ```json
 {
-  "schema_version": "warp-cg.agent.v1",
+  "schema_version": "warp-cg.agent.v2",
   "name": "benzene_solvated",
   "smiles": "c1ccccc1",
   "trajectory_source": {
@@ -84,7 +145,7 @@ Path and selection fields must be non-empty strings.
     "write_topology_top": true,
     "write_bonded_parameter_map": true
   },
-  "parameter_tuning": {
+  "optimization": {
     "enabled": true,
     "source": "external_trajectory",
     "method": "bayesian_optimization",
@@ -100,7 +161,7 @@ Use `reference_source.kind=xtb` when the agent should generate a reference from 
 
 ```json
 {
-  "schema_version": "warp-cg.agent.v1",
+  "schema_version": "warp-cg.agent.v2",
   "name": "ethanol_xtb",
   "smiles": "CCO",
   "reference_source": {
@@ -123,7 +184,7 @@ Use `reference_source.kind=xtb` when the agent should generate a reference from 
     "write_topology_top": true,
     "write_bonded_parameter_map": true
   },
-  "parameter_tuning": {
+  "optimization": {
     "enabled": true,
     "source": "xtb",
     "method": "pso",

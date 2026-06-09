@@ -677,6 +677,14 @@ fn pdb_atom_positions(coords: &Path) -> Vec<[f64; 3]> {
         .collect()
 }
 
+fn pdb_record_count(coords: &Path, prefix: &str) -> usize {
+    fs::read_to_string(coords)
+        .expect("read coords")
+        .lines()
+        .filter(|line| line.starts_with(prefix))
+        .count()
+}
+
 #[test]
 fn schema_and_inspect_source_work() {
     let schema = warp_build::schema_json("request").expect("schema");
@@ -1011,6 +1019,22 @@ fn extended_linear_build_is_collinear_end_to_end() {
         serde_json::from_str(&fs::read_to_string(&build_manifest).expect("read manifest"))
             .expect("parse manifest");
     assert_eq!(manifest["summary"]["total_residues"], 8);
+    assert_eq!(
+        pdb_record_count(&coords, "TER"),
+        0,
+        "continuous polymer PDB output must not split every residue into a separate chain"
+    );
+    let graph: Value =
+        serde_json::from_str(&fs::read_to_string(&topology_graph).expect("read graph"))
+            .expect("parse topology graph");
+    assert_eq!(graph["build_plan"]["max_branch_depth"], 0);
+    let residues = graph["residues"].as_array().expect("graph residues");
+    assert_eq!(residues.len(), 8);
+    assert!(residues.iter().all(|residue| residue["branch_depth"] == 0));
+    assert!(residues.iter().all(|residue| residue["branch_path"]
+        .as_str()
+        .map(|path| !path.contains('>'))
+        .unwrap_or(false)));
     let max_bond_distance = max_inter_residue_bond_distance(&coords, &topology_graph);
     assert!(
         (max_bond_distance - 1.53).abs() <= 0.05,

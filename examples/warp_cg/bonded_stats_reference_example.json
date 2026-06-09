@@ -1,0 +1,39 @@
+{
+  "metadata": {
+    "schema_version": "warp-cg.bonded-stats.v1",
+    "source": "external_reference_trajectory",
+    "reference_engine": "gromacs",
+    "frames": 1000,
+    "length_scale": 10.0
+  },
+  "bonds": [
+    {
+      "bead_i": 0,
+      "bead_j": 1,
+      "mean": 3.03,
+      "std": 0.19,
+      "samples": 1000
+    }
+  ],
+  "angles": [
+    {
+      "bead_i": 0,
+      "bead_j": 1,
+      "bead_k": 2,
+      "mean_deg": 120.1,
+      "std_deg": 8.1,
+      "samples": 1000
+    }
+  ],
+  "dihedrals": [
+    {
+      "bead_i": 0,
+      "bead_j": 1,
+      "bead_k": 2,
+      "bead_l": 3,
+      "mean_deg": -179.0,
+      "std_deg": 19.0,
+      "samples": 1000
+    }
+  ]
+}

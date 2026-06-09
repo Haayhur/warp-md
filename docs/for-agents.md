@@ -53,11 +53,11 @@ warp-pep build -s ACDEFG --preset alpha-helix --output helix.pdb --stream
 ```
 
 Minimal `warp-cg` request with a solvated external trajectory source and native
-bonded-parameter tuning:
+bonded-parameter optimization:
 
 ```json
 {
-  "schema_version": "warp-cg.agent.v1",
+  "schema_version": "warp-cg.agent.v2",
   "name": "benzene",
   "smiles": "c1ccccc1",
   "trajectory_source": {
@@ -77,7 +77,7 @@ bonded-parameter tuning:
     "write_topology_top": true,
     "write_bonded_parameter_map": true
   },
-  "parameter_tuning": {
+  "optimization": {
     "enabled": true,
     "source": "external_trajectory",
     "method": "bayesian_optimization",
@@ -86,13 +86,13 @@ bonded-parameter tuning:
 }
 ```
 
-`parameter_tuning` supports native `bayesian_optimization` and `pso` methods for
+`optimization` supports native `bayesian_optimization` and `pso` methods for
 bonded parameter fitting against mapped reference bond, angle, and dihedral
 statistics. Set `reference_source.kind` to `xtb` when the agent should initiate
 an xTB reference optimization/MD run instead of using an external trajectory.
-If no bonded reference statistics are available, tuning returns a structured
+If no bonded reference statistics are available, optimization returns a structured
 `skipped` report rather than fabricating parameters.
-When provided, `parameter_tuning.max_evaluations` and `swarm_size` must be
+When provided, `optimization.max_evaluations` and `swarm_size` must be
 positive integers.
 
 For solvated systems, keep the full topology in `trajectory_source.topology` and
@@ -124,7 +124,7 @@ wrapper is required.
 | `bond_stats_json` | Bond distribution statistics from mapped reference frames |
 | `bonded_stats_json` | Bond, angle, and dihedral distribution statistics |
 | `bonded_parameter_map_json` | Crosswalk from stats/tuning parameter names to ITP rows |
-| `bonded_parameter_tuning_report` | BO/PSO trace, bounds, and best bonded parameters |
+| `bonded_optimization_report` | BO/PSO trace, bounds, and best bonded parameters |
 | `martini_topology_itp` | Martini-style atoms, bonds, angles, and dihedrals |
 | `martini_topology_top` | Top-level Gromacs topology wrapper including the generated ITP |
 | `xtb_optimized_xyz` | xTB optimized atomistic reference structure |
@@ -134,7 +134,7 @@ xTB-initiated reference example:
 
 ```json
 {
-  "schema_version": "warp-cg.agent.v1",
+  "schema_version": "warp-cg.agent.v2",
   "name": "ethanol",
   "smiles": "CCO",
   "reference_source": {
@@ -158,7 +158,7 @@ xTB-initiated reference example:
     "write_topology_top": true,
     "write_bonded_parameter_map": true
   },
-  "parameter_tuning": {
+  "optimization": {
     "enabled": true,
     "source": "xtb",
     "method": "pso",

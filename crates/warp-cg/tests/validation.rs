@@ -41,3 +41,21 @@ fn test_chloropropane_mapping() {
     // My current logic doesn't handle Cl specifically for bead type, so it might say C1 or similar.
     // But I'm testing the NUMBER of beads for now.
 }
+
+#[test]
+fn test_carboxylate_like_group_is_preserved() {
+    let mol = Molecule::from_smiles("CC(=O)O").unwrap();
+    let res = map_molecule(&mol);
+    assert!(res.bead_features.iter().any(|features| features
+        .iter()
+        .any(|feature| feature == "carboxylate_or_carboxylic_acid")));
+}
+
+#[test]
+fn test_sulfone_like_group_is_preserved() {
+    let mol = Molecule::from_smiles("CS(=O)(=O)C").unwrap();
+    let res = map_molecule(&mol);
+    assert!(res.bead_features.iter().any(|features| features
+        .iter()
+        .any(|feature| feature == "sulfone_or_sulfonate")));
+}

@@ -1,36 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
-use warp_cg::{agent, mapping, molecule, trajectory, xtb};
+use warp_cg::agent;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
-
-    /// SMILES string of the molecule
-    #[arg(short, long)]
-    smiles: Option<String>,
-
-    /// Name of the compound
-    #[arg(short, long, default_value = "molecule")]
-    name: String,
-
-    /// Path to a trajectory file (XTC, TRR, PDB, etc.)
-    #[arg(short, long)]
-    trajectory: Option<String>,
-
-    /// Path to a topology file (if needed)
-    #[arg(long)]
-    topology: Option<String>,
-
-    /// Output directory
-    #[arg(short, long, default_value = ".")]
-    out_dir: String,
-
-    /// Run xTB MD to generate a reference trajectory
-    #[arg(long)]
-    run_xtb: bool,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -68,42 +44,9 @@ fn main() -> Result<()> {
     if let Some(command) = args.command {
         return run_agent_command(command);
     }
-    let Some(smiles) = args.smiles.as_deref() else {
-        anyhow::bail!("--smiles is required outside contract subcommands");
-    };
-    let out_path = std::path::Path::new(&args.out_dir);
-
-    println!("Mapping molecule: {} with SMILES: {}", args.name, smiles);
-
-    let mol = molecule::Molecule::from_smiles(smiles)?;
-    println!("Parsed molecule with {} atoms", mol.graph.node_count());
-
-    let mapping_res = mapping::map_molecule(&mol);
-
-    let mut final_traj_path = args.trajectory.clone();
-
-    if args.run_xtb {
-        let xtb_res = xtb::run_xtb_pipeline(&args.name, smiles, out_path)?;
-        println!("xTB pipeline completed.");
-        if let Some(trj) = xtb_res.trajectory_trj {
-            final_traj_path = Some(trj.to_string_lossy().to_string());
-        } else {
-            final_traj_path = Some(xtb_res.opt_xyz.to_string_lossy().to_string());
-            println!("Using optimized structure as reference (MD failed or skipped).");
-        }
-    }
-
-    if let Some(traj_path) = final_traj_path {
-        let out_traj = format!("{}/{}_cg.xtc", args.out_dir, args.name);
-        let bead_mapping = trajectory::BeadMapping {
-            bead_names: mapping_res.bead_names,
-            atom_indices: mapping_res.atom_groups,
-        };
-        trajectory::map_trajectory(&traj_path, &out_traj, &bead_mapping)?;
-        println!("Mapped trajectory to {}", out_traj);
-    }
-
-    Ok(())
+    anyhow::bail!(
+        "warp-cg requires a contract subcommand: run, validate, schema, example, or capabilities"
+    )
 }
 
 fn run_agent_command(command: Command) -> Result<()> {

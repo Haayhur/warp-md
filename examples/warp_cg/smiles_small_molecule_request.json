@@ -1,0 +1,13 @@
+{
+  "schema_version": "warp-cg.agent.v2",
+  "name": "benzene",
+  "smiles": "c1ccccc1",
+  "output": {
+    "out_dir": "results/cg/benzene",
+    "write_mapping_json": true,
+    "write_cg_pdb": true,
+    "write_topology_itp": true,
+    "write_topology_top": true,
+    "write_bonded_parameter_map": true
+  }
+}

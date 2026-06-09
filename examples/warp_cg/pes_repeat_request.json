@@ -1,0 +1,13 @@
+{
+  "schema_version": "warp-cg.agent.v2",
+  "name": "pes_repeat",
+  "repeat_smiles": "O=S(=O)(c1ccc(Oc2ccc(*)cc2)cc1)",
+  "mapping": {
+    "mode": "auto",
+    "repeat_unit_hint": "PES",
+    "terminal_aware": true
+  },
+  "output": {
+    "out_dir": "results/cg/pes_repeat"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "warp-cg.agent.v2",
+  "name": "paa_50mer",
+  "source": {
+    "kind": "polymer_build_manifest",
+    "path": "results/build/paa_50mer/polymer_build_manifest.json",
+    "target_selection": "polymer"
+  },
+  "mapping": {
+    "mode": "auto",
+    "strategy": "polymer_residue_graph",
+    "target_bead_size": 4,
+    "preserve_functional_groups": true,
+    "repeat_unit_hint": "PAA",
+    "terminal_aware": true
+  },
+  "output": {
+    "out_dir": "results/cg/paa_50mer"
+  }
+}

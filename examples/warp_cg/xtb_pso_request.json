@@ -1,0 +1,35 @@
+{
+  "schema_version": "warp-cg.agent.v2",
+  "name": "ethanol_xtb",
+  "smiles": "CCO",
+  "reference_source": {
+    "kind": "xtb",
+    "xtb": {
+      "temperature_k": 298.15,
+      "time_ps": 2.0,
+      "timestep_fs": 1.0,
+      "dump_fs": 100.0,
+      "gfn": "gfnff",
+      "seed": 42,
+      "work_dir": "results/cg/ethanol_xtb/xtb"
+    }
+  },
+  "output": {
+    "out_dir": "results/cg/ethanol_xtb",
+    "mapped_trajectory": "ethanol_cg.gro",
+    "write_mapping_json": true,
+    "write_cg_pdb": true,
+    "write_topology_itp": true,
+    "write_topology_top": true,
+    "write_bonded_parameter_map": true
+  },
+  "optimization": {
+    "enabled": true,
+    "source": "xtb",
+    "method": "pso",
+    "swarm_size": 12,
+    "max_evaluations": 48,
+    "seed": 7,
+    "objective": "bonded_parameter_parity"
+  }
+}

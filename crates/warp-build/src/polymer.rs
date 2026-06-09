@@ -851,6 +851,61 @@ fn template_atom_index_by_name(template: &ResidueTemplate) -> BTreeMap<String, u
         .collect()
 }
 
+fn template_axis_from_named_atoms(
+    template: &ResidueTemplate,
+    start_atom: Option<&str>,
+    end_atom: Option<&str>,
+    fallback: Vec3,
+) -> Vec3 {
+    let atom_by_name = template_atom_index_by_name(template);
+    let start = start_atom
+        .and_then(|name| atom_by_name.get(name.trim()).copied())
+        .and_then(|idx| template.atoms.get(idx))
+        .map(|atom| atom.position);
+    let end = end_atom
+        .and_then(|name| atom_by_name.get(name.trim()).copied())
+        .and_then(|idx| template.atoms.get(idx))
+        .map(|atom| atom.position);
+    let axis = match (start, end) {
+        (Some(start), Some(end)) => end.sub(start),
+        (None, Some(end)) => end.sub(template.centroid),
+        (Some(start), None) => template.centroid.sub(start),
+        (None, None) => fallback,
+    };
+    if axis.norm() > 1.0e-6 {
+        normalize(axis)
+    } else {
+        normalize(fallback)
+    }
+}
+
+fn linear_template_axis(
+    template: &ResidueTemplate,
+    junction: Option<&TokenJunctionSpec>,
+    has_previous: bool,
+    has_next: bool,
+    fallback: Vec3,
+) -> Vec3 {
+    let head = junction
+        .and_then(|junction| junction.head_attach_atom.as_deref())
+        .filter(|_| has_previous);
+    let tail = junction
+        .and_then(|junction| junction.tail_attach_atom.as_deref())
+        .filter(|_| has_next);
+    template_axis_from_named_atoms(template, head, tail, fallback)
+}
+
+fn graph_template_axis(
+    template: &ResidueTemplate,
+    incoming_attach_atoms: &[String],
+    outgoing_attach_atoms: &[String],
+    fallback: Vec3,
+) -> Vec3 {
+    let head = incoming_attach_atoms.first().map(String::as_str);
+    let tail = outgoing_attach_atoms.first().map(String::as_str);
+    template_axis_from_named_atoms(template, head, tail, fallback)
+}
+
 fn template_atom_by_name<'a>(
     template: &'a ResidueTemplate,
     atom_name: &str,
@@ -5179,8 +5234,6 @@ pub fn build_linear_sequence_polymer(
 
     let mut atoms = Vec::new();
     let mut bonds = Vec::new();
-    let mut ter_after = Vec::new();
-    let mut serial_index = 0usize;
     let mut tacticity_rng = StdRng::seed_from_u64(build_seed ^ 0x5eed_5eed);
     let mut previous_tail_attach = None;
 
@@ -5211,6 +5264,13 @@ pub fn build_linear_sequence_polymer(
         } else {
             normalize(centroids[idx + 1].sub(centroids[idx - 1]))
         };
+        let local_axis = linear_template_axis(
+            template,
+            junction_spec,
+            idx > 0,
+            idx + 1 < sequence_specs.len(),
+            source_axis,
+        );
         let phase = tacticity_phase(tacticity_mode, idx, &mut tacticity_rng)?;
         let residue_start = atoms.len();
         let mut local_to_global = BTreeMap::new();
@@ -5220,7 +5280,7 @@ pub fn build_linear_sequence_polymer(
                 continue;
             }
             let local = atom.position.sub(template.centroid);
-            let rotated = rotate_from_to(local, source_axis, direction);
+            let rotated = rotate_from_to(local, local_axis, direction);
             let rotated = rotate_about_axis(rotated, direction, phase);
             let mut built = atom.clone();
             built.position = centroids[idx].add(rotated);
@@ -5230,7 +5290,6 @@ pub fn build_linear_sequence_polymer(
             built.mol_id = 1;
             atoms.push(built);
             local_to_global.insert(local_idx, residue_start + local_to_global.len());
-            serial_index += 1;
         }
         for &(a, b) in &template.local_bonds {
             let Some(&i) = local_to_global.get(&a) else {
@@ -5297,10 +5356,6 @@ pub fn build_linear_sequence_polymer(
             }
         }
         previous_tail_attach = tail_attach;
-
-        if let Some(last) = serial_index.checked_sub(1) {
-            ter_after.push(last);
-        }
     }
     bonds.sort_unstable();
     bonds.dedup();
@@ -5309,7 +5364,7 @@ pub fn build_linear_sequence_polymer(
         atoms,
         bonds,
         box_size: [0.0, 0.0, 0.0],
-        ter_after,
+        ter_after: Vec::new(),
         box_vectors: None,
     };
     let qc_context = BuildQcContext {
@@ -5452,7 +5507,6 @@ pub fn build_polymer_graph(
 
     let mut atoms = Vec::new();
     let mut bonds = Vec::new();
-    let mut ter_after = Vec::new();
     let mut tacticity_rng = StdRng::seed_from_u64(build_seed ^ 0x5eed_5eed);
     let mut edge_parent_attach = vec![None; edge_specs.len()];
     let mut edge_child_attach = vec![None; edge_specs.len()];
@@ -5485,6 +5539,22 @@ pub fn build_polymer_graph(
         if direction.norm() <= 1.0e-6 {
             direction = source_axis;
         }
+        let incoming_attach_atoms = child_edges[idx]
+            .iter()
+            .filter_map(|edge_idx| edge_specs.get(*edge_idx))
+            .map(|edge| edge.child_attach_atom.clone())
+            .collect::<Vec<_>>();
+        let outgoing_attach_atoms = parent_edges[idx]
+            .iter()
+            .filter_map(|edge_idx| edge_specs.get(*edge_idx))
+            .map(|edge| edge.parent_attach_atom.clone())
+            .collect::<Vec<_>>();
+        let local_axis = graph_template_axis(
+            template,
+            &incoming_attach_atoms,
+            &outgoing_attach_atoms,
+            source_axis,
+        );
         let phase = tacticity_phase(tacticity_mode, idx, &mut tacticity_rng)?;
         let residue_start = atoms.len();
         let mut local_to_global = BTreeMap::new();
@@ -5493,7 +5563,7 @@ pub fn build_polymer_graph(
                 continue;
             }
             let local = atom.position.sub(template.centroid);
-            let rotated = rotate_from_to(local, source_axis, direction);
+            let rotated = rotate_from_to(local, local_axis, direction);
             let rotated = rotate_about_axis(rotated, direction, phase);
             let mut built = atom.clone();
             built.position = centroids[idx].add(rotated);
@@ -5555,9 +5625,6 @@ pub fn build_polymer_graph(
                         edge.child_attach_atom, spec.template_resname
                     ))
                 })?);
-        }
-        if let Some(last) = atoms.len().checked_sub(1) {
-            ter_after.push(last);
         }
     }
 
@@ -5651,7 +5718,7 @@ pub fn build_polymer_graph(
         atoms,
         bonds,
         box_size: [0.0, 0.0, 0.0],
-        ter_after,
+        ter_after: Vec::new(),
         box_vectors: None,
     };
     let qc_context = BuildQcContext {
@@ -5757,6 +5824,76 @@ mod tests {
             nanos
         ));
         path
+    }
+
+    fn test_template_atom(name: &str, position: Vec3) -> AtomRecord {
+        AtomRecord {
+            record_kind: warp_structure::AtomRecordKind::Atom,
+            name: name.into(),
+            element: "C".into(),
+            resname: "TST".into(),
+            resid: 1,
+            chain: 'A',
+            segid: String::new(),
+            charge: 0.0,
+            position,
+            mol_id: 1,
+            pdb_metadata: None,
+        }
+    }
+
+    #[test]
+    fn template_port_axis_aligns_terminal_and_repeat_frames() {
+        let template = ResidueTemplate {
+            resname: "TST".into(),
+            atoms: vec![
+                test_template_atom("HEAD", Vec3::new(0.0, 0.0, 0.0)),
+                test_template_atom("SIDE", Vec3::new(1.0, 1.0, 0.0)),
+                test_template_atom("TAIL", Vec3::new(0.0, 2.0, 0.0)),
+            ],
+            centroid: Vec3::new(1.0 / 3.0, 1.0, 0.0),
+            local_bonds: Vec::new(),
+        };
+        let junction = TokenJunctionSpec {
+            head_attach_atom: Some("HEAD".into()),
+            head_leaving_atoms: Vec::new(),
+            tail_attach_atom: Some("TAIL".into()),
+            tail_leaving_atoms: Vec::new(),
+        };
+        let target = Vec3::new(0.0, 0.0, 1.0);
+
+        let repeat_axis = linear_template_axis(
+            &template,
+            Some(&junction),
+            true,
+            true,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        let repeat_port = template.atoms[2].position.sub(template.atoms[0].position);
+        let repeat_rotated = rotate_from_to(repeat_port, repeat_axis, target);
+        assert!(normalize(repeat_rotated).dot(target) > 0.999);
+
+        let head_axis = linear_template_axis(
+            &template,
+            Some(&junction),
+            false,
+            true,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        let head_port = template.atoms[2].position.sub(template.centroid);
+        let head_rotated = rotate_from_to(head_port, head_axis, target);
+        assert!(normalize(head_rotated).dot(target) > 0.999);
+
+        let tail_axis = linear_template_axis(
+            &template,
+            Some(&junction),
+            true,
+            false,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        let tail_port = template.centroid.sub(template.atoms[0].position);
+        let tail_rotated = rotate_from_to(tail_port, tail_axis, target);
+        assert!(normalize(tail_rotated).dot(target) > 0.999);
     }
 
     #[test]

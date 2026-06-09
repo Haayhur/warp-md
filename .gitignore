@@ -58,4 +58,5 @@ architect.md
 !python/warp_md/pack/data/ions.json
 !python/warp_md/pack/data/salts.json
 !python/warp_md/pack/data/*.pdb
+!examples/warp_cg/*.json
 outputs/

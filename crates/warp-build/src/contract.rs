@@ -8344,6 +8344,9 @@ fn topology_graph_value(
     compiled_plan: Option<&CompiledBuildPlan>,
     relax_metadata: Option<TopologyGraphRelaxMetadata>,
 ) -> Value {
+    let flatten_linear_metadata = compiled_plan
+        .map(|plan| topology_graph_should_flatten_linear_metadata(target_mode, plan))
+        .unwrap_or(false);
     let adjacency = bond_adjacency(built.output.atoms.len(), &built.output.bonds);
     let angles = graph_angles(&adjacency);
     let dihedrals = graph_dihedrals(&adjacency, &built.output.bonds);
@@ -8425,9 +8428,23 @@ fn topology_graph_value(
                         .and_then(|node| node.motif_token.clone())
                 }),
                 branch_depth: compiled_plan
-                    .and_then(|plan| plan.nodes.get(idx).map(|node| node.branch_depth)),
+                    .and_then(|plan| plan.nodes.get(idx))
+                    .map(|node| {
+                        if flatten_linear_metadata {
+                            0
+                        } else {
+                            node.branch_depth
+                        }
+                    }),
                 branch_path: compiled_plan
-                    .and_then(|plan| plan.nodes.get(idx).map(|node| node.branch_path.clone())),
+                    .and_then(|plan| plan.nodes.get(idx))
+                    .map(|node| {
+                        if flatten_linear_metadata {
+                            node.node_id.clone()
+                        } else {
+                            node.branch_path.clone()
+                        }
+                    }),
                 atom_indices,
                 ports: sequence
                     .get(idx)
@@ -8482,8 +8499,20 @@ fn topology_graph_value(
             request_root_node_id: compiled_plan.map(|plan| plan.request_root_node_id.clone()),
             expanded_root_node_id: compiled_plan.map(|plan| plan.expanded_root_node_id.clone()),
             root_token: compiled_plan.map(|plan| plan.root_token.clone()),
-            arm_count: compiled_plan.map(|plan| plan.arm_count),
-            max_branch_depth: compiled_plan.map(|plan| plan.max_branch_depth),
+            arm_count: compiled_plan.map(|plan| {
+                if flatten_linear_metadata {
+                    0
+                } else {
+                    plan.arm_count
+                }
+            }),
+            max_branch_depth: compiled_plan.map(|plan| {
+                if flatten_linear_metadata {
+                    0
+                } else {
+                    plan.max_branch_depth
+                }
+            }),
             graph_has_cycle: compiled_plan.map(|plan| plan.graph_has_cycle),
             requested_termini: TopologyGraphTerminiRequest {
                 head: requested_termini.head.clone(),
@@ -8621,6 +8650,40 @@ fn topology_graph_value(
         }),
     })
     .unwrap_or_else(|_| json!({}))
+}
+
+fn topology_graph_should_flatten_linear_metadata(
+    target_mode: &str,
+    plan: &CompiledBuildPlan,
+) -> bool {
+    if matches!(
+        target_mode,
+        "linear_homopolymer" | "linear_sequence_polymer" | "block_copolymer" | "random_copolymer"
+    ) {
+        return true;
+    }
+    if target_mode != "polymer_graph" || plan.graph_has_cycle || plan.nodes.is_empty() {
+        return false;
+    }
+    let Some(root_idx) = plan
+        .nodes
+        .iter()
+        .position(|node| node.node_id == plan.expanded_root_node_id)
+    else {
+        return false;
+    };
+    if plan.edges.len() + 1 != plan.nodes.len() {
+        return false;
+    }
+    let mut degree = vec![0usize; plan.nodes.len()];
+    for edge in &plan.edges {
+        if edge.parent >= degree.len() || edge.child >= degree.len() {
+            return false;
+        }
+        degree[edge.parent] += 1;
+        degree[edge.child] += 1;
+    }
+    degree[root_idx] <= 1 && degree.iter().all(|value| *value <= 2)
 }
 
 pub fn schema_json(kind: &str) -> PackResult<String> {

@@ -1,0 +1,33 @@
+{
+  "schema_version": "warp-cg.agent.v2",
+  "name": "benzene_solvated",
+  "smiles": "c1ccccc1",
+  "trajectory_source": {
+    "kind": "external",
+    "path": "results/benzene/solvated.xtc",
+    "topology": "results/benzene/solvated.pdb",
+    "format": "xtc",
+    "topology_format": "pdb",
+    "target_selection": "resname BENZ",
+    "stride": 1,
+    "length_scale": 10.0,
+    "mass_weighted": true
+  },
+  "output": {
+    "out_dir": "results/cg/benzene_solvated",
+    "mapped_trajectory": "benzene_cg.xtc",
+    "write_mapping_json": true,
+    "write_cg_pdb": true,
+    "write_topology_itp": true,
+    "write_topology_top": true,
+    "write_bonded_parameter_map": true
+  },
+  "optimization": {
+    "enabled": true,
+    "source": "external_trajectory",
+    "method": "bayesian_optimization",
+    "max_evaluations": 64,
+    "seed": 42,
+    "objective": "bonded_parameter_parity"
+  }
+}
