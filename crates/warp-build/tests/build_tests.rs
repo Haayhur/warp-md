@@ -953,14 +953,14 @@ fn run_build_writes_polymer_artifacts() {
         serde_json::from_str(&fs::read_to_string(&build_manifest).expect("read manifest"))
             .expect("parse manifest");
     assert_eq!(manifest["schema_version"], "warp-build.manifest.v1");
-    assert_eq!(manifest["summary"]["total_repeat_units"], 4);
-    assert_eq!(manifest["summary"]["total_residues"], 6);
+    assert_eq!(manifest["summary"]["total_repeat_units"], 2);
+    assert_eq!(manifest["summary"]["total_residues"], 4);
     assert_eq!(manifest["realization"]["seed"], 12345);
     assert_eq!(manifest["realization"]["seed_policy"], "explicit");
-    assert_eq!(manifest["summary"]["bond_count"], 5);
+    assert_eq!(manifest["summary"]["bond_count"], 3);
     assert_eq!(
         manifest["summary"]["resolved_sequence"],
-        json!(["H", "A", "A", "A", "A", "T"])
+        json!(["H", "A", "A", "T"])
     );
     assert_eq!(
         manifest["provenance"]["target_normalization"]["applied"],
@@ -1017,7 +1017,7 @@ fn run_build_writes_polymer_artifacts() {
         serde_json::from_str(&fs::read_to_string(&charge_manifest).expect("read charge"))
             .expect("parse charge");
     assert_eq!(charge["schema_version"], "warp-build.charge-manifest.v1");
-    assert_eq!(charge["net_charge_e"], 5.0);
+    assert_eq!(charge["net_charge_e"], 3.0);
     assert_eq!(
         charge["target_topology_ref"],
         topology.to_string_lossy().to_string()
@@ -1035,6 +1035,110 @@ fn run_build_writes_polymer_artifacts() {
     assert_eq!(
         topology_graph["relax_metadata"]["overlap_metric"],
         "vdw_overlap_pairs_excluding_1_2_and_1_3"
+    );
+}
+
+#[test]
+fn terminal_aware_homopolymer_n_repeat_means_total_residues() {
+    let (_dir, bundle) = make_bundle_dir("terminal_n_repeat_total");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "terminal-total-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 50,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"},
+        },
+        "realization": {
+            "conformation_mode": "extended"
+        },
+        "artifacts": {
+            "coordinates": temp_path("terminal_total_coords.pdb").to_string_lossy(),
+            "build_manifest": temp_path("terminal_total_manifest.json").to_string_lossy(),
+            "charge_manifest": temp_path("terminal_total_charge.json").to_string_lossy(),
+        }
+    });
+    let (code, payload) =
+        warp_build::validate_request_json(&serde_json::to_string(&request).expect("serialize"));
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    let sequence = payload["normalized_request"]["target"]["sequence"]
+        .as_array()
+        .expect("normalized sequence");
+    assert_eq!(sequence.len(), 50);
+    assert_eq!(sequence.first().expect("head"), "H");
+    assert_eq!(sequence.last().expect("tail"), "T");
+    assert_eq!(
+        sequence
+            .iter()
+            .filter(|item| item.as_str() == Some("A"))
+            .count(),
+        48
+    );
+    assert_eq!(
+        payload["resolved_inputs"]["target_normalization"]["resolved_repeat_units"],
+        48
+    );
+}
+
+#[test]
+fn terminal_aware_homopolymer_total_units_matches_n_repeat_semantics() {
+    let (_dir, bundle) = make_bundle_dir("terminal_total_units");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "terminal-total-units-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "total_units": 50,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"},
+        },
+        "realization": {
+            "conformation_mode": "extended"
+        },
+        "artifacts": {
+            "coordinates": temp_path("terminal_total_units_coords.pdb").to_string_lossy(),
+            "build_manifest": temp_path("terminal_total_units_manifest.json").to_string_lossy(),
+            "charge_manifest": temp_path("terminal_total_units_charge.json").to_string_lossy(),
+        }
+    });
+    let (code, payload) =
+        warp_build::validate_request_json(&serde_json::to_string(&request).expect("serialize"));
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert_eq!(
+        payload["resolved_inputs"]["target_normalization"]["requested_total_units"],
+        50
+    );
+    assert_eq!(
+        payload["resolved_inputs"]["target_normalization"]["resolved_repeat_units"],
+        48
+    );
+    assert_eq!(
+        payload["normalized_request"]["target"]["sequence"]
+            .as_array()
+            .expect("sequence")
+            .len(),
+        50
     );
 }
 
@@ -1894,7 +1998,7 @@ fn pes_repro_build_keeps_inter_residue_bonds_below_three_angstrom() {
             .expect("parse manifest");
     assert_eq!(
         manifest["summary"]["resolved_sequence"],
-        json!(["H", "A", "A", "A", "A", "A", "A", "A", "A", "T"])
+        json!(["H", "A", "A", "A", "A", "A", "A", "T"])
     );
     assert_eq!(
         manifest["summary"]["qc"]["severe_bond_violations"],
@@ -3242,7 +3346,7 @@ fn run_unreliable_training_uses_forcefield_fallback() {
         .iter()
         .any(|item| item == "training_source_unreliable"));
     let topo = read_prmtop_topology(&topology).expect("read ffxml-backed prmtop");
-    assert_eq!(topo.atom_names.len(), 36);
+    assert_eq!(topo.atom_names.len(), 24);
     assert!(topo.atomic_numbers.iter().any(|value| *value == 1));
     assert!(topo.atomic_numbers.iter().any(|value| *value == 17));
     assert!(!topo.bonds.is_empty());

@@ -651,6 +651,8 @@ pub struct TargetNormalizationSummary {
     pub requested_mode: String,
     pub requested_repeat_unit: Option<String>,
     pub requested_n_repeat: Option<usize>,
+    pub requested_total_units: Option<usize>,
+    pub resolved_repeat_units: usize,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -1752,7 +1754,7 @@ fn collect_warnings(req: &BuildRequest) -> Vec<ErrorDetail> {
 fn infer_terminal_sequence_for_homopolymer(
     req: &BuildRequest,
     bundle: &SourceBundle,
-) -> Result<Option<(Vec<String>, String, String)>, ErrorDetail> {
+) -> Result<Option<(Vec<String>, String, String, usize)>, ErrorDetail> {
     if req.target.mode != "linear_homopolymer" {
         return Ok(None);
     }
@@ -1768,8 +1770,9 @@ fn infer_terminal_sequence_for_homopolymer(
         .unwrap_or("")
         .trim()
         .to_string();
-    let n_repeat = req.target.n_repeat.unwrap_or(0);
-    if repeat_token.is_empty() || n_repeat == 0 {
+    let requested_n_repeat = req.target.n_repeat.unwrap_or(0);
+    let requested_total_units = req.target.total_units.unwrap_or(0);
+    if repeat_token.is_empty() || (requested_n_repeat == 0 && requested_total_units == 0) {
         return Ok(None);
     }
     let Some(token_support) = bundle.capabilities.sequence_token_support.as_ref() else {
@@ -1821,7 +1824,10 @@ fn infer_terminal_sequence_for_homopolymer(
         if let Some(head) = head_candidates.iter().next() {
             suggestion.push(head.clone());
         }
-        suggestion.extend(std::iter::repeat_n(repeat_token.clone(), n_repeat));
+        suggestion.extend(std::iter::repeat_n(
+            repeat_token.clone(),
+            requested_n_repeat,
+        ));
         if let Some(tail) = tail_candidates.iter().next() {
             suggestion.push(tail.clone());
         }
@@ -1837,11 +1843,42 @@ fn infer_terminal_sequence_for_homopolymer(
     }
     let head = head_candidates.iter().next().cloned().unwrap_or_default();
     let tail = tail_candidates.iter().next().cloned().unwrap_or_default();
-    let mut sequence = Vec::with_capacity(n_repeat + 2);
+    let terminal_count = usize::from(!head.is_empty()) + usize::from(!tail.is_empty());
+    let requested_total_residues = if requested_total_units > 0 {
+        if requested_n_repeat > 0 && requested_n_repeat != requested_total_units {
+            return Err(to_error(
+                "E_INVALID_TARGET",
+                Some("/target/n_repeat".into()),
+                format!(
+                    "target.n_repeat ({requested_n_repeat}) conflicts with target.total_units ({requested_total_units}); terminal-aware homopolymers treat both as total final residues"
+                ),
+            ));
+        }
+        requested_total_units
+    } else {
+        requested_n_repeat
+    };
+    let Some(repeat_count) = requested_total_residues.checked_sub(terminal_count) else {
+        return Err(to_error(
+            "E_INVALID_TARGET",
+            Some("/target/n_repeat".into()),
+            format!(
+                "terminal-aware target residue count ({requested_total_residues}) must be greater than terminal count ({terminal_count})"
+            ),
+        ));
+    };
+    if repeat_count == 0 {
+        return Err(to_error(
+            "E_INVALID_TARGET",
+            Some("/target/n_repeat".into()),
+            "terminal-aware target residue count must leave at least one repeat unit after termini",
+        ));
+    }
+    let mut sequence = Vec::with_capacity(repeat_count + terminal_count);
     sequence.push(head.clone());
-    sequence.extend(std::iter::repeat_n(repeat_token, n_repeat));
+    sequence.extend(std::iter::repeat_n(repeat_token, repeat_count));
     sequence.push(tail.clone());
-    Ok(Some((sequence, head, tail)))
+    Ok(Some((sequence, head, tail, repeat_count)))
 }
 
 fn normalize_request_for_execution(
@@ -1852,7 +1889,7 @@ fn normalize_request_for_execution(
     let mut warnings = Vec::new();
     let mut normalization = None;
     match infer_terminal_sequence_for_homopolymer(req, bundle) {
-        Ok(Some((sequence, head, tail))) => {
+        Ok(Some((sequence, head, tail, repeat_count))) => {
             normalized.target.mode = "linear_sequence_polymer".into();
             normalized.target.sequence = Some(sequence.clone());
             normalized.target.repeat_count = Some(1);
@@ -1875,6 +1912,8 @@ fn normalize_request_for_execution(
                 requested_mode: req.target.mode.clone(),
                 requested_repeat_unit: req.target.repeat_unit.clone(),
                 requested_n_repeat: req.target.n_repeat,
+                requested_total_units: req.target.total_units,
+                resolved_repeat_units: repeat_count,
             });
         }
         Ok(None) => {}
@@ -2127,12 +2166,18 @@ fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-fn requested_n_repeat(
+fn resolved_repeat_units(
     normalization: Option<&TargetNormalizationSummary>,
     fallback: usize,
 ) -> usize {
     normalization
-        .and_then(|value| value.requested_n_repeat)
+        .map(|value| value.resolved_repeat_units)
+        .unwrap_or(fallback)
+}
+
+fn reported_n_repeat(normalization: Option<&TargetNormalizationSummary>, fallback: usize) -> usize {
+    normalization
+        .map(|value| value.sequence.len())
         .unwrap_or(fallback)
 }
 
@@ -3167,7 +3212,7 @@ fn expand_sequence(target: &BuildTarget, seed: u64) -> Result<Vec<String>, Error
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let n_repeat = target.n_repeat.unwrap_or(0);
+            let n_repeat = target.n_repeat.or(target.total_units).unwrap_or(0);
             if token.is_empty() || n_repeat == 0 {
                 return Ok(Vec::new());
             }
@@ -5631,11 +5676,11 @@ fn validate_request(req: &BuildRequest, bundle: &SourceBundle) -> Vec<ErrorDetai
                     "linear_homopolymer requires repeat_unit",
                 ));
             }
-            if req.target.n_repeat.unwrap_or(0) == 0 {
+            if req.target.n_repeat.or(req.target.total_units).unwrap_or(0) == 0 {
                 errors.push(to_error(
                     "E_INVALID_TARGET",
                     Some("/target/n_repeat".into()),
-                    "n_repeat must be >= 1",
+                    "n_repeat or total_units must be >= 1",
                 ));
             }
         }
@@ -10425,7 +10470,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         md_ready_handoff,
         summary: BuildManifestSummary {
             atom_count: built.output.atoms.len(),
-            total_repeat_units: requested_n_repeat(resolved.normalization.as_ref(), n_repeat),
+            total_repeat_units: resolved_repeat_units(resolved.normalization.as_ref(), n_repeat),
             total_residues: n_repeat,
             net_charge_e: net_charge,
             resolved_sequence: built.sequence_labels.clone(),
@@ -10569,9 +10614,12 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             },
             summary: RunSummary {
                 build_mode: req.target.mode.clone(),
-                n_repeat: requested_n_repeat(resolved.normalization.as_ref(), n_repeat),
+                n_repeat: reported_n_repeat(resolved.normalization.as_ref(), n_repeat),
                 atom_count: built.output.atoms.len(),
-                total_repeat_units: requested_n_repeat(resolved.normalization.as_ref(), n_repeat),
+                total_repeat_units: resolved_repeat_units(
+                    resolved.normalization.as_ref(),
+                    n_repeat
+                ),
                 total_residues: n_repeat,
                 conformation_mode: req.realization.conformation_mode.clone(),
                 seed,
