@@ -69,6 +69,12 @@ struct PlotRecommendation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     z: Option<PlotAxisSpec>,
     title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shape: Option<Vec<u64>>,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -133,6 +139,9 @@ fn warp_md_default_plot_recommendations(artifact: &WarpMdArtifactSpec) -> Vec<Pl
                     .description
                     .clone()
                     .unwrap_or_else(|| warp_md_title_from_field(field)),
+                artifact: None,
+                shape: None,
+                extra: std::collections::BTreeMap::new(),
             })
             .collect(),
         "table" if fields.len() >= 2 => vec![PlotRecommendation {
@@ -144,6 +153,9 @@ fn warp_md_default_plot_recommendations(artifact: &WarpMdArtifactSpec) -> Vec<Pl
                 .description
                 .clone()
                 .unwrap_or_else(|| warp_md_title_from_field(&fields[1])),
+            artifact: None,
+            shape: None,
+            extra: std::collections::BTreeMap::new(),
         }],
         "grid" if !fields.is_empty() => vec![PlotRecommendation {
             plot_type: "volume_grid".into(),
@@ -154,6 +166,9 @@ fn warp_md_default_plot_recommendations(artifact: &WarpMdArtifactSpec) -> Vec<Pl
                 .description
                 .clone()
                 .unwrap_or_else(|| warp_md_title_from_field(&fields[0])),
+            artifact: None,
+            shape: None,
+            extra: std::collections::BTreeMap::new(),
         }],
         "artifact" if fields.len() >= 2 => vec![PlotRecommendation {
             plot_type: "line".into(),
@@ -164,6 +179,9 @@ fn warp_md_default_plot_recommendations(artifact: &WarpMdArtifactSpec) -> Vec<Pl
                 .description
                 .clone()
                 .unwrap_or_else(|| warp_md_title_from_field(&fields[1])),
+            artifact: None,
+            shape: None,
+            extra: std::collections::BTreeMap::new(),
         }],
         _ => Vec::new(),
     }

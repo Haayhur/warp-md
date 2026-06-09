@@ -485,8 +485,12 @@ def run_config(
                 continue
 
             analysis_start = time.perf_counter()
-            device = item.get("device", default_device)
-            chunk = item.get("chunk_frames", default_chunk)
+            device = item.get("device")
+            if device is None:
+                device = default_device
+            chunk = item.get("chunk_frames")
+            if chunk is None:
+                chunk = default_chunk
             try:
                 output = plan.run(traj, system, chunk_frames=chunk, device=device)
                 saved_path = _save_output(out_path, output, analysis_name=name)

@@ -25,9 +25,10 @@ use crate::polymer::{
     assess_training_source, build_polymer_graph, build_polymer_synthetic_uff_topology,
     compute_sequence_polymer_net_charge_from_prmtop,
     compute_sequence_polymer_net_charge_from_source, ensure_build_qc_passes, load_charge_manifest,
-    recompute_build_qc_report, write_polymer_prmtop_from_ffxml, write_polymer_prmtop_from_source,
-    write_polymer_prmtop_synthetic_uff_like, BuildQcReport, GraphEdgeSpec, GraphNodeSpec,
-    TokenJunctionSpec, TrainingSourceAssessment, CHARGE_MANIFEST_VERSION,
+    recompute_build_qc_report, stage_polymer_output_path, write_polymer_prmtop_from_ffxml,
+    write_polymer_prmtop_from_source, write_polymer_prmtop_synthetic_uff_like, BuildQcReport,
+    GraphEdgeSpec, GraphNodeSpec, TokenJunctionSpec, TrainingSourceAssessment,
+    CHARGE_MANIFEST_VERSION,
 };
 use warp_topology_graph::{
     AlignmentPath as TopologyGraphAlignmentPath, Angle as TopologyGraphAngle,
@@ -2546,6 +2547,7 @@ fn preflight_build(
     let raw_coords = temp_dir.join("preflight_raw_coordinates.pdb");
     let final_coords_text = final_coords.to_string_lossy().to_string();
     let raw_coords_text = raw_coords.to_string_lossy().to_string();
+    let graph_strict_qc = req.realization.relax.is_none();
     let build_started = Instant::now();
     let build_result = build_polymer_graph(
         &resolved.source_coordinates,
@@ -2561,7 +2563,7 @@ fn preflight_build(
             other => other,
         },
         resolved.seed,
-        true,
+        graph_strict_qc,
         &final_coords_text,
     );
     timings_ms.build_graph = elapsed_ms(build_started);
@@ -9631,6 +9633,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             }
         });
         let build_started = Instant::now();
+        let graph_strict_qc = !skip_strict_qc && req.realization.relax.is_none();
         let build_result = build_polymer_graph(
             &source_coordinates,
             source_charge_manifest.as_deref(),
@@ -9642,7 +9645,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             &prepared.base_mode,
             tacticity,
             member_seed,
-            !skip_strict_qc,
+            graph_strict_qc,
             &member_target_path,
         );
         timings_ms.build_graph = timings_ms
@@ -9651,6 +9654,31 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
         let mut built = match build_result {
             Ok(built) => built,
             Err(err) => {
+                let diagnostic_raw_path = if let Some(raw_path) = member_raw_path.clone() {
+                    let staged_path = stage_polymer_output_path(&member_target_path);
+                    if staged_path.exists() {
+                        ensure_parent(&raw_path).ok();
+                        if let Err(copy_err) = fs::copy(&staged_path, &raw_path) {
+                            let detail = to_error(
+                                "E_OUTPUT_WRITE",
+                                Some("/artifacts/raw_coordinates".into()),
+                                format!(
+                                    "failed to write raw debug coordinates '{}': {}",
+                                    raw_path, copy_err
+                                ),
+                            );
+                            return (
+                                4,
+                                json!(error_envelope(&req.request_id, vec![detail], vec![], None)),
+                            );
+                        }
+                        Some(raw_path)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 let detail = to_error("E_RUNTIME_BUILD", None, err.to_string());
                 let diagnostics = failure_diagnostics(
                     "build_graph",
@@ -9658,7 +9686,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
                     Some(&prepared.token_junctions),
                     overlap_status_summary(None, None, None),
                     None,
-                    member_raw_path.clone(),
+                    diagnostic_raw_path,
                 );
                 emit(
                     &run_failed_event(&req.request_id, detail.clone(), Some(diagnostics.clone())),

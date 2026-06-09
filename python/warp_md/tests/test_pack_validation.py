@@ -12,7 +12,7 @@ def test_pack_config_validation_basics():
 
     # No structures
     cfg.structures = []
-    with pytest.raises(ValidationError, match="requires at least one structure"):
+    with pytest.raises(ValidationError, match="invalid config: structures list is empty"):
         cfg.validate()
 
     # Invalid min_distance

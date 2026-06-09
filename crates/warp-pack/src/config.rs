@@ -337,6 +337,11 @@ impl PackConfig {
                 return Err(PackError::Invalid("gencan_maxit must be > 0".into()));
             }
         }
+        if let Some(min_distance) = self.min_distance {
+            if min_distance <= 0.0 {
+                return Err(PackError::Invalid("min_distance must be positive".into()));
+            }
+        }
         if let Some(short_tol_dist) = self.short_tol_dist {
             if short_tol_dist <= 0.0 {
                 return Err(PackError::Invalid("short_tol_dist must be positive".into()));

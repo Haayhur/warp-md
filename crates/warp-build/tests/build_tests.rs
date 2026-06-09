@@ -2580,6 +2580,92 @@ fn run_polymer_graph_build_rejects_unresolved_cycle_geometry() {
 }
 
 #[test]
+fn run_graph_build_qc_failure_attempts_relax_and_writes_raw_coordinates() {
+    let (_dir, bundle) = make_bundle_dir("graph_qc_raw_failure");
+    let coords = temp_path("graph_qc_raw_failure_coords.pdb");
+    let raw_coords = temp_path("graph_qc_raw_failure.raw.pdb");
+    let manifest = temp_path("graph_qc_raw_failure_manifest.json");
+    let charge = temp_path("graph_qc_raw_failure_charge.json");
+    let topology = temp_path("graph_qc_raw_failure.prmtop");
+    let graph = temp_path("graph_qc_raw_failure_graph.json");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "graph-qc-raw-failure-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "polymer_graph",
+            "graph_root": "n1",
+            "graph_nodes": [
+                {"id": "n1", "token": "A"},
+                {"id": "n2", "token": "B"},
+                {"id": "n3", "token": "A"}
+            ],
+            "graph_edges": [
+                {"from": "n1", "to": "n2", "from_junction": "head", "to_junction": "head"},
+                {"from": "n2", "to": "n3", "from_junction": "tail", "to_junction": "head"},
+                {"from": "n3", "to": "n1", "from_junction": "tail", "to_junction": "tail"}
+            ],
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"}
+        },
+        "realization": {
+            "conformation_mode": "extended",
+            "seed": 91,
+            "qc_policy": "salvage",
+            "relax": {
+                "mode": "graph_spring",
+                "steps": 8,
+                "step_scale": 0.2,
+                "clash_scale": 0.9
+            }
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "raw_coordinates": raw_coords.to_string_lossy(),
+            "build_manifest": manifest.to_string_lossy(),
+            "charge_manifest": charge.to_string_lossy(),
+            "topology": topology.to_string_lossy(),
+            "topology_graph": graph.to_string_lossy()
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        3,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+    assert_eq!(payload["status"], "salvaged");
+    assert_eq!(payload["summary"]["acceptance_state"], "salvaged");
+    assert_eq!(payload["summary"]["relax"]["mode"], "graph_spring");
+    assert_eq!(
+        payload["summary"]["relax"]["raw_coordinates"],
+        raw_coords.to_string_lossy().to_string()
+    );
+    assert_eq!(payload["summary"]["qc"]["severe_nonbonded_clash_count"], 0);
+    assert!(
+        payload["summary"]["qc"]["severe_bond_violations"]
+            .as_array()
+            .expect("severe bond violations")
+            .len()
+            > 0
+    );
+    assert!(raw_coords.exists());
+    assert!(fs::read_to_string(&raw_coords)
+        .expect("read raw coordinates")
+        .contains("ATOM"));
+    assert!(coords.exists());
+    assert!(manifest.exists());
+    assert!(charge.exists());
+    assert!(topology.exists());
+    assert!(graph.exists());
+}
+
+#[test]
 fn validate_preflight_rejects_qc_failing_graph_build() {
     let (_dir, bundle) = make_bundle_dir("validate_qc_fail");
     let request = json!({

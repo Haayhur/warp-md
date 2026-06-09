@@ -2969,6 +2969,32 @@ fn severe_bond_threshold(expected_distance: f32) -> f32 {
 
 const BUILD_QC_NEIGHBOR_CUTOFF_ANGSTROM: f32 = 4.0;
 
+fn build_qc_excluded_pairs(bonds: &[(usize, usize)]) -> BTreeSet<(usize, usize)> {
+    let mut adjacency = BTreeMap::<usize, Vec<usize>>::new();
+    let mut excluded = BTreeSet::new();
+    for &(a, b) in bonds {
+        let pair = if a <= b { (a, b) } else { (b, a) };
+        excluded.insert(pair);
+        adjacency.entry(a).or_default().push(b);
+        adjacency.entry(b).or_default().push(a);
+    }
+    for neighbors in adjacency.values() {
+        for left_idx in 0..neighbors.len() {
+            for right_idx in (left_idx + 1)..neighbors.len() {
+                let left = neighbors[left_idx];
+                let right = neighbors[right_idx];
+                let pair = if left <= right {
+                    (left, right)
+                } else {
+                    (right, left)
+                };
+                excluded.insert(pair);
+            }
+        }
+    }
+    excluded
+}
+
 fn build_qc_report(
     atoms: &[AtomRecord],
     bonds: &[(usize, usize)],
@@ -2994,15 +3020,12 @@ fn build_qc_report(
             })
         })
         .collect::<Vec<_>>();
-    let bonded_pairs = bonds
-        .iter()
-        .map(|&(a, b)| if a <= b { (a, b) } else { (b, a) })
-        .collect::<BTreeSet<_>>();
+    let excluded_pairs = build_qc_excluded_pairs(bonds);
     let mut min_nonbonded: Option<f32> = None;
     let mut severe_clash_examples = Vec::new();
     let mut severe_clash_count = 0usize;
     let possible_nonbonded_count = atoms.len().saturating_mul(atoms.len().saturating_sub(1)) / 2;
-    let has_nonbonded_pairs = possible_nonbonded_count > bonded_pairs.len();
+    let has_nonbonded_pairs = possible_nonbonded_count > excluded_pairs.len();
     let mut spatial =
         SpatialHash::with_capacity(BUILD_QC_NEIGHBOR_CUTOFF_ANGSTROM, atoms.len() * 2);
     for (idx, atom) in atoms.iter().enumerate() {
@@ -3013,7 +3036,7 @@ fn build_qc_report(
             if right <= left {
                 return;
             }
-            if bonded_pairs.contains(&(left, right)) {
+            if excluded_pairs.contains(&(left, right)) {
                 return;
             }
             let distance = atoms[right].position.sub(atoms[left].position).norm();
@@ -4913,7 +4936,7 @@ pub fn write_polymer_prmtop_synthetic_uff_like(
     Ok(write_minimal_prmtop(out_path, &topology)?)
 }
 
-fn stage_polymer_output_path(final_coordinates_path: &str) -> PathBuf {
+pub(crate) fn stage_polymer_output_path(final_coordinates_path: &str) -> PathBuf {
     let final_path = PathBuf::from(final_coordinates_path);
     let parent = final_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = final_path
@@ -5688,10 +5711,6 @@ pub fn build_polymer_graph(
     } else {
         None
     };
-    let qc_report = recompute_build_qc_report(&output, &qc_context);
-    if strict_qc && conformation_mode != "random_walk" {
-        ensure_build_qc_passes(&qc_report)?;
-    }
     let path = stage_polymer_output_path(final_coordinates_path);
     let path_text = path.to_string_lossy().to_string();
     if let Some(parent) = Path::new(&path_text).parent() {
@@ -5709,6 +5728,10 @@ pub fn build_polymer_graph(
         !output.bonds.is_empty(),
         false,
     )?;
+    let qc_report = recompute_build_qc_report(&output, &qc_context);
+    if strict_qc && conformation_mode != "random_walk" {
+        ensure_build_qc_passes(&qc_report)?;
+    }
 
     Ok(PolymerBuiltArtifact {
         path,
