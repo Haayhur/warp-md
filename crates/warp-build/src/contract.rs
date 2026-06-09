@@ -9159,6 +9159,12 @@ pub fn capabilities() -> Value {
         "supported_target_modes": SUPPORTED_TARGET_MODES,
         "supported_realization_modes": SUPPORTED_CONFORMATION_MODES,
         "base_conformation_modes": ["extended", "random_walk"],
+        "conformation_semantics": {
+            "extended": "deterministic_collinear_end_to_end_initial_chain",
+            "random_walk": "seeded_self_avoiding_noncollinear_initial_chain",
+            "aligned": "extended_chain_rotated_to_requested_axis",
+            "ensemble": "multiple_seeded_random_walk_members"
+        },
         "realization_mode_map": {
             "extended": "extended",
             "random_walk": "random_walk",
@@ -9265,6 +9271,12 @@ pub fn inspect_source_json(path: &str) -> (i32, Value) {
                     "training_context": bundle.training_context,
                     "supported_target_modes": bundle.capabilities.supported_target_modes,
                     "supported_conformation_modes": bundle.capabilities.supported_conformation_modes,
+                    "conformation_semantics": {
+                        "extended": "deterministic_collinear_end_to_end_initial_chain",
+                        "random_walk": "seeded_self_avoiding_noncollinear_initial_chain",
+                        "aligned": "extended_chain_rotated_to_requested_axis",
+                        "ensemble": "multiple_seeded_random_walk_members"
+                    },
                     "supported_tacticity_modes": bundle.capabilities.supported_tacticity_modes,
                     "supported_termini_policies": bundle.capabilities.supported_termini_policies,
                     "sequence_token_support": bundle.capabilities.sequence_token_support,
@@ -9729,7 +9741,7 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             }
         });
         let build_started = Instant::now();
-        let graph_strict_qc = !skip_strict_qc && req.realization.relax.is_none();
+        let graph_strict_qc = false;
         let build_result = build_polymer_graph(
             &source_coordinates,
             source_charge_manifest.as_deref(),

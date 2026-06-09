@@ -662,6 +662,21 @@ fn max_inter_residue_bond_distance(coords: &Path, topology_graph: &Path) -> f64 
         .fold(0.0, f64::max)
 }
 
+fn pdb_atom_positions(coords: &Path) -> Vec<[f64; 3]> {
+    fs::read_to_string(coords)
+        .expect("read coords")
+        .lines()
+        .filter(|line| line.starts_with("ATOM  ") || line.starts_with("HETATM"))
+        .map(|line| {
+            [
+                line[30..38].trim().parse::<f64>().expect("x"),
+                line[38..46].trim().parse::<f64>().expect("y"),
+                line[46..54].trim().parse::<f64>().expect("z"),
+            ]
+        })
+        .collect()
+}
+
 #[test]
 fn schema_and_inspect_source_work() {
     let schema = warp_build::schema_json("request").expect("schema");
@@ -714,10 +729,18 @@ fn schema_and_inspect_source_work() {
         payload["target_count_semantics"]["linear_homopolymer"]["n_repeat"],
         "total_final_residues_when_terminal_aware"
     );
+    assert_eq!(
+        payload["conformation_semantics"]["extended"],
+        "deterministic_collinear_end_to_end_initial_chain"
+    );
     let caps = warp_build::capabilities();
     assert_eq!(
         caps["target_count_semantics"]["linear_homopolymer"]["n_repeat"],
         "total_final_residues_when_terminal_aware"
+    );
+    assert_eq!(
+        caps["conformation_semantics"]["extended"],
+        "deterministic_collinear_end_to_end_initial_chain"
     );
     assert_eq!(
         caps["executable_target_modes"],
@@ -910,6 +933,89 @@ fn validate_rejects_missing_seed_for_stochastic_modes() {
     assert_eq!(code, 2);
     assert_eq!(payload["errors"][0]["code"], "E_MISSING_SEED");
     assert_eq!(payload["errors"][0]["path"], "/realization/seed");
+}
+
+#[test]
+fn extended_linear_build_is_collinear_end_to_end() {
+    let (_dir, bundle) = make_bundle_dir("extended_collinear");
+    let coords = temp_path("extended_collinear_coords.pdb");
+    let build_manifest = temp_path("extended_collinear_manifest.json");
+    let charge_manifest = temp_path("extended_collinear_charge.json");
+    let topology_graph = temp_path("extended_collinear_graph.json");
+    let request = json!({
+        "schema_version": "warp-build.agent.v1",
+        "request_id": "extended-collinear-001",
+        "source_ref": {
+            "bundle_id": "pmma_param_bundle_v1",
+            "bundle_path": bundle.to_string_lossy(),
+        },
+        "target": {
+            "mode": "linear_homopolymer",
+            "repeat_unit": "A",
+            "n_repeat": 8,
+            "termini": {"head": "default", "tail": "default"},
+            "stereochemistry": {"mode": "inherit"},
+        },
+        "realization": {
+            "conformation_mode": "extended"
+        },
+        "artifacts": {
+            "coordinates": coords.to_string_lossy(),
+            "build_manifest": build_manifest.to_string_lossy(),
+            "charge_manifest": charge_manifest.to_string_lossy(),
+            "topology_graph": topology_graph.to_string_lossy(),
+        }
+    });
+    let (code, payload) =
+        warp_build::run_request_json(&serde_json::to_string(&request).expect("serialize"), false);
+    assert_eq!(
+        code,
+        0,
+        "{}",
+        serde_json::to_string_pretty(&payload).unwrap()
+    );
+
+    let positions = pdb_atom_positions(&coords);
+    assert_eq!(positions.len(), 8);
+    let max_off_axis = positions
+        .iter()
+        .map(|pos| pos[1].abs().max(pos[2].abs()))
+        .fold(0.0f64, f64::max);
+    assert!(
+        max_off_axis <= 1.0e-3,
+        "extended build should place the chain on one axis; max off-axis={max_off_axis}"
+    );
+    let contour = positions
+        .windows(2)
+        .map(|pair| {
+            let dx = pair[1][0] - pair[0][0];
+            let dy = pair[1][1] - pair[0][1];
+            let dz = pair[1][2] - pair[0][2];
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        })
+        .sum::<f64>();
+    let end_to_end = {
+        let first = positions.first().expect("first atom");
+        let last = positions.last().expect("last atom");
+        let dx = last[0] - first[0];
+        let dy = last[1] - first[1];
+        let dz = last[2] - first[2];
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    };
+    assert!(
+        end_to_end / contour >= 0.999,
+        "extended build should be end-to-end stretched; end_to_end={end_to_end} contour={contour}"
+    );
+
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(&build_manifest).expect("read manifest"))
+            .expect("parse manifest");
+    assert_eq!(manifest["summary"]["total_residues"], 8);
+    let max_bond_distance = max_inter_residue_bond_distance(&coords, &topology_graph);
+    assert!(
+        (max_bond_distance - 1.53).abs() <= 0.05,
+        "extended build should preserve inter-residue bond length; max_bond_distance={max_bond_distance}"
+    );
 }
 
 #[test]

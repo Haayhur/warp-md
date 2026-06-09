@@ -2482,21 +2482,6 @@ fn orthonormal_basis(axis: Vec3) -> (Vec3, Vec3) {
     (u, v)
 }
 
-fn aligned_zigzag_direction(axis: Vec3, step_idx: usize, torsion_angle: f32) -> Vec3 {
-    let axis = normalize(axis);
-    let (u, v) = orthonormal_basis(axis);
-    let phase = if step_idx % 2 == 0 {
-        torsion_angle
-    } else {
-        std::f32::consts::PI + torsion_angle
-    };
-    normalize(
-        axis.scale(0.816_496_6)
-            .add(u.scale(0.577_350_26 * phase.cos()))
-            .add(v.scale(0.577_350_26 * phase.sin())),
-    )
-}
-
 fn preferred_branch_direction(
     parent_dir: Vec3,
     sibling_idx: usize,
@@ -3177,7 +3162,7 @@ fn layout_graph_centroids(
                 })?;
             let torsion_angle = resolved_torsion_angle(edge, &mut rng);
             let preferred = if conformation_mode == "extended" && children.len() == 1 {
-                aligned_zigzag_direction(source_axis, depth, torsion_angle)
+                normalize(source_axis)
             } else {
                 preferred_branch_direction(
                     parent_dir,
@@ -4961,9 +4946,7 @@ fn build_centroids(
         let mut current = Vec3::new(0.0, 0.0, 0.0);
         for idx in 0..n_repeat {
             if idx > 0 {
-                current = current.add(
-                    aligned_zigzag_direction(axis, idx.saturating_sub(1), 0.0).scale(step_length),
-                );
+                current = current.add(axis.scale(step_length));
             }
             centroids.push(current);
         }
