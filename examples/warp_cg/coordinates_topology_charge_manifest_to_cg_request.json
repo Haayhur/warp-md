@@ -1,0 +1,23 @@
+{
+  "schema_version": "warp-cg.agent.v2",
+  "name": "paa_coordinates_topology_charge",
+  "source": {
+    "kind": "coordinates_topology_charge_manifest",
+    "coordinates": "results/build/paa_50mer/paa_50mer.pdb",
+    "topology": "results/build/paa_50mer/paa_50mer.pdb",
+    "charge_manifest": "results/build/paa_50mer/paa_50mer_charge_manifest.json",
+    "format": "pdb",
+    "topology_format": "pdb"
+  },
+  "mapping": {
+    "mode": "auto",
+    "strategy": "polymer_residue_graph",
+    "target_bead_size": 4,
+    "preserve_functional_groups": true,
+    "repeat_unit_hint": "PAA",
+    "terminal_aware": true
+  },
+  "output": {
+    "out_dir": "results/cg/paa_coordinates_topology_charge"
+  }
+}

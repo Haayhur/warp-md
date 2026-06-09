@@ -3,8 +3,7 @@
   "name": "paa_50mer_box",
   "source": {
     "kind": "polymer_pack_manifest",
-    "path": "results/pack/paa_50mer/polymer_pack_manifest.json",
-    "target_selection": "polymer"
+    "path": "results/pack/paa_50mer/polymer_pack_manifest.json"
   },
   "mapping": {
     "mode": "auto",

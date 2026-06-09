@@ -484,8 +484,7 @@ pub fn example_requests() -> Value {
             "name": "paa_50mer",
             "source": {
                 "kind": "polymer_build_manifest",
-                "path": "paa_50mer.build.json",
-                "target_selection": "polymer"
+                "path": "paa_50mer.build.json"
             },
             "mapping": {
                 "mode": "auto",
@@ -500,8 +499,7 @@ pub fn example_requests() -> Value {
             "name": "paa_50mer_box",
             "source": {
                 "kind": "polymer_pack_manifest",
-                "path": "polymer_pack_manifest.json",
-                "target_selection": "polymer"
+                "path": "polymer_pack_manifest.json"
             },
             "mapping": {
                 "mode": "auto",
@@ -510,6 +508,58 @@ pub fn example_requests() -> Value {
                 "terminal_aware": true
             },
             "output": {"out_dir": "cg/paa_50mer_box"}
+        },
+        "source_manifest_to_cg": {
+            "schema_version": AGENT_SCHEMA_VERSION,
+            "name": "paa_source_manifest",
+            "source": {
+                "kind": "source_manifest",
+                "path": "source_manifest.json"
+            },
+            "mapping": {
+                "mode": "auto",
+                "strategy": "polymer_residue_graph",
+                "repeat_unit_hint": "PAA",
+                "terminal_aware": true
+            },
+            "output": {"out_dir": "cg/paa_source_manifest"}
+        },
+        "coordinates_topology_to_cg": {
+            "schema_version": AGENT_SCHEMA_VERSION,
+            "name": "paa_coordinates_topology",
+            "source": {
+                "kind": "coordinates_topology",
+                "coordinates": "paa_50mer.pdb",
+                "topology": "paa_50mer.pdb",
+                "format": "pdb",
+                "topology_format": "pdb"
+            },
+            "mapping": {
+                "mode": "auto",
+                "strategy": "polymer_residue_graph",
+                "repeat_unit_hint": "PAA",
+                "terminal_aware": true
+            },
+            "output": {"out_dir": "cg/paa_coordinates_topology"}
+        },
+        "coordinates_topology_charge_manifest_to_cg": {
+            "schema_version": AGENT_SCHEMA_VERSION,
+            "name": "paa_coordinates_topology_charge",
+            "source": {
+                "kind": "coordinates_topology_charge_manifest",
+                "coordinates": "paa_50mer.pdb",
+                "topology": "paa_50mer.pdb",
+                "charge_manifest": "paa_50mer_charge_manifest.json",
+                "format": "pdb",
+                "topology_format": "pdb"
+            },
+            "mapping": {
+                "mode": "auto",
+                "strategy": "polymer_residue_graph",
+                "repeat_unit_hint": "PAA",
+                "terminal_aware": true
+            },
+            "output": {"out_dir": "cg/paa_coordinates_topology_charge"}
         }
     })
 }
@@ -532,11 +582,17 @@ pub fn capabilities() -> Value {
                 "mapping.template": "known or generated warp-cg.mapping_template.v1 path for mapping.mode=template"
             },
             "accepted_source_kinds": {
-                "polymer_build_manifest": {"required": ["source.path"], "optional": ["source.target_selection"]},
-                "polymer_pack_manifest": {"required": ["source.path"], "optional": ["source.target_selection"]},
-                "coordinates_topology": {"required": ["source.coordinates", "source.topology"], "optional": ["source.target_selection"]},
-                "coordinates_topology_charge_manifest": {"required": ["source.coordinates", "source.topology", "source.charge_manifest"], "optional": ["source.target_selection"]},
-                "source_manifest": {"required": ["source.path"], "optional": ["source.target_selection"]}
+                "polymer_build_manifest": {"required": ["source.path"], "optional": ["source.target_selection"], "example": "examples/warp_cg/polymer_build_manifest_to_cg_request.json"},
+                "polymer_pack_manifest": {"required": ["source.path"], "optional": ["source.target_selection"], "example": "examples/warp_cg/polymer_pack_manifest_to_cg_request.json"},
+                "coordinates_topology": {"required": ["source.coordinates", "source.topology"], "optional": ["source.target_selection"], "example": "examples/warp_cg/coordinates_topology_to_cg_request.json"},
+                "coordinates_topology_charge_manifest": {"required": ["source.coordinates", "source.topology", "source.charge_manifest"], "optional": ["source.target_selection"], "example": "examples/warp_cg/coordinates_topology_charge_manifest_to_cg_request.json"},
+                "source_manifest": {"required": ["source.path"], "optional": ["source.target_selection"], "example": "examples/warp_cg/source_manifest_to_cg_request.json"}
+            },
+            "source_selection_semantics": {
+                "default": "when source.target_selection is omitted, source-driven polymer mapping uses every atom and residue in the resolved source coordinates",
+                "target_selection": "must be a valid warp-md topology selection expression, for example 'resname PAA' or 'chain A'; the literal string 'polymer' is not a selector",
+                "execution_scope": "source-driven auto/template mapping currently builds residue-aware CG topology from the selected/default coordinate scope; manifest examples omit target_selection to select the full polymer handoff",
+                "provenance": "aa_to_cg_mapping_provenance records selection policy, selected atom/residue counts, terminal roles, residue names/counts, repeat hint, and atom-to-bead links"
             },
             "trajectory_mapping": {
                 "preferred_field": "trajectory_source",
@@ -549,13 +605,33 @@ pub fn capabilities() -> Value {
                 "reference_source": "reference_source.kind=xtb can initiate xTB optimization/MD",
                 "executable_detection": "PATH lookup for xtb",
                 "env": ["PATH", "OMP_NUM_THREADS"],
-                "gfn": ["gfn0", "gfn1", "gfn2"]
+                "gfn": ["gfnff", "gfn0", "gfn1", "gfn2"]
             }
         },
         "optimization": {
             "status": "implemented",
             "methods": ["bayesian_optimization", "pso"],
-            "sources": ["external_trajectory", "aa_trajectory", "xtb"],
+            "sources": {
+                "external_trajectory": {
+                    "required": ["smiles or repeat_smiles", "trajectory_source.path", "trajectory_source.topology"],
+                    "selection": "trajectory_source.target_selection or trajectory_source.atom_indices selects the mapped solute; omit only for single-molecule trajectories",
+                    "units": {"length_scale": "multiply input coordinates by this value before writing CG output; use 10.0 for nm-to-Angstrom input when needed"},
+                    "artifacts": ["coarse_grained_trajectory", "bond_stats_json", "bonded_stats_json", "bonded_optimization_report"],
+                    "example": "examples/warp_cg/solvated_external_bo_request.json"
+                },
+                "aa_trajectory": {
+                    "required": ["smiles or repeat_smiles", "trajectory_source.path", "trajectory_source.topology", "optimization.enabled=true", "optimization.source=aa_trajectory"],
+                    "selection": "same as external_trajectory",
+                    "artifacts": ["coarse_grained_trajectory", "bonded_parameter_map_json", "bonded_optimization_report"],
+                    "example": "examples/warp_cg/aa_trajectory_tuning_request.json"
+                },
+                "xtb": {
+                    "required": ["smiles or repeat_smiles", "reference_source.kind=xtb", "optimization.enabled=true", "optimization.source=xtb"],
+                    "units": {"temperature_k": "K", "time_ps": "ps", "timestep_fs": "fs", "dump_fs": "fs"},
+                    "artifacts": ["xtb_optimized_xyz", "xtb_reference_trajectory", "bonded_optimization_report"],
+                    "example": "examples/warp_cg/xtb_tuning_request.json"
+                }
+            },
             "objective": "bonded_parameter_parity",
             "defaults": {"method": "bayesian_optimization", "max_evaluations": 32, "seed": 42},
             "terms": ["bonds", "angles", "dihedrals"],
@@ -571,6 +647,12 @@ pub fn capabilities() -> Value {
             "supported_handoff_schemas": ["warp-build.manifest.v1", "warp-pack manifest", "coordinates_topology"],
             "terminal_aware_polymers": true,
             "multi_residue_templates": true,
+            "chemistry_generalization_limits": {
+                "tested_auto_classes": ["PAA-like vinyl polymers with carboxylic acid/carboxylate groups", "PES-like aromatic sulfone/ether repeat units", "small organic SMILES examples"],
+                "auto_mapping_strengths": ["connected residue graph partitioning", "functional-group preservation for carboxylate/carboxylic acid, amide-like, sulfone/sulfonate-like, and phosphate-like groups", "terminal-aware head/middle/tail residue roles"],
+                "requires_template_or_manual_review": ["ambiguous residue atom names", "crosslinked or network polymers", "branched polymers without clear residue order", "metals/coordination chemistry", "charged groups outside implemented functional-group detectors", "multi-component residues where one residue is not one repeat unit"],
+                "template_required_when": "auto mapping does not preserve intended chemistry, source residue atom names must match a curated mapping, or reproducibility across related polymers is required"
+            },
             "implemented_outputs": [
                 "mapping_template_json",
                 "repeat_unit_bead_template",
@@ -1871,16 +1953,65 @@ fn build_generated_mapping_template(
 }
 
 fn source_mapping_provenance(
+    request: &CgRequest,
     handoff: &SourceHandoff,
+    residues: &[SourceResidue],
+    atoms: &[AtomRecord],
     residue_to_beads: Vec<Value>,
     atom_to_bead: &BTreeMap<usize, usize>,
     mode: &str,
 ) -> Value {
+    let source = request.source.as_ref();
+    let terminal_aware = request
+        .mapping
+        .as_ref()
+        .and_then(|mapping| mapping.terminal_aware)
+        .unwrap_or(true);
+    let mut residue_name_counts = BTreeMap::<String, usize>::new();
+    for residue in residues {
+        *residue_name_counts
+            .entry(residue.resname.clone())
+            .or_default() += 1;
+    }
+    let selected_atom_indices = atom_to_bead.keys().copied().collect::<Vec<_>>();
     json!({
         "mapping_mode": mode,
         "source_coordinates": handoff.coordinates.clone(),
         "source_topology": handoff.topology.clone(),
         "source_trajectory": handoff.trajectory.clone(),
+        "selection": {
+            "target_selection": source.and_then(|source| source.target_selection.clone()),
+            "policy": if source.and_then(|source| source.target_selection.as_ref()).is_some() {
+                "source.target_selection declared; provenance records atoms mapped by the resolved source coordinates"
+            } else {
+                "default_all_source_coordinate_atoms_and_residues"
+            },
+            "default_scope": "all atoms and residues in resolved source coordinates",
+            "selected_atom_count": atom_to_bead.len(),
+            "selected_residue_count": residues.len(),
+            "selected_atom_indices": selected_atom_indices
+        },
+        "residue_interpretation": {
+            "terminal_aware": terminal_aware,
+            "repeat_unit_hint": request.mapping.as_ref().and_then(|mapping| mapping.repeat_unit_hint.clone()),
+            "repeat_unit_interpretation": "one source residue is treated as one polymer repeat/terminal unit for source-driven polymer mapping",
+            "residue_count": residues.len(),
+            "residue_name_counts": residue_name_counts,
+            "residues": residues.iter().enumerate().map(|(idx, residue)| {
+                json!({
+                    "residue_index": idx,
+                    "role": residue_role(idx, residues.len()),
+                    "resid": residue.resid,
+                    "resname": residue.resname,
+                    "chain": residue.chain.to_string(),
+                    "atom_count": residue.atom_indices.len(),
+                    "atom_indices": residue.atom_indices,
+                    "atom_names": residue.atom_indices.iter().map(|atom_idx| {
+                        source_atom_name(&atoms[*atom_idx])
+                    }).collect::<Vec<_>>()
+                })
+            }).collect::<Vec<_>>()
+        },
         "residue_to_bead_map": residue_to_beads,
         "aa_atom_to_cg_bead": atom_to_bead.iter().map(|(atom_idx, bead_idx)| {
             json!({"aa_atom_index": atom_idx, "cg_bead_index": bead_idx})
@@ -2175,8 +2306,15 @@ fn build_template_source_mapping(
             }),
         );
     }
-    let provenance =
-        source_mapping_provenance(handoff, residue_to_beads, &atom_to_bead, "template");
+    let provenance = source_mapping_provenance(
+        request,
+        handoff,
+        &residues,
+        &molecule.atoms,
+        residue_to_beads,
+        &atom_to_bead,
+        "template",
+    );
 
     Ok(SourceMappingResult {
         mapping: MappingResult {
@@ -2303,7 +2441,15 @@ fn build_source_mapping(
         &molecule.bonds,
         terminal_aware,
     );
-    let provenance = source_mapping_provenance(handoff, residue_to_beads, &atom_to_bead, "auto");
+    let provenance = source_mapping_provenance(
+        request,
+        handoff,
+        &residues,
+        &molecule.atoms,
+        residue_to_beads,
+        &atom_to_bead,
+        "auto",
+    );
 
     Ok(SourceMappingResult {
         mapping: MappingResult {
@@ -3578,7 +3724,7 @@ mod tests {
                 topology: Some(source_path.to_string_lossy().to_string()),
                 charge_manifest: None,
                 trajectory: None,
-                target_selection: Some("polymer".to_string()),
+                target_selection: None,
                 format: Some("pdb".to_string()),
                 topology_format: Some("pdb".to_string()),
             }),
@@ -3745,7 +3891,7 @@ mod tests {
                 topology: Some(source_path.to_string_lossy().to_string()),
                 charge_manifest: None,
                 trajectory: None,
-                target_selection: Some("polymer".to_string()),
+                target_selection: None,
                 format: Some("pdb".to_string()),
                 topology_format: Some("pdb".to_string()),
             }),
@@ -3840,6 +3986,35 @@ mod tests {
                 .unwrap()
                 .len(),
             6
+        );
+        assert_eq!(
+            mapping["provenance"]["selection"]["policy"],
+            "default_all_source_coordinate_atoms_and_residues"
+        );
+        assert_eq!(mapping["provenance"]["selection"]["selected_atom_count"], 6);
+        assert_eq!(
+            mapping["provenance"]["selection"]["selected_residue_count"],
+            3
+        );
+        assert_eq!(
+            mapping["provenance"]["residue_interpretation"]["repeat_unit_hint"],
+            "PAA"
+        );
+        assert_eq!(
+            mapping["provenance"]["residue_interpretation"]["terminal_aware"],
+            true
+        );
+        assert_eq!(
+            mapping["provenance"]["residue_interpretation"]["residue_name_counts"]["MID"],
+            1
+        );
+        assert_eq!(
+            mapping["provenance"]["residue_interpretation"]["residues"][0]["role"],
+            "head"
+        );
+        assert_eq!(
+            mapping["provenance"]["residue_interpretation"]["residues"][2]["role"],
+            "tail"
         );
 
         let replay_tmp = tempfile::tempdir().unwrap();
@@ -4005,7 +4180,7 @@ mod tests {
                 topology: None,
                 charge_manifest: None,
                 trajectory: None,
-                target_selection: Some("polymer".to_string()),
+                target_selection: None,
                 format: Some("pdb".to_string()),
                 topology_format: Some("pdb".to_string()),
             }),

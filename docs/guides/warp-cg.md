@@ -61,6 +61,11 @@ replay the discovered mapping. `mapping.mode="template"` loads a
 `warp-cg.mapping_template.v1` file and matches bead atom names against each
 source residue role, failing on missing or duplicated required atoms.
 
+For source-driven polymer handoffs, omit `source.target_selection` to map every
+atom and residue in the resolved source coordinates. If `source.target_selection`
+is present, it must be a normal warp-md topology selection expression such as
+`resname PAA` or `chain A`; `polymer` is not a selector token.
+
 Core artifacts:
 
 | Artifact kind | Contents |
@@ -69,7 +74,7 @@ Core artifacts:
 | `mapping_template_json` | Reusable generated or replayed `warp-cg.mapping_template.v1` template |
 | `coarse_grained_pdb` | Bead-level PDB with first mapped-frame coordinates when available, otherwise deterministic scaffold coordinates |
 | `coarse_grained_trajectory` | Mapped CG trajectory |
-| `aa_to_cg_mapping_provenance` | Source coordinates/topology plus residue-to-bead and atom-to-bead provenance for source-driven polymer mapping |
+| `aa_to_cg_mapping_provenance` | Source coordinates/topology, selection policy, selected atom/residue counts, terminal roles, residue names/counts, repeat hint, residue-to-bead, and atom-to-bead provenance |
 | `bond_stats_json` | Bond means/stds from mapped frames |
 | `bonded_stats_json` | Bond, angle, and dihedral statistics |
 | `bonded_parameter_map_json` | Machine-readable mapping from bonded stats/tuning names to `[ bonds ]`, `[ angles ]`, and `[ dihedrals ]` ITP rows |
@@ -99,8 +104,7 @@ runtime/cost estimate for requested optimization.
   "name": "paa_50mer",
   "source": {
     "kind": "polymer_pack_manifest",
-    "path": "polymer_pack_manifest.json",
-    "target_selection": "polymer"
+    "path": "polymer_pack_manifest.json"
   },
   "mapping": {
     "mode": "auto",
@@ -116,12 +120,24 @@ runtime/cost estimate for requested optimization.
 }
 ```
 
+Supported source-kind examples are shipped in `examples/warp_cg/`:
+`polymer_build_manifest_to_cg_request.json`,
+`polymer_pack_manifest_to_cg_request.json`, `source_manifest_to_cg_request.json`,
+`coordinates_topology_to_cg_request.json`, and
+`coordinates_topology_charge_manifest_to_cg_request.json`.
+
 ## Solvated external trajectory
 
 Use `target_selection` to map only the solute while retaining topology context for selections and masses.
 Use either `target_selection` or `atom_indices`; supplying both is rejected to
 keep bead mapping deterministic.
 Path and selection fields must be non-empty strings.
+For `optimization.source=external_trajectory` or `aa_trajectory`, provide
+`trajectory_source.path` and `trajectory_source.topology`. Use
+`trajectory_source.target_selection` or `trajectory_source.atom_indices` for
+solvated/multi-molecule systems. `length_scale` multiplies input coordinates
+before CG output/statistics; use `10.0` when converting nm coordinates to
+Angstrom-like PDB coordinates.
 
 ```json
 {
@@ -158,6 +174,9 @@ Path and selection fields must be non-empty strings.
 ## xTB reference workflow
 
 Use `reference_source.kind=xtb` when the agent should generate a reference from SMILES.
+The xTB fields use `temperature_k` in K, `time_ps` in ps, and `timestep_fs` /
+`dump_fs` in fs. xTB runs emit optimized/reference artifacts when produced and
+`optimization.source=xtb` emits `bonded_optimization_report`.
 
 ```json
 {

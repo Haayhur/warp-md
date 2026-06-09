@@ -634,10 +634,7 @@ mod tests {
         let mut writer = XtcWriter::create(&traj, 2).unwrap();
         writer
             .write_frame(
-                &[
-                    [0.0, 0.0, 0.0],
-                    [1.0, 0.0, 0.0],
-                ],
+                &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
                 Box3::Orthorhombic {
                     lx: 10.0,
                     ly: 10.0,
