@@ -1972,6 +1972,22 @@ fn run_sequence_build_resolves_named_termini_tokens() {
     );
     assert!(topology.exists());
 
+    let coords_text = fs::read_to_string(&coords).expect("read generated coordinates");
+    let residue_names = coords_text
+        .lines()
+        .filter(|line| line.starts_with("ATOM  ") || line.starts_with("HETATM"))
+        .map(|line| line[17..20].trim().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        residue_names,
+        vec!["HDA".to_string(), "TLA".to_string()],
+        "generated PDB should keep source template residue names for forcefield matching"
+    );
+    assert!(
+        !residue_names.iter().any(|name| name == "H" || name == "T"),
+        "generated PDB must not use sequence token labels as residue names"
+    );
+
     let graph: Value =
         serde_json::from_str(&fs::read_to_string(&topology_graph).expect("read graph"))
             .expect("parse graph");

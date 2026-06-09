@@ -5243,7 +5243,7 @@ pub fn build_linear_sequence_polymer(
             built.position = centroids[idx].add(rotated);
             built.resid = (idx + 1) as i32;
             built.chain = 'A';
-            built.resname = spec.applied_resname.clone();
+            built.resname = spec.template_resname.clone();
             built.mol_id = 1;
             atoms.push(built);
             local_to_global.insert(local_idx, residue_start + local_to_global.len());
@@ -5516,7 +5516,7 @@ pub fn build_polymer_graph(
             built.position = centroids[idx].add(rotated);
             built.resid = (idx + 1) as i32;
             built.chain = 'A';
-            built.resname = spec.applied_resname.clone();
+            built.resname = spec.template_resname.clone();
             built.mol_id = 1;
             atoms.push(built);
             let global_idx = residue_start + local_to_global.len();
