@@ -213,11 +213,23 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $pythonExe = (Get-Command python).Source
-          python -m maturin build `
-            --release `
-            --out target/wheels `
-            --interpreter "$pythonExe" `
-            -v
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+              python -m maturin build `
+                --release `
+                --out target/wheels `
+                --interpreter "$pythonExe" `
+                -v
+              break
+            } catch {
+              if ($attempt -eq $maxAttempts) {
+                throw
+              }
+              Write-Warning "maturin build failed on attempt $attempt; retrying after crates.io backoff"
+              Start-Sleep -Seconds (20 * $attempt)
+            }
+          }
           Write-Host "Wheels produced:"
           Get-ChildItem -Path target/wheels -Filter '*.whl' -File | Format-Table Name, Length, LastWriteTime
 
