@@ -1484,6 +1484,7 @@ version = "0.4.13"
 name = "traj-py"
 version = "0.4.13"
 dependencies = [
+ "clap",
  "numpy",
  "pyo3",
  "pyo3-build-config",
@@ -1491,6 +1492,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "serde_yaml",
  "sha2",
  "traj-core",
  "traj-engine",
@@ -1628,6 +1630,19 @@ dependencies = [
  "serde",
  "serde_json",
  "traj-core",
+ "warp-structure",
+]
+
+[[package]]
+name = "warp-qm"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_yaml",
  "warp-structure",
 ]
 

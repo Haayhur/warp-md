@@ -10,6 +10,7 @@ members = [
   "crates/warp-common",
   "crates/warp-structure",
   "crates/warp-build",
+  "crates/warp-qm",
   "crates/warp-pack",
   "crates/warp-cg",
   "crates/warp-pep",
