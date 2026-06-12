@@ -8,7 +8,12 @@ license = "MIT"
 name = "traj_py"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "warp-qm"
+path = "../warp-qm/src/bin/warp-qm.rs"
+
 [dependencies]
+clap = { version = "4.5.2", features = ["derive"] }
 traj-core = { path = "../traj-core" }
 traj-io = { path = "../traj-io", default-features = false }
 traj-engine = { path = "../traj-engine", default-features = false }
@@ -17,10 +22,12 @@ warp-build = { path = "../warp-build" }
 warp-pack = { path = "../warp-pack" }
 warp-cg = { path = "../warp-cg", default-features = false }
 warp-pep = { path = "../warp-pep" }
+warp-qm = { path = "../warp-qm" }
 pyo3 = { version = "0.21" }
 numpy = "0.21"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.115"
+serde_yaml = "0.9.34"
 serde_path_to_error = "0.1.20"
 sha2 = "0.10"
 schemars = { version = "0.8.22", features = ["derive"] }
