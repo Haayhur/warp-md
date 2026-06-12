@@ -19,6 +19,12 @@ enum OutputFormat {
     Yaml,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum ChargeOutputFormat {
+    WarpQm,
+    WarpBuildCharge,
+}
+
 #[derive(Subcommand)]
 enum Command {
     Schema {
@@ -72,6 +78,19 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    ConvertManifest {
+        charge_manifest: PathBuf,
+        #[arg(long = "to", default_value = "warp-build-charge")]
+        target: String,
+        #[arg(long)]
+        repeat_count: Option<usize>,
+        #[arg(long)]
+        repeat_set: Option<String>,
+        #[arg(long)]
+        terminal_policy: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     ProjectCharges {
         charge_manifest: PathBuf,
         #[arg(long, short = 'n')]
@@ -84,6 +103,30 @@ enum Command {
         format: OutputFormat,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = ChargeOutputFormat::WarpQm)]
+        charge_format: ChargeOutputFormat,
+    },
+    Projection {
+        #[command(subcommand)]
+        cmd: ProjectionCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectionCommand {
+    Infer {
+        #[arg(long)]
+        training_mol2: PathBuf,
+        #[arg(long)]
+        middle_mol2: PathBuf,
+        #[arg(long)]
+        start_mol2: Option<PathBuf>,
+        #[arg(long)]
+        end_mol2: Option<PathBuf>,
+        #[arg(long, default_value = "fake_caps_redistributed_region_sets")]
+        policy: String,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -229,12 +272,18 @@ fn run_cli(cli: Cli) -> Result<u8, String> {
             format,
             json,
             out,
+            charge_format,
         } => {
-            let (code, value) = crate::project_polymer_charges_json(
+            let output_format = match charge_format {
+                ChargeOutputFormat::WarpQm => "warp-qm",
+                ChargeOutputFormat::WarpBuildCharge => "warp-build-charge",
+            };
+            let (code, value) = crate::project_charges_json(
                 &charge_manifest.to_string_lossy(),
                 repeat_count,
                 &repeat_set,
                 &terminal_policy,
+                output_format,
             );
             let text = render_value(&value, selected_format(format, json))?;
             if let Some(path) = out {
@@ -245,5 +294,61 @@ fn run_cli(cli: Cli) -> Result<u8, String> {
             }
             Ok(code as u8)
         }
+        Command::ConvertManifest {
+            charge_manifest,
+            target,
+            repeat_count,
+            repeat_set,
+            terminal_policy,
+            out,
+        } => {
+            let (code, value) = crate::convert_manifest_json(
+                &charge_manifest.to_string_lossy(),
+                &target,
+                repeat_count,
+                repeat_set.as_deref(),
+                terminal_policy.as_deref(),
+            );
+            let text = render_value(&value, OutputFormat::Json)?;
+            if let Some(path) = out {
+                fs::write(&path, format!("{text}\n")).map_err(|err| err.to_string())?;
+                println!("{}", path.display());
+            } else {
+                println!("{text}");
+            }
+            Ok(code as u8)
+        }
+        Command::Projection { cmd } => match cmd {
+            ProjectionCommand::Infer {
+                training_mol2,
+                middle_mol2,
+                start_mol2,
+                end_mol2,
+                policy,
+                out,
+            } => {
+                let (code, value) = crate::infer_projection_json(
+                    &training_mol2.to_string_lossy(),
+                    &middle_mol2.to_string_lossy(),
+                    start_mol2
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string())
+                        .as_deref(),
+                    end_mol2
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string())
+                        .as_deref(),
+                    &policy,
+                );
+                let text = render_value(&value, OutputFormat::Json)?;
+                if let Some(path) = out {
+                    fs::write(&path, format!("{text}\n")).map_err(|err| err.to_string())?;
+                    println!("{}", path.display());
+                } else {
+                    println!("{text}");
+                }
+                Ok(code as u8)
+            }
+        },
     }
 }

@@ -13,9 +13,14 @@ fn schema_targets_include_qm_handoff_manifests() {
         "molecule",
         "charge_manifest",
         "polymer_charge_manifest",
+        "warp_build_charge_manifest",
         "esp_manifest",
         "cube_manifest",
         "engine_capabilities",
+        "settings_orca",
+        "settings_multiwfn",
+        "settings_resp2_workflow",
+        "charge_projection",
     ] {
         let schema = warp_qm::schema_json(kind).expect("schema");
         let payload: Value = serde_json::from_str(&schema).expect("json schema");
@@ -24,6 +29,90 @@ fn schema_targets_include_qm_handoff_manifests() {
             "http://json-schema.org/draft-07/schema#"
         );
     }
+}
+
+#[test]
+fn project_charges_can_emit_warp_build_charge_manifest() {
+    let dir = std::env::temp_dir().join(format!(
+        "warp_qm_warp_build_charge_project_test_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create dir");
+    let manifest = dir.join("charge_manifest.json");
+    fs::write(
+        &manifest,
+        serde_json::json!({
+            "schema_version": "warp-qm.charge-manifest.v1",
+            "model": "resp2",
+            "charge_unit": "elementary_charge",
+            "total_charge_e": 0.0,
+            "atom_charges_e": [0.1, -0.1],
+            "projection": {
+                "policy": "fake_caps_redistributed_repeat_unit",
+                "projected_charges_e": [0.1, -0.1],
+                "deployable_sets": [
+                    {"name": "mid", "atom_indices": [0, 1], "charges_e": [0.1, -0.1], "role": "interior_repeat"}
+                ],
+                "redistribution": [],
+                "provenance": {}
+            },
+            "provenance": {}
+        })
+        .to_string(),
+    )
+    .expect("write manifest");
+    let (code, payload) = warp_qm::project_charges_json(
+        &manifest.to_string_lossy(),
+        2,
+        "mid",
+        "repeat_tiled_no_terminal_specific_charges",
+        "warp-build-charge",
+    );
+    assert_eq!(code, 0, "{payload}");
+    assert_eq!(payload["schema_version"], "warp-build.charge-manifest.v1");
+    assert_eq!(payload["atom_count"], 4);
+    assert_eq!(payload["atom_charges"][2]["index"], 2);
+    assert_eq!(payload["atom_charges"][2]["charge_e"], 0.1);
+    assert!(payload["net_charge_e"].as_f64().unwrap().abs() < 1e-12);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn projection_infer_emits_fake_cap_redistribution_and_region_sets() {
+    let dir = std::env::temp_dir().join(format!(
+        "warp_qm_projection_infer_test_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create dir");
+    let training = dir.join("training.mol2");
+    let middle = dir.join("middle.mol2");
+    fs::write(
+        &training,
+        "@<TRIPOS>MOLECULE\nM\n4 3 0 0 0\nSMALL\nUSER_CHARGES\n@<TRIPOS>ATOM\n1 L1 0 0 0 C 1 MOL 0\n2 C1 1 0 0 C 1 MOL 0\n3 C2 2 0 0 C 1 MOL 0\n4 L2 3 0 0 C 1 MOL 0\n@<TRIPOS>BOND\n1 1 2 1\n2 2 3 1\n3 3 4 1\n",
+    )
+    .expect("write training");
+    fs::write(
+        &middle,
+        "@<TRIPOS>MOLECULE\nM\n2 1 0 0 0\nSMALL\nUSER_CHARGES\n@<TRIPOS>ATOM\n1 C1 1 0 0 C 1 MOL 0\n2 C2 2 0 0 C 1 MOL 0\n@<TRIPOS>BOND\n1 1 2 1\n",
+    )
+    .expect("write middle");
+    let (code, payload) = warp_qm::infer_projection_json(
+        &training.to_string_lossy(),
+        &middle.to_string_lossy(),
+        None,
+        None,
+        "fake_caps_redistributed_region_sets",
+    );
+    assert_eq!(code, 0, "{payload}");
+    assert_eq!(payload["policy"], "fake_caps_redistributed_region_sets");
+    assert_eq!(payload["redistribution"].as_array().unwrap().len(), 2);
+    assert_eq!(payload["redistribution"][0]["source_atom"], 0);
+    assert_eq!(payload["redistribution"][0]["target_atoms"][0], 1);
+    assert_eq!(payload["deployable_sets"][1]["name"], "mid");
+    assert_eq!(payload["deployable_sets"][1]["atom_indices"][0], 1);
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -756,6 +845,86 @@ fn multiwfn_orbital_cube_writes_current_recipe() {
     assert_eq!(payload["status"], "error");
     let script = fs::read_to_string(dir.join("work/multiwfn_input.txt")).expect("script");
     assert_eq!(script, "5\n4\n1\n1\n2\n0\nq\n");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn resp2_workflow_runs_orca_molden_then_multiwfn_fit() {
+    let dir = std::env::temp_dir().join(format!(
+        "warp_qm_resp2_workflow_test_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create dir");
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let fake_orca = bin.join("orca");
+    let fake_orca_2mkl = bin.join("orca_2mkl");
+    let fake_multiwfn = bin.join("Multiwfn");
+    fs::write(
+        &fake_orca,
+        "#!/bin/sh\ntouch job.gbw\nprintf 'FINAL SINGLE POINT ENERGY     -1.234567\\nORCA TERMINATED NORMALLY\\n'\n",
+    )
+    .expect("write fake orca");
+    fs::write(
+        &fake_orca_2mkl,
+        "#!/bin/sh\nprintf '[Molden Format]\\n[Atoms] Angs\\nC 1 6 0.0 0.0 0.0\\nH 2 1 0.0 0.0 1.0\\n' > job.molden.input\n",
+    )
+    .expect("write fake orca_2mkl");
+    fs::write(
+        &fake_multiwfn,
+        "#!/bin/sh\nbase=$(basename \"$1\")\nstem=${base%.molden.input}\ncase \"$PWD\" in *solvent) q1=-0.20; q2=0.20 ;; *) q1=-0.10; q2=0.10 ;; esac\nprintf 'C 0.0 0.0 0.0 %s\\nH 0.0 0.0 1.0 %s\\n' \"$q1\" \"$q2\" > \"$stem.chg\"\nprintf 'ok\\n'\n",
+    )
+    .expect("write fake Multiwfn");
+    for exe in [&fake_orca, &fake_orca_2mkl, &fake_multiwfn] {
+        let mut permissions = fs::metadata(exe).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(exe, permissions).expect("chmod");
+    }
+    let xyz = dir.join("mol.xyz");
+    fs::write(&xyz, "2\nmol\nC 0.0 0.0 0.0\nH 0.0 0.0 1.0\n").expect("xyz");
+    let request = serde_json::json!({
+        "schema_version": "warp-qm.agent.v1",
+        "request_id": "resp2-workflow",
+        "engine": {
+            "name": "workflow",
+            "settings": {
+                "qm_engine": "orca",
+                "fit_engine": "multiwfn",
+                "orca_executable": fake_orca,
+                "multiwfn_executable": fake_multiwfn,
+                "gas": {"method": "HF", "basis": "6-31G(d)", "keywords": []},
+                "solution": {"method": "HF", "basis": "6-31G(d)", "keywords": ["CPCM(Water)"]},
+                "resp2": {"delta": 0.5}
+            }
+        },
+        "molecule": {
+            "source": {"kind": "file", "path": xyz, "format": "xyz"},
+            "charge": 0,
+            "multiplicity": 1
+        },
+        "task": {"kind": "resp2_workflow", "method": "HF", "basis": "6-31G(d)", "charge_model": "resp2"},
+        "runtime": {"work_dir": dir.join("resp2"), "threads": 1, "memory_mb": 1000},
+        "output": {"out_dir": dir.join("resp2")}
+    });
+    let (code, payload) = warp_qm::run_request_json(&request.to_string(), false);
+    assert_eq!(code, 0, "{payload}");
+    assert_eq!(payload["status"], "ok");
+    assert!(dir.join("resp2/gas/job.inp").exists());
+    assert!(dir.join("resp2/gas/job.molden.input").exists());
+    assert!(dir.join("resp2/solution/job.molden.input").exists());
+    assert!(dir.join("resp2/fit/gas/job.chg").exists());
+    assert!(dir.join("resp2/fit/solvent/job.chg").exists());
+    assert!(dir.join("resp2/fit/RESP2.chg").exists());
+    assert!(dir.join("resp2/fit/charge_manifest.json").exists());
+    assert!(dir.join("resp2/workflow_manifest.json").exists());
+    let manifest: Value = serde_json::from_str(
+        &fs::read_to_string(dir.join("resp2/fit/charge_manifest.json")).expect("manifest"),
+    )
+    .expect("manifest json");
+    assert_eq!(manifest["model"], "resp2");
+    assert!((manifest["atom_charges_e"][0].as_f64().unwrap() + 0.15).abs() < 1e-12);
+    assert!((manifest["atom_charges_e"][1].as_f64().unwrap() - 0.15).abs() < 1e-12);
     let _ = fs::remove_dir_all(&dir);
 }
 

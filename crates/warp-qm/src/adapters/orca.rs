@@ -57,7 +57,10 @@ fn run_generic(request: &QmRequest) -> AdapterRun {
                     "ORCA executable not found; set engine.executable, WARP_QM_ORCA, ORCA_BINARY, or PATH"
                         .into(),
                 ],
-                properties: serde_json::Map::new(),
+                properties: error_properties(
+                    "E_ORCA_EXECUTABLE_MISSING",
+                    "ORCA executable not found; set engine.executable, WARP_QM_ORCA, ORCA_BINARY, or PATH",
+                ),
                 summary: AdapterSummary::default(),
             }
         }
@@ -81,7 +84,10 @@ fn run_generic(request: &QmRequest) -> AdapterRun {
                 command: Some(command_vec),
                 artifacts,
                 warnings: vec![format!("failed to execute ORCA: {err}")],
-                properties: serde_json::Map::new(),
+                properties: error_properties(
+                    "E_ORCA_PROCESS",
+                    format!("failed to execute ORCA: {err}"),
+                ),
                 summary: AdapterSummary::default(),
             }
         }
@@ -115,7 +121,10 @@ fn run_generic(request: &QmRequest) -> AdapterRun {
                     command: Some(command_vec),
                     artifacts,
                     warnings: vec![err],
-                    properties: serde_json::Map::new(),
+                    properties: error_properties(
+                        "E_ORCA_2MKL_MISSING",
+                        "orca_2mkl failed or was not found",
+                    ),
                     summary: AdapterSummary::default(),
                 }
             }
@@ -130,6 +139,17 @@ fn run_generic(request: &QmRequest) -> AdapterRun {
     let converged = inspection
         .as_ref()
         .map(|report| report.fatal_errors.is_empty() && report.convergence_status.is_some());
+    if output.status.success() && !converged.unwrap_or(false) {
+        properties.insert(
+            "errors".into(),
+            json!([{"code": "E_ORCA_NONCONVERGENCE", "message": "ORCA completed but convergence was not detected"}]),
+        );
+    } else if !output.status.success() {
+        properties.insert(
+            "errors".into(),
+            json!([{"code": "E_ORCA_PROCESS", "message": "ORCA process returned a non-zero exit status"}]),
+        );
+    }
     let status = if output.status.success() && converged.unwrap_or(false) {
         "ok"
     } else {
@@ -191,7 +211,10 @@ fn run_standard(request: &QmRequest) -> AdapterRun {
                     "ORCA executable not found; set engine.executable, WARP_QM_ORCA, ORCA_BINARY, or PATH"
                         .into(),
                 ],
-                properties: serde_json::Map::new(),
+                properties: error_properties(
+                    "E_ORCA_EXECUTABLE_MISSING",
+                    "ORCA executable not found; set engine.executable, WARP_QM_ORCA, ORCA_BINARY, or PATH",
+                ),
                 summary: AdapterSummary {
                     n_atoms: Some(molecule.atom_count()),
                     ..AdapterSummary::default()
@@ -221,7 +244,10 @@ fn run_standard(request: &QmRequest) -> AdapterRun {
                 command: Some(command_vec),
                 artifacts,
                 warnings: vec![format!("failed to execute ORCA: {err}")],
-                properties: serde_json::Map::new(),
+                properties: error_properties(
+                    "E_ORCA_PROCESS",
+                    format!("failed to execute ORCA: {err}"),
+                ),
                 summary: AdapterSummary {
                     n_atoms: Some(molecule.atom_count()),
                     ..AdapterSummary::default()
@@ -259,7 +285,10 @@ fn run_standard(request: &QmRequest) -> AdapterRun {
                     command: Some(command_vec),
                     artifacts,
                     warnings: vec![err],
-                    properties: serde_json::Map::new(),
+                    properties: error_properties(
+                        "E_ORCA_2MKL_MISSING",
+                        "orca_2mkl failed or was not found",
+                    ),
                     summary: AdapterSummary {
                         n_atoms: Some(molecule.atom_count()),
                         ..AdapterSummary::default()
@@ -286,6 +315,17 @@ fn run_standard(request: &QmRequest) -> AdapterRun {
     let converged = inspection
         .as_ref()
         .map(|report| report.fatal_errors.is_empty() && report.convergence_status.is_some());
+    if output.status.success() && !converged.unwrap_or(false) {
+        properties.insert(
+            "errors".into(),
+            json!([{"code": "E_ORCA_NONCONVERGENCE", "message": "ORCA completed but convergence was not detected"}]),
+        );
+    } else if !output.status.success() {
+        properties.insert(
+            "errors".into(),
+            json!([{"code": "E_ORCA_PROCESS", "message": "ORCA process returned a non-zero exit status"}]),
+        );
+    }
     let status = if output.status.success() && converged.unwrap_or(false) {
         "ok"
     } else {
@@ -942,4 +982,13 @@ fn artifact(path: &Path, format: &str, kind: &str) -> QmArtifact {
         format: format.into(),
         kind: kind.into(),
     }
+}
+
+fn error_properties(code: &str, message: impl Into<String>) -> serde_json::Map<String, Value> {
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "errors".into(),
+        json!([{"code": code, "message": message.into()}]),
+    );
+    properties
 }

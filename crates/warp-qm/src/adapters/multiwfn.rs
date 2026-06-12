@@ -25,14 +25,19 @@ pub fn run(request: &QmRequest) -> AdapterRun {
     let input_file = match multiwfn_input_file(request) {
         Some(path) => path,
         None => {
-            return AdapterRun::error(
+            return AdapterRun::error_code(
+                "E_MULTIWFN_INPUT_MISSING",
                 "Multiwfn requires molecule.source.path or engine.settings.input_file",
                 2,
             )
         }
     };
     if !Path::new(&input_file).exists() {
-        return AdapterRun::error(format!("Multiwfn input file not found: {input_file}"), 2);
+        return AdapterRun::error_code(
+            "E_MULTIWFN_INPUT_MISSING",
+            format!("Multiwfn input file not found: {input_file}"),
+            2,
+        );
     }
     let recipe = match recipe_for_request(request, &input_file) {
         Ok(recipe) => recipe,
@@ -56,7 +61,11 @@ pub fn run(request: &QmRequest) -> AdapterRun {
                     "Multiwfn executable not found; set engine.executable, WARP_QM_MULTIWFN, MULTIWFN_PATH, or PATH"
                         .into(),
                 ],
-                properties: recipe_properties(&recipe),
+                properties: merge_error(
+                    recipe_properties(&recipe),
+                    "E_MULTIWFN_EXECUTABLE_MISSING",
+                    "Multiwfn executable not found; set engine.executable, WARP_QM_MULTIWFN, MULTIWFN_PATH, or PATH",
+                ),
                 summary: AdapterSummary::default(),
             }
         }
@@ -80,7 +89,11 @@ pub fn run(request: &QmRequest) -> AdapterRun {
                 command: Some(command_vec),
                 artifacts,
                 warnings: vec![format!("failed to execute Multiwfn: {err}")],
-                properties: recipe_properties(&recipe),
+                properties: merge_error(
+                    recipe_properties(&recipe),
+                    "E_MULTIWFN_PROCESS",
+                    format!("failed to execute Multiwfn: {err}"),
+                ),
                 summary: AdapterSummary::default(),
             }
         }
@@ -135,7 +148,8 @@ fn run_resp2(request: &QmRequest, work_dir: &Path) -> AdapterRun {
         .or_else(|| setting_string(request, "gas"))
     {
         Some(path) => path,
-        None => return AdapterRun::error(
+        None => return AdapterRun::error_code(
+            "E_RESP2_INPUT_MISSING",
             "RESP2 requires engine.settings.gas_input_file and engine.settings.solvent_input_file",
             2,
         ),
@@ -146,16 +160,22 @@ fn run_resp2(request: &QmRequest, work_dir: &Path) -> AdapterRun {
         .or_else(|| setting_string(request, "solv"))
     {
         Some(path) => path,
-        None => return AdapterRun::error(
+        None => return AdapterRun::error_code(
+            "E_RESP2_INPUT_MISSING",
             "RESP2 requires engine.settings.gas_input_file and engine.settings.solvent_input_file",
             2,
         ),
     };
     if !Path::new(&gas_input).exists() {
-        return AdapterRun::error(format!("RESP2 gas input file not found: {gas_input}"), 2);
+        return AdapterRun::error_code(
+            "E_RESP2_INPUT_MISSING",
+            format!("RESP2 gas input file not found: {gas_input}"),
+            2,
+        );
     }
     if !Path::new(&solvent_input).exists() {
-        return AdapterRun::error(
+        return AdapterRun::error_code(
+            "E_RESP2_INPUT_MISSING",
             format!("RESP2 solvent input file not found: {solvent_input}"),
             2,
         );
@@ -172,7 +192,11 @@ fn run_resp2(request: &QmRequest, work_dir: &Path) -> AdapterRun {
                     "Multiwfn executable not found; set engine.executable, WARP_QM_MULTIWFN, MULTIWFN_PATH, or PATH"
                         .into(),
                 ],
-                properties: resp2_properties(request, None),
+                properties: merge_error(
+                    resp2_properties(request, None),
+                    "E_MULTIWFN_EXECUTABLE_MISSING",
+                    "Multiwfn executable not found; set engine.executable, WARP_QM_MULTIWFN, MULTIWFN_PATH, or PATH",
+                ),
                 summary: AdapterSummary::default(),
             }
         }
@@ -206,14 +230,27 @@ fn run_resp2(request: &QmRequest, work_dir: &Path) -> AdapterRun {
         .join(charge_output_name(&solvent_input));
     let gas_rows = match parse_chg_rows(&gas_path) {
         Some(rows) => rows,
-        None => return AdapterRun::error("failed to parse RESP2 gas charge table", 4),
+        None => {
+            return AdapterRun::error_code(
+                "E_RESP2_CHARGE_PARSE",
+                "failed to parse RESP2 gas charge table",
+                4,
+            )
+        }
     };
     let solvent_rows = match parse_chg_rows(&solvent_path) {
         Some(rows) => rows,
-        None => return AdapterRun::error("failed to parse RESP2 solvent charge table", 4),
+        None => {
+            return AdapterRun::error_code(
+                "E_RESP2_CHARGE_PARSE",
+                "failed to parse RESP2 solvent charge table",
+                4,
+            )
+        }
     };
     if gas_rows.len() != solvent_rows.len() {
-        return AdapterRun::error(
+        return AdapterRun::error_code(
+            "E_RESP2_ATOM_COUNT_MISMATCH",
             format!(
                 "RESP2 gas/solvent atom count mismatch: {} vs {}",
                 gas_rows.len(),
@@ -236,7 +273,11 @@ fn run_resp2(request: &QmRequest, work_dir: &Path) -> AdapterRun {
         .collect();
     let resp2_path = work_dir.join("RESP2.chg");
     if let Err(err) = write_chg_rows(&resp2_path, &combined_rows) {
-        return AdapterRun::error(format!("failed to write RESP2 charge table: {err}"), 4);
+        return AdapterRun::error_code(
+            "E_RESP2_WRITE",
+            format!("failed to write RESP2 charge table: {err}"),
+            4,
+        );
     }
     artifacts.push(artifact(&resp2_path, "text", "charge_table"));
     if let Some(manifest) = write_resp2_charge_manifest(
@@ -529,7 +570,11 @@ fn run_resp_component(
                 command: Some(vec![executable.into(), input_file.into()]),
                 artifacts,
                 warnings: vec![format!("failed to execute RESP2 {label} Multiwfn: {err}")],
-                properties: recipe_properties(&recipe),
+                properties: merge_error(
+                    recipe_properties(&recipe),
+                    "E_MULTIWFN_PROCESS",
+                    format!("failed to execute RESP2 {label} Multiwfn: {err}"),
+                ),
                 summary: AdapterSummary::default(),
             })
         }
@@ -694,6 +739,18 @@ fn recipe_properties(recipe: &MultiwfnRecipe) -> serde_json::Map<String, Value> 
             "expected_outputs": recipe.expected_outputs,
             "charge_model": recipe.charge_model,
         }),
+    );
+    properties
+}
+
+fn merge_error(
+    mut properties: serde_json::Map<String, Value>,
+    code: &str,
+    message: impl Into<String>,
+) -> serde_json::Map<String, Value> {
+    properties.insert(
+        "errors".into(),
+        json!([{"code": code, "message": message.into()}]),
     );
     properties
 }
