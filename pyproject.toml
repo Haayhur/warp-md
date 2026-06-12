@@ -22,6 +22,7 @@ warp-build = "warp_md.build_cli:main"
 warp-pack = "warp_md.pack_cli:main"
 warp-cg = "warp_md.cg_cli:main"
 warp-pep = "warp_md.pep_cli:main"
+warp-qm = "warp_md.qm_cli:main"
 
 [tool.maturin]
 manifest-path = "crates/traj-py/Cargo.toml"

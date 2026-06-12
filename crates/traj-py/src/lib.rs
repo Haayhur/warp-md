@@ -79,6 +79,13 @@ pub(crate) use self::pack::{
     to_py_err, traj_n_frames_hint, vanhove_to_py, water_order_to_py,
 };
 
+#[pyfunction]
+fn qm_cli(argv: Vec<String>) -> PyResult<i32> {
+    warp_qm::cli::run_from_args(argv)
+        .map(i32::from)
+        .map_err(PyRuntimeError::new_err)
+}
+
 #[pymodule]
 fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
@@ -98,5 +105,6 @@ fn traj_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     analysis::register(m)?;
     pack::register(m)?;
     contract::register(m)?;
+    m.add_function(pyo3::wrap_pyfunction!(qm_cli, m)?)?;
     Ok(())
 }

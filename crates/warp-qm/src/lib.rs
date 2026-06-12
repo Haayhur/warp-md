@@ -1,4 +1,5 @@
 pub mod adapters;
+pub mod cli;
 pub mod contract;
 pub mod engines;
 pub mod molecule;
