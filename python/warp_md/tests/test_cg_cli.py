@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -77,3 +78,45 @@ def test_cg_contract_native_capabilities_report_bonded_terms() -> None:
 
     assert capabilities["optimization"]["methods"] == ["bayesian_optimization", "pso"]
     assert capabilities["optimization"]["terms"] == ["bonds", "angles", "dihedrals"]
+
+
+def test_cg_cli_build_capabilities_exposes_biomolecular_surface(capsys) -> None:
+    if cg_contract.traj_py is None:
+        pytest.skip("native warp-md bindings unavailable")
+
+    exit_code = cg_cli.run_cli(["build", "capabilities"])
+
+    assert exit_code == 0
+    payload = capsys.readouterr().out
+    assert '"tool": "warp-cg build"' in payload
+    assert "typed leaflet regions" in payload
+    assert "coordinate-less inserted solutes" in payload
+
+
+def test_cg_cli_build_schema_includes_membrane_and_inserted_fields(capsys) -> None:
+    if cg_contract.traj_py is None:
+        pytest.skip("native warp-md bindings unavailable")
+
+    exit_code = cg_cli.run_cli(["build", "schema"])
+
+    assert exit_code == 0
+    payload = capsys.readouterr().out
+    assert '"membranes"' in payload
+    assert '"proteins"' in payload
+    assert '"solutes"' in payload
+    assert '"regions"' in payload
+
+
+def test_cg_cli_build_validate_accepts_native_example(tmp_path: Path) -> None:
+    if cg_contract.traj_py is None:
+        pytest.skip("native warp-md bindings unavailable")
+
+    request = tmp_path / "build_request.json"
+    request.write_text(
+        json.dumps(cg_contract.build_example_request()),
+        encoding="utf-8",
+    )
+
+    exit_code = cg_cli.run_cli(["build", "validate", str(request)])
+
+    assert exit_code == 0
