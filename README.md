@@ -18,12 +18,14 @@ pip install "warp-md[cli]"
 ```
 
 Installed CLI entry points:
-- `warp-md` (analysis/config runner)
+- `warp-md` (native agent-contract front door; delegates runtime analysis commands to Python)
+- `warp-md-python` (Python runtime runner)
 - `warp-build` (polymer construction stage)
 - `warp-pack` (packing utility)
 - `warp-pep` (peptide build/mutate utility)
 
 Native source builds also include:
+- `warp-md` (native agent-contract CLI)
 - `warp-build` (polymer construction stage CLI wrapper)
 
 ## Build from Source

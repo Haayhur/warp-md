@@ -111,7 +111,7 @@ fn run_generic(request: &QmRequest) -> AdapterRun {
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
-        match run_orca_2mkl(&executable, &work_dir, &basename) {
+        match run_orca_2mkl(request, &executable, &work_dir, &basename) {
             Ok(Some(molden)) => artifacts.push(artifact(&molden, "molden", "molden_input")),
             Ok(None) => {}
             Err(err) => {
@@ -275,7 +275,7 @@ fn run_standard(request: &QmRequest) -> AdapterRun {
             .and_then(Value::as_bool)
             .unwrap_or(false)
     {
-        match run_orca_2mkl(&executable, &work_dir, basename) {
+        match run_orca_2mkl(request, &executable, &work_dir, basename) {
             Ok(Some(molden)) => artifacts.push(artifact(&molden, "molden", "molden_input")),
             Ok(None) => {}
             Err(err) => {
@@ -812,6 +812,14 @@ fn resolve_orca_executable(request: &QmRequest) -> Option<String> {
         .engine
         .executable
         .clone()
+        .or_else(|| {
+            request
+                .engine
+                .settings
+                .get("orca_directory")
+                .and_then(Value::as_str)
+                .map(|dir| Path::new(dir).join("orca").to_string_lossy().into_owned())
+        })
         .or_else(|| std::env::var("WARP_QM_ORCA").ok())
         .or_else(|| std::env::var("ORCA_BINARY").ok())
         .or_else(|| find_executable("orca"))
@@ -938,18 +946,16 @@ fn write_charge_manifest(
 }
 
 fn run_orca_2mkl(
+    request: &QmRequest,
     orca_executable: &str,
     work_dir: &Path,
     basename: &str,
 ) -> Result<Option<PathBuf>, String> {
-    let orca_dir = Path::new(orca_executable)
-        .parent()
-        .ok_or_else(|| "failed to resolve ORCA executable parent directory".to_string())?;
-    let orca_2mkl = orca_dir.join("orca_2mkl");
-    if !orca_2mkl.exists() {
+    let orca_2mkl = resolve_orca_2mkl_executable(request, orca_executable)?;
+    if !orca_2mkl.is_file() {
         return Err(format!(
-            "orca_2mkl not found next to ORCA executable: {}",
-            orca_2mkl.display()
+            "orca_2mkl not found; set engine.settings.orca_2mkl_executable, WARP_QM_ORCA_2MKL, engine.settings.orca_directory, or install it beside ORCA: {}",
+            orca_2mkl.display(),
         ));
     }
     let gbw = work_dir.join(format!("{basename}.gbw"));
@@ -974,6 +980,35 @@ fn run_orca_2mkl(
     } else {
         Err("orca_2mkl completed but Molden output was not produced".into())
     }
+}
+
+fn resolve_orca_2mkl_executable(
+    request: &QmRequest,
+    orca_executable: &str,
+) -> Result<PathBuf, String> {
+    if let Some(path) = request
+        .engine
+        .settings
+        .get("orca_2mkl_executable")
+        .and_then(Value::as_str)
+    {
+        return Ok(PathBuf::from(path));
+    }
+    if let Ok(path) = std::env::var("WARP_QM_ORCA_2MKL") {
+        return Ok(PathBuf::from(path));
+    }
+    if let Some(dir) = request
+        .engine
+        .settings
+        .get("orca_directory")
+        .and_then(Value::as_str)
+    {
+        return Ok(Path::new(dir).join("orca_2mkl"));
+    }
+    let orca_dir = Path::new(orca_executable)
+        .parent()
+        .ok_or_else(|| "failed to resolve ORCA executable parent directory".to_string())?;
+    Ok(orca_dir.join("orca_2mkl"))
 }
 
 fn artifact(path: &Path, format: &str, kind: &str) -> QmArtifact {

@@ -1,0 +1,73 @@
+{
+  "schema_version": "warp-qm.agent.v1",
+  "request_id": "resp2-production",
+  "engine": {
+    "name": "workflow",
+    "mode": "cli",
+    "settings": {
+      "qm_engine": "orca",
+      "fit_engine": "multiwfn",
+      "orca_executable": "/home/ayodele/program/orca/orca",
+      "orca_2mkl_executable": "/home/ayodele/program/orca/orca_2mkl",
+      "multiwfn_executable": "/home/ayodele/program/Multiwfn/Multiwfn",
+      "lib_dir": "/home/ayodele/program/Multiwfn",
+      "gas": {
+        "method": "HF",
+        "basis": "6-31G(d)",
+        "keywords": []
+      },
+      "solution": {
+        "method": "HF",
+        "basis": "6-31G(d)",
+        "keywords": ["CPCM(Water)"]
+      },
+      "resp2": {
+        "delta": 0.5
+      },
+      "charge_projection": {
+        "policy": "fake_caps_redistributed_repeat_unit",
+        "redistribution": [
+          {
+            "source_atom": 0,
+            "target_atoms": [1],
+            "weights": [1.0]
+          }
+        ],
+        "deployable_sets": [
+          {
+            "name": "mid",
+            "role": "interior_repeat",
+            "atom_indices": [1, 2, 3, 4, 5]
+          }
+        ]
+      }
+    }
+  },
+  "molecule": {
+    "source": {
+      "kind": "file",
+      "path": "molecule.xyz",
+      "format": "xyz"
+    },
+    "charge": 0,
+    "multiplicity": 1,
+    "units": "angstrom"
+  },
+  "task": {
+    "kind": "resp2_workflow",
+    "method": "HF",
+    "basis": "6-31G(d)",
+    "charge_model": "resp2",
+    "properties": ["charges"]
+  },
+  "runtime": {
+    "work_dir": "results/qm/resp2-production",
+    "threads": 1,
+    "memory_mb": 8000,
+    "keep_raw": true
+  },
+  "output": {
+    "out_dir": "results/qm/resp2-production",
+    "write_json": true
+  }
+}

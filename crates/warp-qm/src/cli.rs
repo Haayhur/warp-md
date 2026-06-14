@@ -52,6 +52,36 @@ enum Command {
         format: OutputFormat,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        orca_executable: Option<String>,
+        #[arg(long)]
+        orca_2mkl_executable: Option<String>,
+        #[arg(long)]
+        orca_directory: Option<String>,
+        #[arg(long)]
+        multiwfn_executable: Option<String>,
+        #[arg(long)]
+        multiwfn_lib_dir: Option<String>,
+        #[arg(long)]
+        threads: Option<u32>,
+    },
+    Doctor {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
+        format: OutputFormat,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        orca_executable: Option<String>,
+        #[arg(long)]
+        orca_2mkl_executable: Option<String>,
+        #[arg(long)]
+        orca_directory: Option<String>,
+        #[arg(long)]
+        multiwfn_executable: Option<String>,
+        #[arg(long)]
+        multiwfn_lib_dir: Option<String>,
+        #[arg(long)]
+        threads: Option<u32>,
     },
     Validate {
         request: PathBuf,
@@ -174,6 +204,15 @@ fn print_value<T: Serialize>(value: &T, format: OutputFormat) -> Result<(), Stri
     Ok(())
 }
 
+fn has_doctor_config(config: &crate::QmDoctorConfig) -> bool {
+    config.orca_executable.is_some()
+        || config.orca_2mkl_executable.is_some()
+        || config.orca_directory.is_some()
+        || config.multiwfn_executable.is_some()
+        || config.multiwfn_lib_dir.is_some()
+        || config.threads.is_some()
+}
+
 fn with_validation_depth(text: &str, depth: &str) -> Result<String, String> {
     let mut value: serde_json::Value = serde_json::from_str(text).map_err(|err| err.to_string())?;
     let object = value
@@ -205,7 +244,7 @@ fn run_cli(cli: Cli) -> Result<u8, String> {
                 fs::write(&path, format!("{text}\n")).map_err(|err| err.to_string())?;
                 println!("{}", path.display());
             } else {
-                print!("{text}");
+                println!("{text}");
             }
             Ok(0)
         }
@@ -221,9 +260,52 @@ fn run_cli(cli: Cli) -> Result<u8, String> {
             )?;
             Ok(0)
         }
-        Command::Capabilities { format, json } => {
-            print_value(&crate::capabilities(), selected_format(format, json))?;
+        Command::Capabilities {
+            format,
+            json,
+            orca_executable,
+            orca_2mkl_executable,
+            orca_directory,
+            multiwfn_executable,
+            multiwfn_lib_dir,
+            threads,
+        } => {
+            let config = crate::QmDoctorConfig {
+                orca_executable,
+                orca_2mkl_executable,
+                orca_directory,
+                multiwfn_executable,
+                multiwfn_lib_dir,
+                threads,
+            };
+            let value = if has_doctor_config(&config) {
+                crate::capabilities_with_config(config)
+            } else {
+                crate::capabilities()
+            };
+            print_value(&value, selected_format(format, json))?;
             Ok(0)
+        }
+        Command::Doctor {
+            format,
+            json,
+            orca_executable,
+            orca_2mkl_executable,
+            orca_directory,
+            multiwfn_executable,
+            multiwfn_lib_dir,
+            threads,
+        } => {
+            let (code, value) = crate::doctor_json(crate::QmDoctorConfig {
+                orca_executable,
+                orca_2mkl_executable,
+                orca_directory,
+                multiwfn_executable,
+                multiwfn_lib_dir,
+                threads,
+            });
+            print_value(&value, selected_format(format, json))?;
+            Ok(code as u8)
         }
         Command::Validate {
             request,

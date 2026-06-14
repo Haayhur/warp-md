@@ -1,66 +1,14 @@
 use std::path::Path;
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
 use crate::error::{PackError, PackResult};
 use crate::io::read_prmtop_total_charge;
-
-pub const CHARGE_MANIFEST_VERSION: &str = "warp-build.charge-manifest.v1";
-pub const LEGACY_CHARGE_MANIFEST_VERSION: &str = "warp-pack.charge-manifest.v1";
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ChargeAtom {
-    pub index: usize,
-    pub charge_e: f32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ChargeManifest {
-    #[serde(
-        default = "default_charge_manifest_version",
-        alias = "version",
-        rename = "schema_version"
-    )]
-    #[schemars(default = "default_charge_manifest_version", rename = "schema_version")]
-    pub schema_version: String,
-    #[serde(default)]
-    pub solute_path: Option<String>,
-    #[serde(default)]
-    pub topology_ref: Option<String>,
-    #[serde(default)]
-    pub source_topology_ref: Option<String>,
-    #[serde(default)]
-    pub target_topology_ref: Option<String>,
-    #[serde(default)]
-    pub forcefield_ref: Option<String>,
-    #[serde(default)]
-    pub charge_derivation: Option<String>,
-    #[serde(default)]
-    pub net_charge_e: Option<f32>,
-    #[serde(default)]
-    pub atom_count: Option<usize>,
-    #[serde(default)]
-    pub partial_charges: Option<serde_json::Value>,
-    #[serde(default)]
-    pub atom_charges: Option<Vec<ChargeAtom>>,
-    #[serde(default)]
-    pub head_charge_e: Option<f32>,
-    #[serde(default)]
-    pub repeat_charge_e: Option<f32>,
-    #[serde(default)]
-    pub tail_charge_e: Option<f32>,
-}
-
-fn default_charge_manifest_version() -> String {
-    CHARGE_MANIFEST_VERSION.to_string()
-}
-
-#[derive(Clone, Debug)]
-pub struct NetChargeEstimate {
-    pub net_charge_e: Option<f32>,
-    pub source: Option<String>,
-}
+pub use warp_common::charge::{
+    charge_manifest_field_kinds, charges_match, compute_gromacs_molecule_net_charge,
+    compute_solute_net_charge, neutralizer_count, spread_total_charge, sum_atom_charges,
+    sum_bead_charges, sum_component_charges, sum_gromacs_molecule_atom_charges, ChargeAtom,
+    ChargeManifest, ComponentCharge, NetChargeEstimate, CHARGE_MANIFEST_VERSION,
+    LEGACY_CHARGE_MANIFEST_VERSION,
+};
 
 pub fn load_charge_manifest(path: &Path) -> PackResult<ChargeManifest> {
     let payload = std::fs::read_to_string(path)?;
@@ -75,32 +23,6 @@ pub fn load_charge_manifest(path: &Path) -> PackResult<ChargeManifest> {
         )));
     }
     Ok(manifest)
-}
-
-pub fn charge_manifest_field_kinds(manifest: &ChargeManifest) -> Vec<String> {
-    let mut kinds = Vec::new();
-    if manifest.net_charge_e.is_some() {
-        kinds.push("net_charge_e".to_string());
-    }
-    if manifest.atom_charges.is_some() {
-        kinds.push("atom_charges".to_string());
-    }
-    if manifest.head_charge_e.is_some()
-        || manifest.repeat_charge_e.is_some()
-        || manifest.tail_charge_e.is_some()
-    {
-        kinds.push("repeat_scalars".to_string());
-    }
-    kinds
-}
-
-pub fn compute_solute_net_charge(manifest: &ChargeManifest) -> NetChargeEstimate {
-    NetChargeEstimate {
-        net_charge_e: manifest.net_charge_e,
-        source: manifest
-            .net_charge_e
-            .map(|_| "charge_manifest.net_charge_e".to_string()),
-    }
 }
 
 pub fn compute_solute_net_charge_from_prmtop(path: &Path) -> PackResult<NetChargeEstimate> {

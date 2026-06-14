@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use schemars::{schema_for, JsonSchema};
@@ -380,6 +380,10 @@ pub struct OrcaSettings {
     pub basename: Option<String>,
     #[serde(default)]
     pub moinp: Option<String>,
+    #[serde(default)]
+    pub orca_2mkl_executable: Option<String>,
+    #[serde(default)]
+    pub orca_directory: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
@@ -420,6 +424,10 @@ pub struct Resp2WorkflowSettings {
     pub fit_engine: String,
     #[serde(default)]
     pub orca_executable: Option<String>,
+    #[serde(default)]
+    pub orca_2mkl_executable: Option<String>,
+    #[serde(default)]
+    pub orca_directory: Option<String>,
     #[serde(default)]
     pub multiwfn_executable: Option<String>,
     pub gas: OrcaSettings,
@@ -1064,6 +1072,198 @@ pub fn capabilities() -> Value {
     })
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct QmDoctorConfig {
+    pub orca_executable: Option<String>,
+    pub orca_2mkl_executable: Option<String>,
+    pub orca_directory: Option<String>,
+    pub multiwfn_executable: Option<String>,
+    pub multiwfn_lib_dir: Option<String>,
+    pub threads: Option<u32>,
+}
+
+pub fn capabilities_with_config(config: QmDoctorConfig) -> Value {
+    let (_, doctor) = doctor_json(config);
+    json!({
+        "schema_version": QM_SCHEMA_VERSION,
+        "engines": engines::probe_all(),
+        "supported_tasks": supported_tasks(),
+        "configured_readiness": doctor,
+    })
+}
+
+pub fn doctor_json(config: QmDoctorConfig) -> (i32, Value) {
+    let orca = resolve_orca_probe(&config);
+    let orca_path = orca.get("path").and_then(Value::as_str).map(str::to_string);
+    let orca_2mkl = resolve_orca_2mkl_probe(&config, orca_path.as_deref());
+    let multiwfn = resolve_multiwfn_probe(&config);
+    let threads = config.threads.unwrap_or(1).max(1);
+    let mpi = if threads <= 1 {
+        json!({
+            "name": "mpi_threads",
+            "ok": true,
+            "severity": "info",
+            "threads": threads,
+            "message": "threads=1 uses single-process ORCA; no MPI preflight required"
+        })
+    } else {
+        let launcher =
+            engines::find_executable("mpirun").or_else(|| engines::find_executable("mpiexec"));
+        json!({
+            "name": "mpi_threads",
+            "ok": launcher.is_some(),
+            "severity": if launcher.is_some() { "info" } else { "error" },
+            "threads": threads,
+            "launcher": launcher,
+            "message": if launcher.is_some() {
+                "MPI launcher found for multi-process ORCA runs"
+            } else {
+                "threads>1 requested but mpirun/mpiexec was not found; use threads=1 for no-MPI deployments"
+            }
+        })
+    };
+    let multiwfn_lib = match config
+        .multiwfn_lib_dir
+        .clone()
+        .or_else(|| std::env::var("WARP_QM_MULTIWFN_LIB_DIR").ok())
+    {
+        Some(path) => {
+            let ok = Path::new(&path).is_dir();
+            json!({
+                "name": "multiwfn_lib_dir",
+                "ok": ok,
+                "severity": if ok { "info" } else { "warning" },
+                "path": path,
+                "message": if ok {
+                    "Multiwfn shared-library directory exists"
+                } else {
+                    "Configured Multiwfn shared-library directory was not found"
+                }
+            })
+        }
+        None => json!({
+            "name": "multiwfn_lib_dir",
+            "ok": true,
+            "severity": "warning",
+            "path": Value::Null,
+            "message": "No Multiwfn library directory configured; acceptable when the system loader already finds Multiwfn shared libraries"
+        }),
+    };
+    let ready_resp2 = path_ok(&orca) && path_ok(&orca_2mkl) && path_ok(&multiwfn) && check_ok(&mpi);
+    let status = if ready_resp2 { "ok" } else { "error" };
+    let payload = json!({
+        "schema_version": "warp-qm.doctor.v1",
+        "status": status,
+        "ready": {"resp2_workflow": ready_resp2},
+        "checks": [orca, orca_2mkl, multiwfn, multiwfn_lib, mpi],
+        "recommendations": [
+            "Use explicit ORCA and Multiwfn executable paths in APS jobs.",
+            "Use threads=1 on no-MPI deployments, or install mpirun/mpiexec before requesting threads>1.",
+            "Set orca_2mkl_executable explicitly when ORCA sidecar tools are not beside the ORCA binary."
+        ]
+    });
+    (if ready_resp2 { 0 } else { 4 }, payload)
+}
+
+fn path_ok(check: &Value) -> bool {
+    check.get("ok").and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn check_ok(check: &Value) -> bool {
+    check.get("ok").and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn resolve_orca_probe(config: &QmDoctorConfig) -> Value {
+    let explicit = config.orca_executable.clone().or_else(|| {
+        config
+            .orca_directory
+            .as_ref()
+            .map(|dir| Path::new(dir).join("orca").to_string_lossy().into_owned())
+    });
+    let path = explicit
+        .or_else(|| std::env::var("WARP_QM_ORCA").ok())
+        .or_else(|| std::env::var("ORCA_BINARY").ok())
+        .or_else(|| engines::find_executable("orca"));
+    executable_check(
+        "orca_executable",
+        path,
+        "ORCA executable found",
+        "ORCA executable not found; configure --orca-executable, --orca-directory, WARP_QM_ORCA, ORCA_BINARY, or PATH",
+    )
+}
+
+fn resolve_orca_2mkl_probe(config: &QmDoctorConfig, orca_executable: Option<&str>) -> Value {
+    let path = config
+        .orca_2mkl_executable
+        .clone()
+        .or_else(|| std::env::var("WARP_QM_ORCA_2MKL").ok())
+        .or_else(|| {
+            config.orca_directory.as_ref().map(|dir| {
+                Path::new(dir)
+                    .join("orca_2mkl")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+        .or_else(|| {
+            orca_executable.and_then(|orca| {
+                Path::new(orca)
+                    .parent()
+                    .map(|dir| dir.join("orca_2mkl").to_string_lossy().into_owned())
+            })
+        });
+    executable_check(
+        "orca_2mkl_executable",
+        path,
+        "orca_2mkl executable found",
+        "orca_2mkl not found; configure --orca-2mkl-executable, --orca-directory, WARP_QM_ORCA_2MKL, or install it beside ORCA",
+    )
+}
+
+fn resolve_multiwfn_probe(config: &QmDoctorConfig) -> Value {
+    let path = config
+        .multiwfn_executable
+        .clone()
+        .or_else(|| std::env::var("WARP_QM_MULTIWFN").ok())
+        .or_else(|| std::env::var("MULTIWFN_PATH").ok())
+        .map(|path| {
+            let candidate = PathBuf::from(&path);
+            if candidate.is_dir() {
+                candidate.join("Multiwfn").to_string_lossy().into_owned()
+            } else {
+                path
+            }
+        })
+        .or_else(|| engines::find_executable("Multiwfn"))
+        .or_else(|| engines::find_executable("Multiwfn_noGUI"))
+        .or_else(|| engines::find_executable("multiwfn"));
+    executable_check(
+        "multiwfn_executable",
+        path,
+        "Multiwfn executable found",
+        "Multiwfn executable not found; configure --multiwfn-executable, WARP_QM_MULTIWFN, MULTIWFN_PATH, or PATH",
+    )
+}
+
+fn executable_check(
+    name: &str,
+    path: Option<String>,
+    ok_message: &str,
+    missing_message: &str,
+) -> Value {
+    let ok = path
+        .as_deref()
+        .map(|value| Path::new(value).is_file())
+        .unwrap_or(false);
+    json!({
+        "name": name,
+        "ok": ok,
+        "severity": if ok { "info" } else { "error" },
+        "path": path,
+        "message": if ok { ok_message } else { missing_message },
+    })
+}
+
 pub fn validate_request_json(text: &str) -> (i32, Value) {
     let request = match parse_request(text) {
         Ok(request) => request,
@@ -1183,10 +1383,15 @@ pub fn run_request_json(text: &str, stream_ndjson: bool) -> (i32, Value) {
             });
         }
     }
+    let exit_code = if adapter.status == "ok" {
+        adapter.exit_code
+    } else {
+        adapter.exit_code.max(1)
+    };
     let result = QmResultEnvelope {
         schema_version: QM_SCHEMA_VERSION.into(),
         status: adapter.status.clone(),
-        exit_code: adapter.exit_code,
+        exit_code,
         request_id: request_id.clone(),
         engine: QmEngineSummary {
             name: request.engine.name.clone(),

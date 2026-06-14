@@ -120,7 +120,9 @@ fn parse_xyz_frames<R: BufRead>(reader: R) -> TrajResult<Vec<Vec<[f32; 3]>>> {
 
         // Read comment line (skip)
         let Some(comment_line) = lines.next() else {
-            return Err(TrajError::Parse("unexpected EOF reading XYZ comment line".into()));
+            return Err(TrajError::Parse(
+                "unexpected EOF reading XYZ comment line".into(),
+            ));
         };
         let _comment = comment_line?;
 
@@ -140,31 +142,19 @@ fn parse_xyz_frames<R: BufRead>(reader: R) -> TrajResult<Vec<Vec<[f32; 3]>>> {
             })?;
             let x = parts
                 .next()
-                .ok_or_else(|| {
-                    TrajError::Parse(format!("missing x coordinate on line {}", i + 1))
-                })?
+                .ok_or_else(|| TrajError::Parse(format!("missing x coordinate on line {}", i + 1)))?
                 .parse::<f32>()
-                .map_err(|_| {
-                    TrajError::Parse(format!("invalid x coordinate on line {}", i + 1))
-                })?;
+                .map_err(|_| TrajError::Parse(format!("invalid x coordinate on line {}", i + 1)))?;
             let y = parts
                 .next()
-                .ok_or_else(|| {
-                    TrajError::Parse(format!("missing y coordinate on line {}", i + 1))
-                })?
+                .ok_or_else(|| TrajError::Parse(format!("missing y coordinate on line {}", i + 1)))?
                 .parse::<f32>()
-                .map_err(|_| {
-                    TrajError::Parse(format!("invalid y coordinate on line {}", i + 1))
-                })?;
+                .map_err(|_| TrajError::Parse(format!("invalid y coordinate on line {}", i + 1)))?;
             let z = parts
                 .next()
-                .ok_or_else(|| {
-                    TrajError::Parse(format!("missing z coordinate on line {}", i + 1))
-                })?
+                .ok_or_else(|| TrajError::Parse(format!("missing z coordinate on line {}", i + 1)))?
                 .parse::<f32>()
-                .map_err(|_| {
-                    TrajError::Parse(format!("invalid z coordinate on line {}", i + 1))
-                })?;
+                .map_err(|_| TrajError::Parse(format!("invalid z coordinate on line {}", i + 1)))?;
 
             frame_coords.push([x, y, z]);
         }

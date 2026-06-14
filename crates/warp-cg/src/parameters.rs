@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BondStats {
@@ -37,6 +37,44 @@ pub struct BondedStats {
     pub bonds: Vec<BondStats>,
     pub angles: Vec<AngleStats>,
     pub dihedrals: Vec<DihedralStats>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BondedValueSeries {
+    pub constraints: Vec<BondValueSeries>,
+    pub bonds: Vec<BondValueSeries>,
+    pub angles: Vec<AngleValueSeries>,
+    pub dihedrals: Vec<DihedralValueSeries>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BondValueSeries {
+    pub label: Option<String>,
+    pub members: Vec<[usize; 2]>,
+    pub bead_i: usize,
+    pub bead_j: usize,
+    pub values: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AngleValueSeries {
+    pub label: Option<String>,
+    pub members: Vec<[usize; 3]>,
+    pub bead_i: usize,
+    pub bead_j: usize,
+    pub bead_k: usize,
+    pub values_deg: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DihedralValueSeries {
+    pub label: Option<String>,
+    pub members: Vec<[usize; 4]>,
+    pub bead_i: usize,
+    pub bead_j: usize,
+    pub bead_k: usize,
+    pub bead_l: usize,
+    pub values_deg: Vec<f64>,
 }
 
 pub fn calculate_bond_stats(
@@ -204,6 +242,74 @@ pub fn bonded_stats_from_values(
         bonds: stats_from_values(bond_values),
         angles: angle_stats_from_values(angle_values),
         dihedrals: dihedral_stats_from_values(dihedral_values),
+    }
+}
+
+pub fn bonded_value_series_from_values(
+    bond_values: &HashMap<(usize, usize), Vec<f64>>,
+    angle_values: &HashMap<(usize, usize, usize), Vec<f64>>,
+    dihedral_values: &HashMap<(usize, usize, usize, usize), Vec<f64>>,
+) -> BondedValueSeries {
+    let bonds = bond_values
+        .iter()
+        .map(|(&(i, j), values)| {
+            let (bead_i, bead_j) = if i <= j { (i, j) } else { (j, i) };
+            (
+                (bead_i, bead_j),
+                BondValueSeries {
+                    label: Some(format!("bond_{bead_i}_{bead_j}")),
+                    members: vec![[bead_i, bead_j]],
+                    bead_i,
+                    bead_j,
+                    values: values.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    let angles = angle_values
+        .iter()
+        .map(|(&(i, j, k), values)| {
+            (
+                (i, j, k),
+                AngleValueSeries {
+                    label: Some(format!("angle_{i}_{j}_{k}")),
+                    members: vec![[i, j, k]],
+                    bead_i: i,
+                    bead_j: j,
+                    bead_k: k,
+                    values_deg: values.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    let dihedrals = dihedral_values
+        .iter()
+        .map(|(&(i, j, k, l), values)| {
+            (
+                (i, j, k, l),
+                DihedralValueSeries {
+                    label: Some(format!("dihedral_{i}_{j}_{k}_{l}")),
+                    members: vec![[i, j, k, l]],
+                    bead_i: i,
+                    bead_j: j,
+                    bead_k: k,
+                    bead_l: l,
+                    values_deg: values.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    BondedValueSeries {
+        constraints: Vec::new(),
+        bonds,
+        angles,
+        dihedrals,
     }
 }
 

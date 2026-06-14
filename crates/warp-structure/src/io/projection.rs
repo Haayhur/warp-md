@@ -308,13 +308,17 @@ ENDMDL\n",
                      1       1\n\
               %FLAG ATOM_TYPE_INDEX\n\
               %FORMAT(10I8)\n\
-                     1       1\n"
-        ).expect("write prmtop");
+                     1       1\n",
+        )
+        .expect("write prmtop");
 
         let system = read_system_auto(&path, None).expect("read auto system prmtop");
         assert_eq!(system.n_atoms(), 2);
         assert_eq!(system.interner.resolve(system.atoms.name_id[0]), Some("H1"));
-        assert_eq!(system.interner.resolve(system.atoms.resname_id[0]), Some("SOL"));
+        assert_eq!(
+            system.interner.resolve(system.atoms.resname_id[0]),
+            Some("SOL")
+        );
         assert_eq!(system.atoms.resid[0], 1);
         assert_eq!(system.atoms.mass[0], 1.008);
     }

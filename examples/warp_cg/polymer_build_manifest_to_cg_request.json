@@ -1,5 +1,5 @@
 {
-  "schema_version": "warp-cg.agent.v2",
+  "schema_version": "warp-cg.agent.v1",
   "name": "paa_50mer",
   "source": {
     "kind": "polymer_build_manifest",

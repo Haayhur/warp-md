@@ -32,6 +32,9 @@ htmlcov/
 .vscode/
 .idea/
 *venv*
+
+# Local reference clones
+/ref/
 # OS
 .DS_Store
 Thumbs.db

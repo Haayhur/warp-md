@@ -2144,6 +2144,124 @@ fn warp_md_suggest_analyses_value(
     })
 }
 
+pub fn agent_contract_catalog_value() -> Result<serde_json::Value, String> {
+    serde_json::to_value(warp_md_agent_contract_catalog_ref()).map_err(|err| err.to_string())
+}
+
+pub fn agent_plan_schema_value(name: &str) -> Result<serde_json::Value, String> {
+    let contract =
+        warp_md_contract_for_name(name).ok_or_else(|| format!("unknown plan: {name}"))?;
+    serde_json::to_value(contract).map_err(|err| err.to_string())
+}
+
+pub fn agent_capabilities_value() -> serde_json::Value {
+    let catalog = warp_md_agent_contract_catalog_ref();
+    let available_plans: Vec<String> = catalog
+        .analyses
+        .iter()
+        .map(|contract| contract.name.clone())
+        .collect();
+    serde_json::json!({
+        "schema_version": WARP_MD_AGENT_SCHEMA_VERSION,
+        "available_plans": available_plans,
+        "plan_catalog_hash": warp_md_catalog_hash(),
+        "analysis_bundles": WARP_MD_ANALYSIS_BUNDLES,
+        "error_codes": WARP_MD_ERROR_CODES,
+        "supports_streaming": true,
+        "supports_selection_linting": true,
+    })
+}
+
+pub fn agent_generate_template_value(
+    analysis_name: &str,
+    fill_defaults: bool,
+) -> Result<serde_json::Value, String> {
+    let contract = warp_md_contract_for_name(analysis_name)
+        .ok_or_else(|| format!("unknown analysis: {analysis_name}"))?;
+    let mut analysis = serde_json::Map::new();
+    analysis.insert(
+        "name".into(),
+        serde_json::Value::String(contract.name.clone()),
+    );
+
+    for field_name in &contract.required_fields {
+        if let Some(field_spec) = contract.fields.get(field_name) {
+            analysis.insert(
+                field_name.clone(),
+                warp_md_template_placeholder(field_name, field_spec),
+            );
+        }
+    }
+
+    if fill_defaults {
+        for field_name in &contract.optional_fields {
+            if let Some(field_spec) = contract.fields.get(field_name) {
+                if let Some(default) = &field_spec.default {
+                    analysis.insert(field_name.clone(), default.clone());
+                }
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "version": WARP_MD_AGENT_SCHEMA_VERSION,
+        "system": {"path": "<topology-path>"},
+        "trajectory": {"path": "<trajectory-path>"},
+        "analyses": [serde_json::Value::Object(analysis)],
+    }))
+}
+
+pub fn agent_normalize_request_json(
+    json: &str,
+    strip_unknown: bool,
+) -> Result<serde_json::Value, String> {
+    let payload: serde_json::Value = serde_json::from_str(json).map_err(|err| err.to_string())?;
+    Ok(warp_md_normalize_request_value(payload, strip_unknown))
+}
+
+pub fn agent_validate_request_json(
+    json: &str,
+    strict: bool,
+    check_selections: bool,
+) -> Result<serde_json::Value, String> {
+    let payload: serde_json::Value = serde_json::from_str(json).map_err(|err| err.to_string())?;
+    Ok(warp_md_validate_request_value(
+        payload,
+        strict,
+        check_selections,
+    ))
+}
+
+pub fn agent_schema_value(kind: &str) -> Result<serde_json::Value, String> {
+    warp_md_agent_schema_value(kind)
+}
+
+pub fn agent_validate_result_json(json: &str) -> Result<serde_json::Value, String> {
+    let payload: serde_json::Value = serde_json::from_str(json).map_err(|err| err.to_string())?;
+    Ok(warp_md_validate_result_value(payload))
+}
+
+pub fn agent_validate_event_json(json: &str) -> Result<serde_json::Value, String> {
+    let payload: serde_json::Value = serde_json::from_str(json).map_err(|err| err.to_string())?;
+    Ok(warp_md_validate_event_value(payload))
+}
+
+pub fn agent_lint_selection_value(
+    expr: &str,
+    field_type: &str,
+    system_path: Option<&str>,
+) -> serde_json::Value {
+    warp_md_lint_selection_value(expr, field_type, system_path)
+}
+
+pub fn agent_suggest_analyses_value(
+    goal: &str,
+    provided_fields: &[String],
+    top_n: usize,
+) -> serde_json::Value {
+    warp_md_suggest_analyses_value(goal, provided_fields, top_n)
+}
+
 fn warp_md_validate_result_value(payload: serde_json::Value) -> serde_json::Value {
     let Some(root) = payload.as_object() else {
         return warp_md_invalid_validation_result(
@@ -2620,30 +2738,13 @@ fn warp_md_agent_contract_catalog<'py>(py: Python<'py>) -> PyResult<PyObject> {
 
 #[pyfunction]
 fn warp_md_agent_plan_schema<'py>(py: Python<'py>, name: &str) -> PyResult<PyObject> {
-    let contract = warp_md_contract_for_name(name)
-        .ok_or_else(|| PyRuntimeError::new_err(format!("unknown plan: {name}")))?;
-    let value =
-        serde_json::to_value(contract).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let value = agent_plan_schema_value(name).map_err(PyRuntimeError::new_err)?;
     json_value_to_py(py, &value)
 }
 
 #[pyfunction]
 fn warp_md_agent_capabilities<'py>(py: Python<'py>) -> PyResult<PyObject> {
-    let catalog = warp_md_agent_contract_catalog_ref();
-    let available_plans: Vec<String> = catalog
-        .analyses
-        .iter()
-        .map(|contract| contract.name.clone())
-        .collect();
-    let value = serde_json::json!({
-        "schema_version": WARP_MD_AGENT_SCHEMA_VERSION,
-        "available_plans": available_plans,
-        "plan_catalog_hash": warp_md_catalog_hash(),
-        "analysis_bundles": WARP_MD_ANALYSIS_BUNDLES,
-        "error_codes": WARP_MD_ERROR_CODES,
-        "supports_streaming": true,
-        "supports_selection_linting": true,
-    });
+    let value = agent_capabilities_value();
     json_value_to_py(py, &value)
 }
 
@@ -2654,39 +2755,8 @@ fn warp_md_agent_generate_template<'py>(
     analysis_name: &str,
     fill_defaults: bool,
 ) -> PyResult<PyObject> {
-    let contract = warp_md_contract_for_name(analysis_name)
-        .ok_or_else(|| PyRuntimeError::new_err(format!("unknown analysis: {analysis_name}")))?;
-    let mut analysis = serde_json::Map::new();
-    analysis.insert(
-        "name".into(),
-        serde_json::Value::String(contract.name.clone()),
-    );
-
-    for field_name in &contract.required_fields {
-        if let Some(field_spec) = contract.fields.get(field_name) {
-            analysis.insert(
-                field_name.clone(),
-                warp_md_template_placeholder(field_name, field_spec),
-            );
-        }
-    }
-
-    if fill_defaults {
-        for field_name in &contract.optional_fields {
-            if let Some(field_spec) = contract.fields.get(field_name) {
-                if let Some(default) = &field_spec.default {
-                    analysis.insert(field_name.clone(), default.clone());
-                }
-            }
-        }
-    }
-
-    let value = serde_json::json!({
-        "version": WARP_MD_AGENT_SCHEMA_VERSION,
-        "system": {"path": "<topology-path>"},
-        "trajectory": {"path": "<trajectory-path>"},
-        "analyses": [serde_json::Value::Object(analysis)],
-    });
+    let value = agent_generate_template_value(analysis_name, fill_defaults)
+        .map_err(PyRuntimeError::new_err)?;
     json_value_to_py(py, &value)
 }
 

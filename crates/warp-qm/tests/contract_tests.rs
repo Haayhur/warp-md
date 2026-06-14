@@ -1,7 +1,91 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::process::Command;
 
 use serde_json::Value;
+
+#[test]
+fn schema_cli_stdout_is_valid_json() {
+    let output = Command::new(env!("CARGO_BIN_EXE_warp-qm"))
+        .args(["schema", "--kind", "settings_orca"])
+        .output()
+        .expect("run warp-qm schema");
+    assert!(output.status.success());
+    assert!(output.stdout.ends_with(b"\n"));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("schema stdout json");
+    assert_eq!(
+        payload["$schema"],
+        "http://json-schema.org/draft-07/schema#"
+    );
+}
+
+#[test]
+fn failed_stream_run_exits_nonzero() {
+    let dir = std::env::temp_dir().join(format!(
+        "warp_qm_stream_failed_exit_test_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create dir");
+    let xyz = dir.join("h2.xyz");
+    let request_path = dir.join("request.json");
+    fs::write(&xyz, "2\nh2\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n").expect("xyz");
+    fs::write(
+        &request_path,
+        serde_json::to_string(&serde_json::json!({
+            "schema_version": "warp-qm.agent.v1",
+            "engine": {"name": "xtb"},
+            "molecule": {
+                "source": {"kind": "file", "path": xyz, "format": "xyz"},
+                "charge": 0,
+                "multiplicity": 1
+            },
+            "task": {"kind": "single_point", "method": "gfn2"},
+            "runtime": {"work_dir": dir.join("work")}
+        }))
+        .expect("request json"),
+    )
+    .expect("write request");
+    let output = Command::new(env!("CARGO_BIN_EXE_warp-qm"))
+        .args(["run", request_path.to_str().unwrap(), "--stream"])
+        .output()
+        .expect("run warp-qm");
+    assert_eq!(output.status.code(), Some(4));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout
+        .lines()
+        .any(|line| line.contains("\"event\":\"failed\"")));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn doctor_reports_resp2_ready_with_configured_paths() {
+    let dir =
+        std::env::temp_dir().join(format!("warp_qm_doctor_ready_test_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create dir");
+    let orca = dir.join("orca");
+    let orca_2mkl = dir.join("tools").join("orca_2mkl");
+    let multiwfn = dir.join("Multiwfn");
+    fs::create_dir_all(orca_2mkl.parent().unwrap()).expect("tools dir");
+    for path in [&orca, &orca_2mkl, &multiwfn] {
+        fs::write(path, "#!/bin/sh\nexit 0\n").expect("write fake executable");
+        let mut permissions = fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("chmod");
+    }
+    let (code, payload) = warp_qm::doctor_json(warp_qm::QmDoctorConfig {
+        orca_executable: Some(orca.to_string_lossy().into_owned()),
+        orca_2mkl_executable: Some(orca_2mkl.to_string_lossy().into_owned()),
+        multiwfn_executable: Some(multiwfn.to_string_lossy().into_owned()),
+        multiwfn_lib_dir: Some(dir.to_string_lossy().into_owned()),
+        threads: Some(1),
+        ..Default::default()
+    });
+    assert_eq!(code, 0, "{payload}");
+    assert_eq!(payload["ready"]["resp2_workflow"], true);
+    let _ = fs::remove_dir_all(&dir);
+}
 
 #[test]
 fn schema_targets_include_qm_handoff_manifests() {
@@ -857,9 +941,11 @@ fn resp2_workflow_runs_orca_molden_then_multiwfn_fit() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create dir");
     let bin = dir.join("bin");
+    let tools = dir.join("tools");
     fs::create_dir_all(&bin).expect("bin");
+    fs::create_dir_all(&tools).expect("tools");
     let fake_orca = bin.join("orca");
-    let fake_orca_2mkl = bin.join("orca_2mkl");
+    let fake_orca_2mkl = tools.join("orca_2mkl");
     let fake_multiwfn = bin.join("Multiwfn");
     fs::write(
         &fake_orca,
@@ -892,6 +978,7 @@ fn resp2_workflow_runs_orca_molden_then_multiwfn_fit() {
                 "qm_engine": "orca",
                 "fit_engine": "multiwfn",
                 "orca_executable": fake_orca,
+                "orca_2mkl_executable": fake_orca_2mkl,
                 "multiwfn_executable": fake_multiwfn,
                 "gas": {"method": "HF", "basis": "6-31G(d)", "keywords": []},
                 "solution": {"method": "HF", "basis": "6-31G(d)", "keywords": ["CPCM(Water)"]},

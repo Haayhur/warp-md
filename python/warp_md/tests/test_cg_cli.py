@@ -10,7 +10,7 @@ from warp_md import cg_contract
 
 def test_cg_cli_validate_returns_zero_for_valid_payload(monkeypatch, capsys, tmp_path: Path) -> None:
     request = tmp_path / "request.json"
-    request.write_text('{"schema_version":"warp-cg.agent.v2","name":"benzene","smiles":"c1ccccc1"}', encoding="utf-8")
+    request.write_text('{"schema_version":"warp-cg.agent.v1","name":"benzene","smiles":"c1ccccc1"}', encoding="utf-8")
 
     def fake_validate(_payload: dict) -> dict:
         return {"valid": True, "status": "ok"}
@@ -25,7 +25,7 @@ def test_cg_cli_validate_returns_zero_for_valid_payload(monkeypatch, capsys, tmp
 
 def test_cg_cli_validate_returns_non_zero_for_invalid_payload(monkeypatch, capsys, tmp_path: Path) -> None:
     request = tmp_path / "request.json"
-    request.write_text('{"schema_version":"warp-cg.agent.v2","name":"","smiles":""}', encoding="utf-8")
+    request.write_text('{"schema_version":"warp-cg.agent.v1","name":"","smiles":""}', encoding="utf-8")
 
     def fake_validate(_payload: dict) -> dict:
         return {
@@ -47,7 +47,7 @@ def test_cg_contract_native_run_writes_mapping_and_itp(tmp_path: Path) -> None:
         pytest.skip("native warp-md bindings unavailable")
 
     payload = {
-        "schema_version": "warp-cg.agent.v2",
+        "schema_version": "warp-cg.agent.v1",
         "name": "benzene",
         "smiles": "c1ccccc1",
         "output": {

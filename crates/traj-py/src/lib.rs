@@ -56,7 +56,7 @@ use traj_io::xtc::{XtcReader, XtcWriter};
 use traj_io::TrajReader;
 
 mod analysis;
-mod contract;
+pub mod contract;
 mod correlation;
 mod geometry;
 mod io;

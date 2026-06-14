@@ -133,6 +133,14 @@ fn run_orca_leg(request: &QmRequest, label: &str, leg_settings: Option<&Value>) 
     sub.engine
         .settings
         .insert("export_molden".into(), json!(true));
+    for key in ["orca_2mkl_executable", "orca_directory"] {
+        if let Some(value) = request.engine.settings.get(key) {
+            sub.engine
+                .settings
+                .entry(key.into())
+                .or_insert_with(|| value.clone());
+        }
+    }
     sub.task = QmTaskSpec {
         kind: "orca_molden_export".into(),
         method: string_from_value(leg_settings, "method")

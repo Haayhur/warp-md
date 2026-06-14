@@ -1,5 +1,7 @@
 use std::path::Path;
 
+pub mod charge;
+
 pub fn resolve_relative_path(base_path: impl AsRef<Path>, value: &str) -> String {
     let path = Path::new(value);
     if path.is_absolute() {

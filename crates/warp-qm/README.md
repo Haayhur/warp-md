@@ -8,6 +8,7 @@ ORCA and Multiwfn are external tools and are not bundled.
 
 ```bash
 export WARP_QM_ORCA=/path/to/orca
+export WARP_QM_ORCA_2MKL=/path/to/orca_2mkl
 export WARP_QM_MULTIWFN=/path/to/Multiwfn
 export WARP_QM_MULTIWFN_LIB_DIR=/path/to/multiwfn/lib
 ```
@@ -16,7 +17,19 @@ Check runnable surface:
 
 ```bash
 warp-qm capabilities --json
+warp-qm doctor --json \
+  --orca-executable /path/to/orca \
+  --orca-2mkl-executable /path/to/orca_2mkl \
+  --multiwfn-executable /path/to/Multiwfn \
+  --multiwfn-lib-dir /path/to/multiwfn/lib \
+  --threads 1
 ```
+
+`doctor` reports `ready.resp2_workflow`. `capabilities --json` accepts the same configured executable flags and includes `configured_readiness` when they are supplied.
+
+ORCA sidecars are resolved in this order: `engine.settings.orca_2mkl_executable`, `WARP_QM_ORCA_2MKL`, `engine.settings.orca_directory/orca_2mkl`, then `orca_2mkl` beside the resolved ORCA executable. `engine.settings.orca_directory` also resolves the ORCA binary as `<dir>/orca`.
+
+Recommended no-MPI deployment: set `runtime.threads` to `1`. For `threads > 1`, run `warp-qm doctor --threads N`; readiness fails when neither `mpirun` nor `mpiexec` is visible.
 
 Schema targets for agent discovery include:
 
@@ -122,6 +135,7 @@ High-level ORCA plus Multiwfn RESP2 workflow:
       "qm_engine": "orca",
       "fit_engine": "multiwfn",
       "orca_executable": "/opt/orca/orca",
+      "orca_2mkl_executable": "/opt/orca/orca_2mkl",
       "multiwfn_executable": "/opt/multiwfn/Multiwfn",
       "gas": {"method": "HF", "basis": "6-31G(d)", "keywords": []},
       "solution": {"method": "HF", "basis": "6-31G(d)", "keywords": ["CPCM(Water)"]},
@@ -139,6 +153,26 @@ High-level ORCA plus Multiwfn RESP2 workflow:
 ```
 
 The workflow writes `gas/`, `solution/`, `fit/`, and `workflow_manifest.json`. The final RESP2 charge manifest is `fit/charge_manifest.json`.
+
+Production RESP2 handoff example:
+
+```bash
+warp-qm doctor --json \
+  --orca-executable /home/ayodele/program/orca/orca \
+  --orca-2mkl-executable /home/ayodele/program/orca/orca_2mkl \
+  --multiwfn-executable /home/ayodele/program/Multiwfn/Multiwfn \
+  --multiwfn-lib-dir /home/ayodele/program/Multiwfn \
+  --threads 1
+
+warp-qm run crates/warp-qm/examples/resp2_workflow_production.request --stream
+
+warp-qm project-charges results/qm/resp2-production/fit/charge_manifest.json \
+  --repeat-count 100 \
+  --repeat-set mid \
+  --terminal-policy repeat_tiled_no_terminal_specific_charges \
+  --charge-format warp-build-charge \
+  --out results/qm/resp2-production/charge_manifest.warp-build.json
+```
 
 ## Polymer charge policy
 

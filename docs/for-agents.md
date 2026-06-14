@@ -57,7 +57,7 @@ bonded-parameter optimization:
 
 ```json
 {
-  "schema_version": "warp-cg.agent.v2",
+  "schema_version": "warp-cg.agent.v1",
   "name": "benzene",
   "smiles": "c1ccccc1",
   "trajectory_source": {
@@ -134,7 +134,7 @@ xTB-initiated reference example:
 
 ```json
 {
-  "schema_version": "warp-cg.agent.v2",
+  "schema_version": "warp-cg.agent.v1",
   "name": "ethanol",
   "smiles": "CCO",
   "reference_source": {

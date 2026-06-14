@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use warp_cg::agent;
+use warp_cg::{agent, build_contract};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -37,6 +37,41 @@ enum Command {
     Example,
     /// Print capabilities.
     Capabilities,
+    /// Build coarse-grained systems from first-class build contracts.
+    Build {
+        #[command(subcommand)]
+        command: BuildCommand,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum BuildCommand {
+    /// Run a warp-cg build request JSON.
+    Run {
+        /// Path to request JSON.
+        request: Option<String>,
+        /// Read request JSON from stdin.
+        #[arg(long)]
+        stdin: bool,
+        /// Emit NDJSON progress events to stderr.
+        #[arg(long, value_parser = ["none", "ndjson"], default_value = "none")]
+        stream: String,
+    },
+    /// Validate a warp-cg build request JSON.
+    Validate {
+        request: Option<String>,
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Print build JSON schema.
+    Schema {
+        #[arg(long, value_parser = ["request", "result", "event"], default_value = "request")]
+        kind: String,
+    },
+    /// Print an example build request.
+    Example,
+    /// Print build capabilities.
+    Capabilities,
 }
 
 fn main() -> Result<()> {
@@ -50,19 +85,6 @@ fn main() -> Result<()> {
 }
 
 fn run_agent_command(command: Command) -> Result<()> {
-    let read_payload = |request: Option<String>, stdin: bool| -> Result<String> {
-        if stdin {
-            use std::io::Read;
-            let mut text = String::new();
-            std::io::stdin().read_to_string(&mut text)?;
-            return Ok(text);
-        }
-        let Some(path) = request else {
-            anyhow::bail!("request path is required unless --stdin is used");
-        };
-        Ok(std::fs::read_to_string(path)?)
-    };
-
     match command {
         Command::Run {
             request,
@@ -92,6 +114,58 @@ fn run_agent_command(command: Command) -> Result<()> {
         Command::Capabilities => {
             println!("{}", serde_json::to_string_pretty(&agent::capabilities())?);
         }
+        Command::Build { command } => return run_build_command(command),
     }
     Ok(())
+}
+
+fn run_build_command(command: BuildCommand) -> Result<()> {
+    match command {
+        BuildCommand::Run {
+            request,
+            stdin,
+            stream,
+        } => {
+            let payload = read_payload(request, stdin)?;
+            let (exit_code, result) =
+                build_contract::run_request_json(&payload, stream == "ndjson");
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            std::process::exit(exit_code);
+        }
+        BuildCommand::Validate { request, stdin } => {
+            let payload = read_payload(request, stdin)?;
+            let (exit_code, result) = build_contract::validate_request_json(&payload);
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            std::process::exit(exit_code);
+        }
+        BuildCommand::Schema { kind } => {
+            println!("{}", build_contract::schema_json(&kind)?);
+        }
+        BuildCommand::Example => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&build_contract::example_request())?
+            );
+        }
+        BuildCommand::Capabilities => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&build_contract::capabilities())?
+            );
+        }
+    }
+    Ok(())
+}
+
+fn read_payload(request: Option<String>, stdin: bool) -> Result<String> {
+    if stdin {
+        use std::io::Read;
+        let mut text = String::new();
+        std::io::stdin().read_to_string(&mut text)?;
+        return Ok(text);
+    }
+    let Some(path) = request else {
+        anyhow::bail!("request path is required unless --stdin is used");
+    };
+    Ok(std::fs::read_to_string(path)?)
 }

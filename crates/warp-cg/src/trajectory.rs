@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use std::collections::HashMap;
 use std::path::Path;
 
 use traj_core::frame::{Box3, FrameChunkBuilder};
@@ -16,11 +15,34 @@ use traj_io::xyz_traj::XyzTrajReader;
 use traj_io::TrajReader;
 use warp_structure::io::read_system_auto;
 
+use crate::bonded_terms::BondedTermSet;
 use crate::parameters::{
-    angle_deg, bonded_stats_from_values, bonded_term_definitions, dihedral_deg, AngleStats,
-    BondStats, DihedralStats,
+    bonded_stats_from_values, AngleStats, BondStats, BondedValueSeries, DihedralStats,
+};
+use crate::trajectory_bonded::{
+    accumulate_angle_group_values, accumulate_bond_group_values, accumulate_dihedral_group_values,
+    angle_group_series, bond_group_series, dihedral_group_series, empty_angle_group_values,
+    empty_bond_group_values, empty_dihedral_group_values, single_angle_values, single_bond_values,
+    single_dihedral_values,
 };
 
+#[path = "trajectory_metrics.rs"]
+mod trajectory_metrics;
+#[path = "trajectory_virtual_sites.rs"]
+mod trajectory_virtual_sites;
+#[path = "trajectory_whole.rs"]
+mod trajectory_whole;
+use trajectory_metrics::{
+    radius_of_gyration, sasa_approx, MetricStats, RunningMetricStats, DEFAULT_SASA_BEAD_RADIUS_NM,
+    DEFAULT_SASA_PROBE_RADIUS_NM, DEFAULT_SASA_SPHERE_POINTS,
+};
+use trajectory_virtual_sites::{apply_virtual_sites, coordinate_count_with_virtual_sites};
+use trajectory_whole::{
+    bonded_whole_connections, make_source_whole_by_bonded_connectivity,
+    make_whole_by_bonded_connectivity, resolve_source_whole_connections,
+};
+
+#[derive(Debug, Clone)]
 pub struct BeadMapping {
     pub bead_names: Vec<String>,
     pub atom_indices: Vec<Vec<usize>>,
@@ -38,6 +60,7 @@ pub struct NativeTrajectoryOptions {
     pub target_selection: Option<String>,
     pub atom_indices: Option<Vec<usize>>,
     pub mass_weighted: bool,
+    pub make_whole: bool,
     pub chunk_frames: Option<usize>,
 }
 
@@ -49,6 +72,9 @@ pub struct TrajectoryMapReport {
     pub bond_stats: Vec<BondStats>,
     pub angle_stats: Vec<AngleStats>,
     pub dihedral_stats: Vec<DihedralStats>,
+    pub bonded_values: BondedValueSeries,
+    pub rg_stats: Option<MetricStats>,
+    pub sasa_stats: Option<MetricStats>,
 }
 
 pub fn map_trajectory(input_path: &str, output_path: &str, mapping: &BeadMapping) -> Result<()> {
@@ -77,6 +103,17 @@ pub fn map_native_trajectory(
     connections: &[(usize, usize)],
     options: &NativeTrajectoryOptions,
 ) -> Result<TrajectoryMapReport> {
+    let terms = BondedTermSet::from_connections(mapping.bead_names.len(), connections);
+    map_native_trajectory_with_terms(input_path, output_path, mapping, &terms, options)
+}
+
+pub fn map_native_trajectory_with_terms(
+    input_path: &Path,
+    output_path: Option<&Path>,
+    mapping: &BeadMapping,
+    terms: &BondedTermSet,
+    options: &NativeTrajectoryOptions,
+) -> Result<TrajectoryMapReport> {
     let mut reader = open_reader(input_path, options.format.as_deref(), options.length_scale)?;
     let source_atom_count = reader.n_atoms();
     let source_indices = resolve_source_indices(source_atom_count, options)?;
@@ -90,31 +127,34 @@ pub fn map_native_trajectory(
     } else {
         None
     };
+    let bead_masses = bead_weights.as_deref().map(bead_masses_from_weights);
+    let source_whole_connections = if options.make_whole {
+        resolve_source_whole_connections(options, source_atom_count)?
+    } else {
+        Vec::new()
+    };
     let chunk_frames = options.chunk_frames.unwrap_or(128).max(1);
     let mut builder = FrameChunkBuilder::new(source_atom_count, chunk_frames);
     builder.set_requirements(true, true);
 
     let mut writer = match output_path {
-        Some(path) => Some(open_writer(path, mapping.bead_names.len())?),
+        Some(path) => Some(open_writer(
+            path,
+            coordinate_count_with_virtual_sites(mapping.bead_names.len(), terms),
+        )?),
         None => None,
     };
-    let mut bond_values: HashMap<(usize, usize), Vec<f64>> = HashMap::new();
-    for &(i, j) in connections {
-        let key = if i < j { (i, j) } else { (j, i) };
-        bond_values.insert(key, Vec::new());
-    }
-    let (angle_defs, dihedral_defs) =
-        bonded_term_definitions(mapping.bead_names.len(), connections);
-    let mut angle_values: HashMap<(usize, usize, usize), Vec<f64>> = angle_defs
-        .iter()
-        .copied()
-        .map(|key| (key, Vec::new()))
-        .collect();
-    let mut dihedral_values: HashMap<(usize, usize, usize, usize), Vec<f64>> = dihedral_defs
-        .iter()
-        .copied()
-        .map(|key| (key, Vec::new()))
-        .collect();
+    let mut constraint_values = empty_bond_group_values(&terms.constraints);
+    let mut bond_group_values = empty_bond_group_values(&terms.bonds);
+    let mut angle_group_values = empty_angle_group_values(&terms.angles);
+    let mut dihedral_group_values = empty_dihedral_group_values(&terms.dihedrals);
+    let mut rg_values = RunningMetricStats::default();
+    let mut sasa_values = RunningMetricStats::default();
+    let whole_connections = if options.make_whole {
+        bonded_whole_connections(terms)
+    } else {
+        Vec::new()
+    };
 
     let start = options.start.unwrap_or(0);
     let stop = options.stop.unwrap_or(usize::MAX);
@@ -137,20 +177,57 @@ pub fn map_native_trajectory(
             }
             let source_frame =
                 &chunk.coords[frame_idx * chunk.n_atoms..(frame_idx + 1) * chunk.n_atoms];
-            let cg_coords = map_frame(source_frame, &translated_mapping, bead_weights.as_deref());
+            let box_ = chunk.box_.get(frame_idx).copied().unwrap_or(Box3::None);
+            let repaired_source_frame;
+            let mapping_source_frame = if options.make_whole && !source_whole_connections.is_empty()
+            {
+                repaired_source_frame = make_source_whole_by_bonded_connectivity(
+                    source_frame,
+                    &source_whole_connections,
+                    box_,
+                )?;
+                repaired_source_frame.as_slice()
+            } else {
+                source_frame
+            };
+            let mut cg_coords = map_frame(
+                mapping_source_frame,
+                &translated_mapping,
+                bead_weights.as_deref(),
+            );
+            apply_virtual_sites(&mut cg_coords, terms, bead_masses.as_deref())?;
+            if options.make_whole {
+                cg_coords =
+                    make_whole_by_bonded_connectivity(&cg_coords, &whole_connections, box_)?;
+            }
             if first_cg_coords.is_none() {
                 first_cg_coords = Some(cg_coords.clone());
             }
-            accumulate_bond_values(&mut bond_values, &cg_coords);
-            accumulate_angle_values(&mut angle_values, &cg_coords);
-            accumulate_dihedral_values(&mut dihedral_values, &cg_coords);
+            if let Some(rg) = radius_of_gyration(&cg_coords, bead_masses.as_deref()) {
+                rg_values.push(rg);
+            }
+            if let Some(sasa) = sasa_approx(
+                &cg_coords,
+                DEFAULT_SASA_BEAD_RADIUS_NM,
+                DEFAULT_SASA_PROBE_RADIUS_NM,
+                DEFAULT_SASA_SPHERE_POINTS,
+            ) {
+                sasa_values.push(sasa);
+            }
+            accumulate_bond_group_values(&mut constraint_values, &terms.constraints, &cg_coords);
+            accumulate_bond_group_values(&mut bond_group_values, &terms.bonds, &cg_coords);
+            accumulate_angle_group_values(&mut angle_group_values, &terms.angles, &cg_coords);
+            accumulate_dihedral_group_values(
+                &mut dihedral_group_values,
+                &terms.dihedrals,
+                &cg_coords,
+            );
             if let Some(writer) = writer.as_mut() {
                 if writer.is_single_frame() && frames_written > 0 {
                     return Err(anyhow!(
                         "mapped trajectory output format cpt supports exactly one selected frame; use start/stop/stride to select one frame"
                     ));
                 }
-                let box_ = chunk.box_.get(frame_idx).copied().unwrap_or(Box3::None);
                 let time_ps = chunk
                     .time_ps
                     .as_ref()
@@ -169,6 +246,15 @@ pub fn map_native_trajectory(
         writer.flush()?;
     }
 
+    let bonded_values = BondedValueSeries {
+        constraints: bond_group_series(&terms.constraints, constraint_values),
+        bonds: bond_group_series(&terms.bonds, bond_group_values.clone()),
+        angles: angle_group_series(&terms.angles, angle_group_values.clone()),
+        dihedrals: dihedral_group_series(&terms.dihedrals, dihedral_group_values.clone()),
+    };
+    let bond_values = single_bond_values(&terms.bonds, bond_group_values);
+    let angle_values = single_angle_values(&terms.angles, angle_group_values);
+    let dihedral_values = single_dihedral_values(&terms.dihedrals, dihedral_group_values);
     let bonded_stats = bonded_stats_from_values(bond_values, angle_values, dihedral_values);
     Ok(TrajectoryMapReport {
         frames_read,
@@ -177,6 +263,9 @@ pub fn map_native_trajectory(
         bond_stats: bonded_stats.bonds,
         angle_stats: bonded_stats.angles,
         dihedral_stats: bonded_stats.dihedrals,
+        bonded_values,
+        rg_stats: rg_values.finish(),
+        sasa_stats: sasa_values.finish(),
     })
 }
 
@@ -259,6 +348,7 @@ fn resolve_bead_weights(
             source_atom_count
         ));
     }
+    let occurrence_counts = atom_mapping_occurrence_counts(translated_mapping, source_atom_count);
     Ok(translated_mapping
         .iter()
         .map(|group| {
@@ -266,15 +356,40 @@ fn resolve_bead_weights(
                 .iter()
                 .map(|&atom_idx| {
                     let mass = system.atoms.mass.get(atom_idx).copied().unwrap_or(0.0);
-                    if mass.is_finite() && mass > 0.0 {
+                    let mass = if mass.is_finite() && mass > 0.0 {
                         mass
                     } else {
                         1.0
-                    }
+                    };
+                    let occurrence_count =
+                        occurrence_counts.get(atom_idx).copied().unwrap_or(1).max(1);
+                    mass / occurrence_count as f32
                 })
                 .collect()
         })
         .collect())
+}
+
+fn atom_mapping_occurrence_counts(
+    translated_mapping: &[Vec<usize>],
+    source_atom_count: usize,
+) -> Vec<usize> {
+    let mut occurrence_counts = vec![0; source_atom_count];
+    for group in translated_mapping {
+        for &atom_idx in group {
+            if let Some(count) = occurrence_counts.get_mut(atom_idx) {
+                *count += 1;
+            }
+        }
+    }
+    occurrence_counts
+}
+
+fn bead_masses_from_weights(weights: &[Vec<f32>]) -> Vec<f64> {
+    weights
+        .iter()
+        .map(|bead_weights| bead_weights.iter().map(|value| f64::from(*value)).sum())
+        .collect()
 }
 
 fn validate_indices(indices: &[usize], atom_count: usize) -> Result<()> {
@@ -322,48 +437,6 @@ fn map_frame(
             cog
         })
         .collect()
-}
-
-fn accumulate_bond_values(
-    bond_values: &mut HashMap<(usize, usize), Vec<f64>>,
-    positions: &[[f32; 3]],
-) {
-    for (&(i, j), values) in bond_values.iter_mut() {
-        if i < positions.len() && j < positions.len() {
-            let dx = f64::from(positions[i][0] - positions[j][0]);
-            let dy = f64::from(positions[i][1] - positions[j][1]);
-            let dz = f64::from(positions[i][2] - positions[j][2]);
-            values.push((dx * dx + dy * dy + dz * dz).sqrt());
-        }
-    }
-}
-
-fn accumulate_angle_values(
-    angle_values: &mut HashMap<(usize, usize, usize), Vec<f64>>,
-    positions: &[[f32; 3]],
-) {
-    for (&(i, j, k), values) in angle_values.iter_mut() {
-        if i < positions.len() && j < positions.len() && k < positions.len() {
-            values.push(angle_deg(positions[i], positions[j], positions[k]));
-        }
-    }
-}
-
-fn accumulate_dihedral_values(
-    dihedral_values: &mut HashMap<(usize, usize, usize, usize), Vec<f64>>,
-    positions: &[[f32; 3]],
-) {
-    for (&(i, j, k, l), values) in dihedral_values.iter_mut() {
-        if i < positions.len() && j < positions.len() && k < positions.len() && l < positions.len()
-        {
-            values.push(dihedral_deg(
-                positions[i],
-                positions[j],
-                positions[k],
-                positions[l],
-            ));
-        }
-    }
 }
 
 fn open_reader(
@@ -470,203 +543,5 @@ impl NativeWriter {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    #[test]
-    fn map_frame_can_use_mass_weighted_centers() {
-        let source = vec![[0.0, 0.0, 0.0, 1.0], [10.0, 0.0, 0.0, 1.0]];
-        let mapping = vec![vec![0, 1]];
-        let weights = vec![vec![1.0, 3.0]];
-
-        let cog = map_frame(&source, &mapping, None);
-        let com = map_frame(&source, &mapping, Some(&weights));
-
-        assert!((cog[0][0] - 5.0).abs() < 1.0e-6);
-        assert!((com[0][0] - 7.5).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn native_writer_supports_text_and_checkpoint_formats() {
-        let dir = tempfile::tempdir().unwrap();
-        let coords = [[1.0, 2.0, 3.0]];
-        for ext in ["gro", "g96", "cpt"] {
-            let path = dir.path().join(format!("mapped.{ext}"));
-            let mut writer = open_writer(&path, 1).unwrap();
-            writer
-                .write_frame(&coords, Box3::None, 0, Some(0.0))
-                .unwrap();
-            assert!(path.is_file());
-        }
-    }
-
-    #[test]
-    fn cpt_writer_reports_single_frame_contract() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mapped.cpt");
-        let writer = open_writer(&path, 1).unwrap();
-
-        assert!(writer.is_single_frame());
-    }
-
-    #[test]
-    fn native_mapping_uses_target_selection_in_solvated_trajectory() {
-        let dir = tempfile::tempdir().unwrap();
-        let top = dir.path().join("solvated.gro");
-        fs::write(
-            &top,
-            concat!(
-                "solvated ethanol\n",
-                "5\n",
-                "    1EOH     C1    1   0.000   0.000   0.000\n",
-                "    1EOH     C2    2   0.100   0.000   0.000\n",
-                "    1EOH     O1    3   0.200   0.000   0.000\n",
-                "    2SOL     OW    4   0.500   0.500   0.500\n",
-                "    2SOL    HW1    5   0.600   0.500   0.500\n",
-                "   1.00000 1.00000 1.00000\n",
-            ),
-        )
-        .unwrap();
-        let traj = dir.path().join("solvated.xtc");
-        let mut writer = XtcWriter::create(&traj, 5).unwrap();
-        writer
-            .write_frame(
-                &[
-                    [0.0, 0.0, 0.0],
-                    [1.0, 0.0, 0.0],
-                    [2.0, 0.0, 0.0],
-                    [5.0, 5.0, 5.0],
-                    [6.0, 5.0, 5.0],
-                ],
-                Box3::Orthorhombic {
-                    lx: 10.0,
-                    ly: 10.0,
-                    lz: 10.0,
-                },
-                0,
-                Some(0.0),
-            )
-            .unwrap();
-        writer
-            .write_frame(
-                &[
-                    [1.0, 0.0, 0.0],
-                    [2.0, 0.0, 0.0],
-                    [3.0, 0.0, 0.0],
-                    [5.0, 5.0, 5.0],
-                    [6.0, 5.0, 5.0],
-                ],
-                Box3::Orthorhombic {
-                    lx: 10.0,
-                    ly: 10.0,
-                    lz: 10.0,
-                },
-                1,
-                Some(1.0),
-            )
-            .unwrap();
-        writer.flush().unwrap();
-
-        let out = dir.path().join("ethanol_cg.xtc");
-        let report = map_native_trajectory(
-            &traj,
-            Some(&out),
-            &BeadMapping {
-                bead_names: vec!["SP1".to_string()],
-                atom_indices: vec![vec![0, 1, 2]],
-            },
-            &[],
-            &NativeTrajectoryOptions {
-                topology: Some(top.to_string_lossy().to_string()),
-                topology_format: Some("gro".to_string()),
-                format: Some("xtc".to_string()),
-                target_selection: Some("resname EOH".to_string()),
-                ..NativeTrajectoryOptions::default()
-            },
-        )
-        .unwrap();
-
-        assert_eq!(report.frames_read, 2);
-        assert_eq!(report.frames_written, 2);
-        assert!(out.is_file());
-    }
-
-    #[test]
-    fn native_mapping_supports_prmtop_topology() {
-        let dir = tempfile::tempdir().unwrap();
-        let top = dir.path().join("system.prmtop");
-        fs::write(
-            &top,
-            concat!(
-                "%FLAG TITLE\n",
-                "%FORMAT(20a4)\n",
-                "TEST PRMTOP\n",
-                "%FLAG POINTERS\n",
-                "%FORMAT(10I8)\n",
-                "       2       1       0       0       0       0       0       0       0       0\n",
-                "%FLAG ATOM_NAME\n",
-                "%FORMAT(20a4)\n",
-                "H1  H2  \n",
-                "%FLAG CHARGE\n",
-                "%FORMAT(5E16.8)\n",
-                "  4.20000000E-01  4.20000000E-01\n",
-                "%FLAG MASS\n",
-                "%FORMAT(5E16.8)\n",
-                "  1.00800000E+00  1.00800000E+00\n",
-                "%FLAG RESIDUE_LABEL\n",
-                "%FORMAT(20a4)\n",
-                "SOL \n",
-                "%FLAG RESIDUE_POINTER\n",
-                "%FORMAT(10I8)\n",
-                "       1\n",
-                "%FLAG ATOMIC_NUMBER\n",
-                "%FORMAT(10I8)\n",
-                "       1       1\n",
-                "%FLAG ATOM_TYPE_INDEX\n",
-                "%FORMAT(10I8)\n",
-                "       1       1\n"
-            ),
-        )
-        .unwrap();
-
-        let traj = dir.path().join("solvated.xtc");
-        let mut writer = XtcWriter::create(&traj, 2).unwrap();
-        writer
-            .write_frame(
-                &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-                Box3::Orthorhombic {
-                    lx: 10.0,
-                    ly: 10.0,
-                    lz: 10.0,
-                },
-                0,
-                Some(0.0),
-            )
-            .unwrap();
-        writer.flush().unwrap();
-
-        let out = dir.path().join("sol_cg.xtc");
-        let report = map_native_trajectory(
-            &traj,
-            Some(&out),
-            &BeadMapping {
-                bead_names: vec!["SP1".to_string()],
-                atom_indices: vec![vec![0]],
-            },
-            &[],
-            &NativeTrajectoryOptions {
-                topology: Some(top.to_string_lossy().to_string()),
-                topology_format: Some("prmtop".to_string()),
-                format: Some("xtc".to_string()),
-                target_selection: Some("resname SOL".to_string()),
-                ..NativeTrajectoryOptions::default()
-            },
-        )
-        .unwrap();
-
-        assert_eq!(report.frames_read, 1);
-        assert_eq!(report.frames_written, 1);
-        assert!(out.is_file());
-    }
-}
+#[path = "trajectory_tests.rs"]
+mod tests;

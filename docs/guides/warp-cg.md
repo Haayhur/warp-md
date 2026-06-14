@@ -100,7 +100,7 @@ runtime/cost estimate for requested optimization.
 
 ```json
 {
-  "schema_version": "warp-cg.agent.v2",
+  "schema_version": "warp-cg.agent.v1",
   "name": "paa_50mer",
   "source": {
     "kind": "polymer_pack_manifest",
@@ -141,7 +141,7 @@ Angstrom-like PDB coordinates.
 
 ```json
 {
-  "schema_version": "warp-cg.agent.v2",
+  "schema_version": "warp-cg.agent.v1",
   "name": "benzene_solvated",
   "smiles": "c1ccccc1",
   "trajectory_source": {
@@ -180,7 +180,7 @@ The xTB fields use `temperature_k` in K, `time_ps` in ps, and `timestep_fs` /
 
 ```json
 {
-  "schema_version": "warp-cg.agent.v2",
+  "schema_version": "warp-cg.agent.v1",
   "name": "ethanol_xtb",
   "smiles": "CCO",
   "reference_source": {
