@@ -14,6 +14,7 @@ pub mod molecule;
 pub mod optimize;
 pub mod parameters;
 pub mod reference;
+pub mod simulate_contract;
 pub mod trajectory;
 mod trajectory_bonded;
 pub mod xtb;

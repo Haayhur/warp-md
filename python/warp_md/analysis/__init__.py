@@ -18,6 +18,26 @@ from .energy_analysis import energy_analysis, ene_decomp, esander, lie
 from .gist import gist, GistConfig, GistResult
 from .infraredspec import infraredspec
 from .lipidscd import lipidscd
+from .lipid import (
+    lipid_area,
+    lipid_curved_leaflets,
+    lipid_flip_flop,
+    lipid_joint_density,
+    lipid_largest_cluster,
+    lipid_leaflets,
+    lipid_membrane_thickness,
+    lipid_msd,
+    lipid_neighbours,
+    lipid_neighbour_composition,
+    lipid_neighbour_matrix,
+    lipid_project_values,
+    lipid_registration,
+    lipid_scc,
+    lipid_scc_weighted_average,
+    lipid_z_angles,
+    lipid_z_positions,
+    lipid_z_thickness,
+)
 from .fluct import atomicfluct, bfactors, rmsf
 from .matrix import correl, covar, dist, mwcovar
 from .structure import get_average_frame, mean_structure, make_structure, strip, radgyr_tensor
@@ -108,6 +128,24 @@ __all__ = [
     "GistResult",
     "infraredspec",
     "lipidscd",
+    "lipid_area",
+    "lipid_curved_leaflets",
+    "lipid_flip_flop",
+    "lipid_joint_density",
+    "lipid_largest_cluster",
+    "lipid_leaflets",
+    "lipid_membrane_thickness",
+    "lipid_msd",
+    "lipid_neighbours",
+    "lipid_neighbour_composition",
+    "lipid_neighbour_matrix",
+    "lipid_project_values",
+    "lipid_registration",
+    "lipid_scc",
+    "lipid_scc_weighted_average",
+    "lipid_z_angles",
+    "lipid_z_positions",
+    "lipid_z_thickness",
     "rmsf",
     "atomicfluct",
     "bfactors",

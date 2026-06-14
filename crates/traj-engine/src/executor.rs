@@ -602,6 +602,8 @@ pub enum PlanOutput {
     Mdmat(MdmatOutput),
     DensityMap(DensityMapOutput),
     Grid(GridOutput),
+    LipidMatrix(LipidMatrixOutput),
+    LipidFlipFlop(LipidFlipFlopOutput),
     Pca(PcaOutput),
     Clustering(ClusteringOutput),
 }
@@ -618,6 +620,23 @@ pub struct PersistenceOutput {
     pub lp: f32,
     pub fit: Vec<f32>,
     pub kuhn_length: f32,
+}
+
+pub struct LipidMatrixOutput {
+    pub values: Vec<f32>,
+    pub rows: usize,
+    pub cols: usize,
+    pub residue_ids: Vec<i32>,
+    pub frames: Vec<usize>,
+    pub kind: String,
+}
+
+pub struct LipidFlipFlopOutput {
+    pub events: Vec<i32>,
+    pub rows: usize,
+    pub cols: usize,
+    pub success: Vec<String>,
+    pub residue_ids: Vec<i32>,
 }
 
 pub struct DielectricOutput {

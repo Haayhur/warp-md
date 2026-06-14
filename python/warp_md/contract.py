@@ -23,7 +23,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import traj_py
 from . import _agent_contract_snapshot as _AGENT_CONTRACT_SNAPSHOT
-from ._contract_catalog_snapshot import CATALOG as _FALLBACK_CONTRACT_CATALOG
 from ._json_types import JsonObject
 from .contract_constants import AGENT_REQUEST_SCHEMA_VERSION
 
@@ -162,7 +161,7 @@ class AnalysisContract:
 
 
 # Rust-native catalog is canonical. Python only reconstructs helper views from the
-# native payload, with a generated snapshot fallback for no-bindings environments.
+# native payload; the Rust catalog is the single source of truth.
 
 
 class _CatalogFieldPayload(BaseModel):
@@ -429,11 +428,15 @@ def _parse_contract_catalog(payload: object) -> _ContractCatalogPayload:
 
 def _load_contract_catalog() -> _ContractCatalogPayload:
     native = _native()
-    if native is not None:
-        payload = native.warp_md_agent_contract_catalog()
-        if isinstance(payload, dict) and payload.get("schema_version") == AGENT_REQUEST_SCHEMA_VERSION:
-            return _parse_contract_catalog(payload)
-    return _parse_contract_catalog(_FALLBACK_CONTRACT_CATALOG)
+    if native is None:
+        raise RuntimeError(
+            "warp-md agent contract catalog requires native traj_py bindings; "
+            "run `maturin develop` or install a wheel with bindings"
+        )
+    payload = native.warp_md_agent_contract_catalog()
+    if not isinstance(payload, dict) or payload.get("schema_version") != AGENT_REQUEST_SCHEMA_VERSION:
+        raise RuntimeError("native warp-md agent contract catalog is missing or has an invalid schema version")
+    return _parse_contract_catalog(payload)
 
 
 _CONTRACT_CATALOG = _load_contract_catalog()

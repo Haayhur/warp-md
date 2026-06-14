@@ -10,13 +10,19 @@ from .cg_contract import (
     build_example_request,
     cg_capabilities,
     cg_build_capabilities,
+    cg_simulate_capabilities,
     example_request,
+    plan_cg_simulate_request,
     render_cg_build_schema,
+    render_cg_simulate_schema,
     render_cg_schema,
     run_cg_build_request,
     run_cg_request,
+    cg_simulate_status,
+    simulate_example_request,
     validate_build_request_payload,
     validate_request_payload,
+    validate_simulate_request_payload,
 )
 
 
@@ -122,6 +128,40 @@ def build_parser() -> argparse.ArgumentParser:
     build_caps_cmd = build_sub.add_parser("capabilities", help="print build capabilities")
     build_caps_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
 
+    simulate_cmd = sub.add_parser("simulate", help="plan and inspect CG simulation handoffs")
+    simulate_sub = simulate_cmd.add_subparsers(dest="simulate_cmd", required=True)
+
+    simulate_schema_cmd = simulate_sub.add_parser("schema", help="print simulate schemas")
+    simulate_schema_cmd.add_argument(
+        "--kind",
+        choices=["request", "plan", "result", "status", "manifest"],
+        default="request",
+    )
+    simulate_schema_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+    simulate_schema_cmd.add_argument("--out", help="optional output path")
+
+    simulate_example_cmd = simulate_sub.add_parser("example", help="print simulate request example")
+    simulate_example_cmd.add_argument("--engine", choices=["gromacs", "openmm"], default="gromacs")
+    simulate_example_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+
+    simulate_validate_cmd = simulate_sub.add_parser("validate", help="validate simulate request")
+    simulate_validate_cmd.add_argument("request", nargs="?", help="path to request.json")
+    simulate_validate_cmd.add_argument("--stdin", action="store_true", help="read request from stdin")
+    simulate_validate_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+
+    simulate_plan_cmd = simulate_sub.add_parser("plan", help="emit simulation command plan")
+    simulate_plan_cmd.add_argument("request", nargs="?", help="path to request.json")
+    simulate_plan_cmd.add_argument("--stdin", action="store_true", help="read request from stdin")
+    simulate_plan_cmd.add_argument("--engine", choices=["gromacs", "openmm"])
+    simulate_plan_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+
+    simulate_status_cmd = simulate_sub.add_parser("status", help="inspect simulation run directory")
+    simulate_status_cmd.add_argument("run_dir", help="run directory")
+    simulate_status_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+
+    simulate_caps_cmd = simulate_sub.add_parser("capabilities", help="print simulate capabilities")
+    simulate_caps_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+
     return parser
 
 
@@ -170,6 +210,32 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
             return 0
         if args.build_cmd == "capabilities":
             print(_dump_payload(cg_build_capabilities(), args.format))
+            return 0
+    if args.cmd == "simulate":
+        if args.simulate_cmd == "schema":
+            rendered = render_cg_simulate_schema(args.kind, args.format)
+            if args.out:
+                Path(args.out).write_text(rendered + "\n", encoding="utf-8")
+            else:
+                print(rendered)
+            return 0
+        if args.simulate_cmd == "example":
+            print(_dump_payload(simulate_example_request(args.engine), args.format))
+            return 0
+        if args.simulate_cmd == "validate":
+            result = validate_simulate_request_payload(_load_request(args))
+            print(_dump_payload(result, args.format))
+            return 0 if result.get("valid", False) else 2
+        if args.simulate_cmd == "plan":
+            exit_code, result = plan_cg_simulate_request(_load_request(args), engine=args.engine)
+            print(_dump_payload(result, args.format))
+            return exit_code
+        if args.simulate_cmd == "status":
+            exit_code, result = cg_simulate_status(args.run_dir)
+            print(_dump_payload(result, args.format))
+            return exit_code
+        if args.simulate_cmd == "capabilities":
+            print(_dump_payload(cg_simulate_capabilities(), args.format))
             return 0
     raise RuntimeError(f"unknown command: {args.cmd}")
 

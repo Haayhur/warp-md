@@ -897,6 +897,24 @@ def test_contract_tags():
     assert "transport" in schema["tags"]
 
 
+def test_lipid_plans_are_in_agent_contract():
+    plans = contract.list_all_plans(details=False)["plans"]
+    assert "lipid_leaflets" in plans
+    assert "lipid_area" in plans
+    assert "lipid_membrane_thickness" in plans
+
+    schema = contract.get_plan_schema("lipid-area")
+    assert schema["name"] == "lipid_area"
+    assert schema["fields"]["selection"]["semantic_type"] == "selection"
+    assert schema["fields"]["leaflets"]["semantic_type"] == "path"
+    assert schema["outputs"][0]["fields"] == ["values", "residue_ids", "frames"]
+
+    template = contract.generate_template("lipid-area", fill_defaults=True)
+    analysis = template["analyses"][0]
+    assert analysis["name"] == "lipid_area"
+    assert analysis["leaflets"] == "<leaflets>"
+
+
 # Selection linting tests
 
 def test_lint_selection_valid_expression():

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use numpy::ndarray::{Array2, Array3, Array4};
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayDyn, PyReadonlyArray1, PyReadonlyArray2,
-    PyReadonlyArrayDyn,
+    PyReadonlyArray3, PyReadonlyArrayDyn,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -29,20 +29,24 @@ use traj_engine::{
     DistanceToReferencePlan, DockingPlan, DsspPlan, DtDecimation, EndToEndPlan, EquipartitionPlan,
     Executor, FixImageBondsPlan, FrameDecimation, FreeVolumePlan, GetVelocityPlan, GistDirectPlan,
     GistGridPlan, GroupBy, HausdorffPlan, HbondPlan, HelixOrientationPlan, HelixPlan,
-    HydrationOrderPlan, ImagePlan, IonPairCorrelationPlan, LagMode, LowestCurvePlan,
-    MakeStructurePlan, MatrixMode, MatrixPlan, MdmatPlan, MeanStructurePlan, MindistPlan,
-    MolSurfPlan, MsdPlan, MultiDihedralPlan, MultiPuckerMode, MultiPuckerPlan, NativeContactsPlan,
-    NmrIredPlan, OrientationSpec, PairDistPlan, PairwiseDistancePlan, PairwiseMetric,
-    PairwiseRmsdPlan, PbcMode, PcaPlan, PermuteDihedralsPlan, PersistenceLengthPlan, Plan,
-    PlanOutput, PotentialPlan, PrincipalAxesPlan, ProjectionPlan, PuckerMetric, PuckerPlan,
-    RadgyrTensorPlan, RamaPlan, RandomizeIonsPlan, RdfPlan, ReferenceMode, ReplicateCellPlan,
-    RgPlan, RmsdPerResPlan, RmsdPlan, RmsfPlan, RotAcfPlan, RotateDihedralPlan, RotatePlan,
-    RotationMatrixPlan, SaltBridgePlan, ScalePlan, SearchNeighborsPlan, SelectedFrame,
-    SetDihedralPlan, SetVelocityPlan, SolventOrientationPlan, SolventPolarizationPlan, StripPlan,
-    StructureFactorPlan, SuperposePlan, SurfAlgorithm, SurfPlan, SymmRmsdPlan, TimeBinning,
-    ToroidalDiffusionPlan, TorsionDiffusionPlan, TrajectoryClusterPlan, TransformPlan,
-    TranslatePlan, VanHovePlan, VectorPlan, VelocityAutoCorrPlan, VolmapPlan, VolumePlan,
-    WaterCountPlan, WaterOrderPlan, WatershellPlan, WaveletPlan, XtalSymmPlan,
+    HydrationOrderPlan, ImagePlan, IonPairCorrelationPlan, LagMode, LipidAreaPlan,
+    LipidCurvedLeafletPlan, LipidFlipFlopPlan, LipidLargestClusterPlan, LipidLeafletPlan,
+    LipidMembraneThicknessPlan, LipidMsdPlan, LipidNeighbourMatrixPlan, LipidNeighbourPlan,
+    LipidRegistrationPlan, LipidSccPlan, LipidZAnglePlan, LipidZPositionPlan, LipidZThicknessPlan,
+    LowestCurvePlan, MakeStructurePlan, MatrixMode, MatrixPlan, MdmatPlan, MeanStructurePlan,
+    MindistPlan, MolSurfPlan, MsdPlan, MultiDihedralPlan, MultiPuckerMode, MultiPuckerPlan,
+    NativeContactsPlan, NmrIredPlan, OrientationSpec, PairDistPlan, PairwiseDistancePlan,
+    PairwiseMetric, PairwiseRmsdPlan, PbcMode, PcaPlan, PermuteDihedralsPlan,
+    PersistenceLengthPlan, Plan, PlanOutput, PotentialPlan, PrincipalAxesPlan, ProjectionPlan,
+    PuckerMetric, PuckerPlan, RadgyrTensorPlan, RamaPlan, RandomizeIonsPlan, RdfPlan,
+    ReferenceMode, ReplicateCellPlan, RgPlan, RmsdPerResPlan, RmsdPlan, RmsfPlan, RotAcfPlan,
+    RotateDihedralPlan, RotatePlan, RotationMatrixPlan, SaltBridgePlan, ScalePlan,
+    SearchNeighborsPlan, SelectedFrame, SetDihedralPlan, SetVelocityPlan, SolventOrientationPlan,
+    SolventPolarizationPlan, StripPlan, StructureFactorPlan, SuperposePlan, SurfAlgorithm,
+    SurfPlan, SymmRmsdPlan, TimeBinning, ToroidalDiffusionPlan, TorsionDiffusionPlan,
+    TrajectoryClusterPlan, TransformPlan, TranslatePlan, VanHovePlan, VectorPlan,
+    VelocityAutoCorrPlan, VolmapPlan, VolumePlan, WaterCountPlan, WaterOrderPlan, WatershellPlan,
+    WaveletPlan, XtalSymmPlan,
 };
 use traj_io::cpt::{CptReader, CptWriter};
 use traj_io::dcd::{DcdReader, DcdWriter};

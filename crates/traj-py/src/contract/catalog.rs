@@ -1,6 +1,100 @@
 // Generated during contract migration. Rust-native catalog literals.
 use super::*;
 
+fn field(
+    field_type: &str,
+    semantic_type: &str,
+    description: &str,
+    default: Option<serde_json::Value>,
+    minimum: Option<f64>,
+    unit: Option<&str>,
+) -> WarpMdFieldSpec {
+    WarpMdFieldSpec {
+        field_type: field_type.into(),
+        semantic_type: semantic_type.into(),
+        description: Some(description.into()),
+        default,
+        minimum,
+        maximum: None,
+        unit: unit.map(str::to_string),
+        choices: None,
+    }
+}
+
+fn lipid_fields(
+    fields: &[(
+        &str,
+        &str,
+        &str,
+        &str,
+        Option<serde_json::Value>,
+        Option<f64>,
+        Option<&str>,
+    )],
+) -> std::collections::BTreeMap<String, WarpMdFieldSpec> {
+    fields
+        .iter()
+        .map(
+            |(name, field_type, semantic_type, description, default, minimum, unit)| {
+                (
+                    (*name).into(),
+                    field(
+                        field_type,
+                        semantic_type,
+                        description,
+                        default.clone(),
+                        *minimum,
+                        *unit,
+                    ),
+                )
+            },
+        )
+        .collect()
+}
+
+fn lipid_matrix_contract(
+    name: &str,
+    aliases: &[&str],
+    description: &str,
+    required_fields: &[&str],
+    optional_fields: &[&str],
+    fields: &[(
+        &str,
+        &str,
+        &str,
+        &str,
+        Option<serde_json::Value>,
+        Option<f64>,
+        Option<&str>,
+    )],
+    output_kind: &str,
+    output_fields: &[&str],
+    example: serde_json::Value,
+) -> WarpMdAnalysisContract {
+    WarpMdAnalysisContract {
+        name: name.into(),
+        aliases: aliases.iter().map(|value| (*value).into()).collect(),
+        description: description.into(),
+        required_fields: required_fields
+            .iter()
+            .map(|value| (*value).into())
+            .collect(),
+        optional_fields: optional_fields
+            .iter()
+            .map(|value| (*value).into())
+            .collect(),
+        fields: lipid_fields(fields),
+        outputs: vec![WarpMdArtifactSpec {
+            kind: output_kind.into(),
+            format: "npz".into(),
+            fields: output_fields.iter().map(|value| (*value).into()).collect(),
+            description: Some(description.into()),
+        }],
+        tags: vec!["membrane".into(), "lipid".into()],
+        examples: vec![example],
+    }
+}
+
 pub(crate) fn warp_md_agent_contract_catalog_native() -> WarpMdContractCatalog {
     WarpMdContractCatalog {
         schema_version: "warp-md.agent.v1".into(),
@@ -37,6 +131,34 @@ pub(crate) fn warp_md_agent_contract_catalog_native() -> WarpMdContractCatalog {
             ("ion-pair-correlation".into(), "ion_pair_correlation".into()),
             ("ion_pair_correlation".into(), "ion_pair_correlation".into()),
             ("jcoupling".into(), "jcoupling".into()),
+            ("lipid-area".into(), "lipid_area".into()),
+            ("lipid_area".into(), "lipid_area".into()),
+            ("lipid-curved-leaflets".into(), "lipid_curved_leaflets".into()),
+            ("lipid_curved_leaflets".into(), "lipid_curved_leaflets".into()),
+            ("lipid-flip-flop".into(), "lipid_flip_flop".into()),
+            ("lipid_flip_flop".into(), "lipid_flip_flop".into()),
+            ("lipid-largest-cluster".into(), "lipid_largest_cluster".into()),
+            ("lipid_largest_cluster".into(), "lipid_largest_cluster".into()),
+            ("lipid-leaflets".into(), "lipid_leaflets".into()),
+            ("lipid_leaflets".into(), "lipid_leaflets".into()),
+            ("lipid-membrane-thickness".into(), "lipid_membrane_thickness".into()),
+            ("lipid_membrane_thickness".into(), "lipid_membrane_thickness".into()),
+            ("lipid-msd".into(), "lipid_msd".into()),
+            ("lipid_msd".into(), "lipid_msd".into()),
+            ("lipid-neighbour-matrix".into(), "lipid_neighbour_matrix".into()),
+            ("lipid_neighbour_matrix".into(), "lipid_neighbour_matrix".into()),
+            ("lipid-neighbours".into(), "lipid_neighbours".into()),
+            ("lipid_neighbours".into(), "lipid_neighbours".into()),
+            ("lipid-registration".into(), "lipid_registration".into()),
+            ("lipid_registration".into(), "lipid_registration".into()),
+            ("lipid-scc".into(), "lipid_scc".into()),
+            ("lipid_scc".into(), "lipid_scc".into()),
+            ("lipid-z-angles".into(), "lipid_z_angles".into()),
+            ("lipid_z_angles".into(), "lipid_z_angles".into()),
+            ("lipid-z-positions".into(), "lipid_z_positions".into()),
+            ("lipid_z_positions".into(), "lipid_z_positions".into()),
+            ("lipid-z-thickness".into(), "lipid_z_thickness".into()),
+            ("lipid_z_thickness".into(), "lipid_z_thickness".into()),
             ("molsurf".into(), "molsurf".into()),
             ("msd".into(), "msd".into()),
             ("native-contacts".into(), "native_contacts".into()),
@@ -1320,6 +1442,225 @@ pub(crate) fn warp_md_agent_contract_catalog_native() -> WarpMdContractCatalog {
                 serde_json::json!({"name": "jcoupling", "dihedrals": [[1, 2, 3, 4], [5, 6, 7, 8]]})
             ],
         },
+        lipid_matrix_contract(
+            "lipid_leaflets",
+            &["lipid-leaflets", "leaflets"],
+            "Assign lipid residues to upper/lower leaflets from headgroup positions",
+            &["selection"],
+            &["midplane_selection", "midplane_cutoff", "bins", "length_scale"],
+            &[
+                ("selection", "string", "selection", "Lipid headgroup selection", None, None, None),
+                ("midplane_selection", "string", "selection", "Selection used to define the membrane midplane", None, None, None),
+                ("midplane_cutoff", "float", "float", "Midplane exclusion cutoff", Some(serde_json::json!(0.0)), Some(0.0), None),
+                ("bins", "integer", "integer", "XY bins per dimension for local midplanes", Some(serde_json::json!(1)), Some(1.0), None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_leaflets", "selection": "resname POPC and name PO4"}),
+        ),
+        lipid_matrix_contract(
+            "lipid_curved_leaflets",
+            &["lipid-curved-leaflets", "curved-leaflets"],
+            "Assign curved membrane leaflets by graph connectivity",
+            &["selection"],
+            &["cutoff", "midplane_selection", "midplane_cutoff", "length_scale"],
+            &[
+                ("selection", "string", "selection", "Lipid headgroup selection", None, None, None),
+                ("cutoff", "float", "float", "Graph connectivity cutoff", Some(serde_json::json!(15.0)), Some(0.0), None),
+                ("midplane_selection", "string", "selection", "Selection used to define the membrane midplane", None, None, None),
+                ("midplane_cutoff", "float", "float", "Midplane exclusion cutoff", Some(serde_json::json!(0.0)), Some(0.0), None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_curved_leaflets", "selection": "resname POPC and name PO4", "cutoff": 15.0}),
+        ),
+        lipid_matrix_contract(
+            "lipid_z_positions",
+            &["lipid-z-positions"],
+            "Per-residue lipid height relative to a membrane reference",
+            &["membrane_selection", "height_selection"],
+            &["bins", "length_scale"],
+            &[
+                ("membrane_selection", "string", "selection", "Membrane reference selection", None, None, None),
+                ("height_selection", "string", "selection", "Selection whose z-position is measured", None, None, None),
+                ("bins", "integer", "integer", "XY bins per dimension", Some(serde_json::json!(1)), Some(1.0), None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_z_positions", "membrane_selection": "resname POPC and name PO4", "height_selection": "resname POPC and name PO4"}),
+        ),
+        lipid_matrix_contract(
+            "lipid_z_thickness",
+            &["lipid-z-thickness"],
+            "Per-residue lipid z-thickness",
+            &["selection"],
+            &["length_scale"],
+            &[
+                ("selection", "string", "selection", "Lipid selection", None, None, None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_z_thickness", "selection": "resname POPC"}),
+        ),
+        lipid_matrix_contract(
+            "lipid_z_angles",
+            &["lipid-z-angles"],
+            "Angle between a lipid atom vector and the membrane z-axis",
+            &["atom_a", "atom_b"],
+            &["degrees", "length_scale"],
+            &[
+                ("atom_a", "string", "selection", "First atom selection", None, None, None),
+                ("atom_b", "string", "selection", "Second atom selection", None, None, None),
+                ("degrees", "boolean", "boolean", "Return angles in degrees", Some(serde_json::json!(true)), None, None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_z_angles", "atom_a": "name C1", "atom_b": "name C2"}),
+        ),
+        lipid_matrix_contract(
+            "lipid_area",
+            &["lipid-area", "area-per-lipid"],
+            "Area per lipid from 2D Voronoi tessellation",
+            &["selection", "leaflets"],
+            &["length_scale"],
+            &[
+                ("selection", "string", "selection", "Lipid headgroup selection", None, None, None),
+                ("leaflets", "path", "path", "Leaflet assignment array path or inline array", None, None, None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_area", "selection": "resname POPC and name PO4", "leaflets": "leaflets.npz"}),
+        ),
+        lipid_matrix_contract(
+            "lipid_flip_flop",
+            &["lipid-flip-flop", "flip-flop"],
+            "Detect lipid leaflet transitions from leaflet assignments",
+            &["leaflets"],
+            &["residue_ids", "frame_cutoff"],
+            &[
+                ("leaflets", "path", "path", "Leaflet assignment array path or inline array", None, None, None),
+                ("residue_ids", "path", "path", "Residue id array path or inline array", None, None, None),
+                ("frame_cutoff", "integer", "integer", "Minimum transition dwell frames", Some(serde_json::json!(1)), Some(1.0), None),
+            ],
+            "table",
+            &["events", "success", "residue_ids"],
+            serde_json::json!({"name": "lipid_flip_flop", "leaflets": "leaflets.npz", "frame_cutoff": 2}),
+        ),
+        lipid_matrix_contract(
+            "lipid_neighbours",
+            &["lipid-neighbours"],
+            "Per-lipid neighbour counts within a cutoff",
+            &["selection"],
+            &["cutoff", "length_scale"],
+            &[
+                ("selection", "string", "selection", "Lipid selection", None, None, None),
+                ("cutoff", "float", "float", "Neighbour cutoff", Some(serde_json::json!(10.0)), Some(0.0), None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_neighbours", "selection": "resname POPC and name PO4", "cutoff": 10.0}),
+        ),
+        lipid_matrix_contract(
+            "lipid_neighbour_matrix",
+            &["lipid-neighbour-matrix"],
+            "Per-frame lipid adjacency matrices within a cutoff",
+            &["selection"],
+            &["cutoff", "length_scale"],
+            &[
+                ("selection", "string", "selection", "Lipid selection", None, None, None),
+                ("cutoff", "float", "float", "Neighbour cutoff", Some(serde_json::json!(10.0)), Some(0.0), None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_neighbour_matrix", "selection": "resname POPC and name PO4", "cutoff": 10.0}),
+        ),
+        lipid_matrix_contract(
+            "lipid_largest_cluster",
+            &["lipid-largest-cluster"],
+            "Largest lipid neighbour-connected cluster size per frame",
+            &["selection"],
+            &["cutoff", "length_scale"],
+            &[
+                ("selection", "string", "selection", "Lipid selection", None, None, None),
+                ("cutoff", "float", "float", "Cluster neighbour cutoff", Some(serde_json::json!(10.0)), Some(0.0), None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "timeseries",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_largest_cluster", "selection": "resname POPC and name PO4", "cutoff": 10.0}),
+        ),
+        lipid_matrix_contract(
+            "lipid_membrane_thickness",
+            &["lipid-membrane-thickness", "membrane-thickness"],
+            "Local membrane thickness from opposite leaflet positions",
+            &["selection", "leaflets"],
+            &["bins", "length_scale"],
+            &[
+                ("selection", "string", "selection", "Lipid headgroup selection", None, None, None),
+                ("leaflets", "path", "path", "Leaflet assignment array path or inline array", None, None, None),
+                ("bins", "integer", "integer", "XY bins per dimension", Some(serde_json::json!(1)), Some(1.0), None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_membrane_thickness", "selection": "resname POPC and name PO4", "leaflets": "leaflets.npz"}),
+        ),
+        lipid_matrix_contract(
+            "lipid_registration",
+            &["lipid-registration"],
+            "Leaflet registration/correlation on an XY grid",
+            &["upper_selection", "lower_selection", "leaflets"],
+            &["bins", "gaussian_sd", "length_scale"],
+            &[
+                ("upper_selection", "string", "selection", "Upper leaflet selection", None, None, None),
+                ("lower_selection", "string", "selection", "Lower leaflet selection", None, None, None),
+                ("leaflets", "path", "path", "Leaflet assignment array path or inline array", None, None, None),
+                ("bins", "integer", "integer", "XY bins per dimension", Some(serde_json::json!(1)), Some(1.0), None),
+                ("gaussian_sd", "float", "float", "Optional Gaussian smoothing width", Some(serde_json::json!(0.0)), Some(0.0), None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_registration", "upper_selection": "resname POPC", "lower_selection": "resname POPC", "leaflets": "leaflets.npz"}),
+        ),
+        lipid_matrix_contract(
+            "lipid_msd",
+            &["lipid-msd"],
+            "Lipid lateral mean-square displacement",
+            &["selection"],
+            &["com_removal_selection", "length_scale"],
+            &[
+                ("selection", "string", "selection", "Lipid selection", None, None, None),
+                ("com_removal_selection", "string", "selection", "Selection whose COM is removed before MSD", None, None, None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "timeseries",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_msd", "selection": "resname POPC and name PO4"}),
+        ),
+        lipid_matrix_contract(
+            "lipid_scc",
+            &["lipid-scc", "scc"],
+            "Lipid tail deuterium order parameter SCC",
+            &["tail_selection"],
+            &["normals", "length_scale"],
+            &[
+                ("tail_selection", "string", "selection", "Tail atom selection ordered by residue", None, None, None),
+                ("normals", "path", "path", "Optional normal vectors array path or inline array", None, None, None),
+                ("length_scale", "float", "float", "Coordinate length scale", Some(serde_json::json!(1.0)), None, None),
+            ],
+            "table",
+            &["values", "residue_ids", "frames"],
+            serde_json::json!({"name": "lipid_scc", "tail_selection": "resname POPC and name C*"}),
+        ),
         WarpMdAnalysisContract {
             name: "molsurf".into(),
             aliases: vec!["molecular-surface".into()],

@@ -49,6 +49,25 @@ def _native_build() -> Any:
     return native
 
 
+def _native_simulate() -> Any:
+    native = _native()
+    required = (
+        "cg_simulate_schema",
+        "cg_simulate_example",
+        "cg_simulate_capabilities",
+        "cg_simulate_validate",
+        "cg_simulate_plan",
+        "cg_simulate_status",
+    )
+    missing = [name for name in required if not hasattr(native, name)]
+    if missing:
+        raise RuntimeError(
+            "warp-md coarse-graining simulate bindings unavailable in this build. Missing: "
+            + ", ".join(missing)
+        )
+    return native
+
+
 def _render_payload(payload: Dict[str, Any], fmt: str) -> str:
     if fmt == "json":
         return json.dumps(payload, indent=2)
@@ -141,6 +160,52 @@ def run_cg_build_request(
     return int(exit_code), result
 
 
+def render_cg_simulate_schema(target: str = "request", fmt: str = "json") -> str:
+    payload = _native_simulate().cg_simulate_schema(target)
+    return _render_payload(payload, fmt)
+
+
+def simulate_example_request(engine: str = "gromacs") -> Dict[str, Any]:
+    payload = _native_simulate().cg_simulate_example(engine)
+    if not isinstance(payload, dict):
+        raise RuntimeError("native simulate example request must decode to a dict")
+    return payload
+
+
+def cg_simulate_capabilities() -> Dict[str, Any]:
+    payload = _native_simulate().cg_simulate_capabilities()
+    if not isinstance(payload, dict):
+        raise RuntimeError("native simulate capabilities payload must decode to a dict")
+    return payload
+
+
+def validate_simulate_request_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    exit_code, result = _native_simulate().cg_simulate_validate(json.dumps(payload))
+    if not isinstance(result, dict):
+        raise RuntimeError("native simulate validate payload must decode to a dict")
+    if exit_code and result.get("valid") is True:
+        raise RuntimeError("native simulate validate returned inconsistent result")
+    return result
+
+
+def plan_cg_simulate_request(
+    payload: Dict[str, Any],
+    *,
+    engine: str | None = None,
+) -> Tuple[int, Dict[str, Any]]:
+    exit_code, result = _native_simulate().cg_simulate_plan(json.dumps(payload), engine)
+    if not isinstance(result, dict):
+        raise RuntimeError("native simulate plan payload must decode to a dict")
+    return int(exit_code), result
+
+
+def cg_simulate_status(run_dir: str) -> Tuple[int, Dict[str, Any]]:
+    exit_code, result = _native_simulate().cg_simulate_status(run_dir)
+    if not isinstance(result, dict):
+        raise RuntimeError("native simulate status payload must decode to a dict")
+    return int(exit_code), result
+
+
 __all__ = [
     "CG_AGENT_SCHEMA_VERSION",
     "CG_AGENT_RESULT_VERSION",
@@ -154,4 +219,10 @@ __all__ = [
     "cg_build_capabilities",
     "validate_build_request_payload",
     "run_cg_build_request",
+    "render_cg_simulate_schema",
+    "simulate_example_request",
+    "cg_simulate_capabilities",
+    "validate_simulate_request_payload",
+    "plan_cg_simulate_request",
+    "cg_simulate_status",
 ]

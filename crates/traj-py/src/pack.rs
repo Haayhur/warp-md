@@ -545,6 +545,51 @@ fn cg_build_run<'py>(
 }
 
 #[pyfunction]
+#[pyo3(signature = (kind="request"))]
+fn cg_simulate_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
+    let text = warp_cg::simulate_contract::schema_json(kind)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_string_to_py(py, text)
+}
+
+#[pyfunction]
+#[pyo3(signature = (engine="gromacs"))]
+fn cg_simulate_example<'py>(py: Python<'py>, engine: &str) -> PyResult<PyObject> {
+    let value = warp_cg::simulate_contract::example_request(engine)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn cg_simulate_capabilities<'py>(py: Python<'py>) -> PyResult<PyObject> {
+    let value = warp_cg::simulate_contract::capabilities();
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+fn cg_simulate_validate<'py>(py: Python<'py>, json: &str) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_cg::simulate_contract::validate_request_json(json);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
+#[pyo3(signature = (json, engine=None))]
+fn cg_simulate_plan<'py>(
+    py: Python<'py>,
+    json: &str,
+    engine: Option<&str>,
+) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_cg::simulate_contract::plan_request_json(json, engine);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
+fn cg_simulate_status<'py>(py: Python<'py>, run_dir: &str) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_cg::simulate_contract::status_json(run_dir);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
 #[pyo3(signature = (data0, data1, mode="distance"))]
 fn crank_delta<'py>(
     py: Python<'py>,
@@ -1069,6 +1114,12 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cg_build_capabilities, m)?)?;
     m.add_function(wrap_pyfunction!(cg_build_validate, m)?)?;
     m.add_function(wrap_pyfunction!(cg_build_run, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_simulate_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_simulate_example, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_simulate_capabilities, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_simulate_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_simulate_plan, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_simulate_status, m)?)?;
     m.add_function(wrap_pyfunction!(crank_delta, m)?)?;
     m.add_function(wrap_pyfunction!(rotdif_fit, m)?)?;
     m.add_function(wrap_pyfunction!(gist_apply_pme_scaling, m)?)?;

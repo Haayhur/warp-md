@@ -324,6 +324,118 @@ def _spec_persistence(args, system: System) -> Dict[str, Any]:
     return {"selection": args.selection}
 
 
+def _add_lipid_common_spec(spec: Dict[str, Any], args) -> Dict[str, Any]:
+    if args.length_scale is not None:
+        spec["length_scale"] = args.length_scale
+    if args.frame_indices:
+        spec["frame_indices"] = _parse_int_list(args.frame_indices, "frame_indices")
+    return spec
+
+
+def _spec_lipid_leaflets(args, system: System) -> Dict[str, Any]:
+    spec = {
+        "selection": args.selection,
+        "midplane_cutoff": args.midplane_cutoff,
+        "bins": args.bins,
+    }
+    if args.midplane_selection:
+        spec["midplane_selection"] = args.midplane_selection
+    return _add_lipid_common_spec(spec, args)
+
+
+def _spec_lipid_curved_leaflets(args, system: System) -> Dict[str, Any]:
+    spec = {
+        "selection": args.selection,
+        "cutoff": args.cutoff,
+        "midplane_cutoff": args.midplane_cutoff,
+    }
+    if args.midplane_selection:
+        spec["midplane_selection"] = args.midplane_selection
+    return _add_lipid_common_spec(spec, args)
+
+
+def _spec_lipid_z_positions(args, system: System) -> Dict[str, Any]:
+    return _add_lipid_common_spec(
+        {
+            "membrane_selection": args.membrane_selection,
+            "height_selection": args.height_selection,
+            "bins": args.bins,
+        },
+        args,
+    )
+
+
+def _spec_lipid_z_thickness(args, system: System) -> Dict[str, Any]:
+    return _add_lipid_common_spec({"selection": args.selection}, args)
+
+
+def _spec_lipid_z_angles(args, system: System) -> Dict[str, Any]:
+    return _add_lipid_common_spec(
+        {"atom_a": args.atom_a, "atom_b": args.atom_b, "degrees": args.degrees},
+        args,
+    )
+
+
+def _spec_lipid_area(args, system: System) -> Dict[str, Any]:
+    return _add_lipid_common_spec({"selection": args.selection, "leaflets": args.leaflets}, args)
+
+
+def _spec_lipid_flip_flop(args, system: System) -> Dict[str, Any]:
+    spec = {"leaflets": args.leaflets, "frame_cutoff": args.frame_cutoff}
+    if args.residue_ids:
+        spec["residue_ids"] = args.residue_ids
+    return spec
+
+
+def _spec_lipid_neighbours(args, system: System) -> Dict[str, Any]:
+    return _add_lipid_common_spec(
+        {"selection": args.selection, "cutoff": args.cutoff},
+        args,
+    )
+
+
+def _spec_lipid_neighbour_matrix(args, system: System) -> Dict[str, Any]:
+    return _spec_lipid_neighbours(args, system)
+
+
+def _spec_lipid_largest_cluster(args, system: System) -> Dict[str, Any]:
+    return _spec_lipid_neighbours(args, system)
+
+
+def _spec_lipid_membrane_thickness(args, system: System) -> Dict[str, Any]:
+    return _add_lipid_common_spec(
+        {"selection": args.selection, "leaflets": args.leaflets, "bins": args.bins},
+        args,
+    )
+
+
+def _spec_lipid_registration(args, system: System) -> Dict[str, Any]:
+    return _add_lipid_common_spec(
+        {
+            "upper_selection": args.upper_selection,
+            "lower_selection": args.lower_selection,
+            "leaflets": args.leaflets,
+            "bins": args.bins,
+            "gaussian_sd": args.gaussian_sd,
+        },
+        args,
+    )
+
+
+def _spec_lipid_msd(args, system: System) -> Dict[str, Any]:
+    spec = {"selection": args.selection}
+    if args.com_removal_selection:
+        spec["com_removal_selection"] = args.com_removal_selection
+    return _add_lipid_common_spec(spec, args)
+
+
+def _spec_lipid_scc(args, system: System) -> Dict[str, Any]:
+    spec = {"tail_selection": args.tail_selection}
+    if args.normals:
+        spec["normals"] = args.normals
+    return _add_lipid_common_spec(spec, args)
+
+
 SPEC_BUILDERS = {
     entry.cli_name: globals()[entry.spec_fn]
     for entry in ANALYSIS_REGISTRY

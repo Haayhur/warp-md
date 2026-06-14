@@ -7,9 +7,10 @@ pub use correlators::{LagMode, LagSettings};
 pub use executor::{
     collect_selected_frames, count_frames, normalize_frame_indices, BundleOutput, ClusteringOutput,
     CurrentOutput, DensityMapOutput, Device, DielectricOutput, Executor, GridOutput, H2OrderOutput,
-    HelixOrientOutput, HelixOutput, HydOrderOutput, MdmatOutput, PcaOutput, PersistenceOutput,
-    Plan, PlanOutput, PotentialOutput, RdfOutput, SOrientOutput, SelectedFrame,
-    SelectedFramesReader, SpolOutput, StructureFactorOutput, VanHoveOutput,
+    HelixOrientOutput, HelixOutput, HydOrderOutput, LipidFlipFlopOutput, LipidMatrixOutput,
+    MdmatOutput, PcaOutput, PersistenceOutput, Plan, PlanOutput, PotentialOutput, RdfOutput,
+    SOrientOutput, SelectedFrame, SelectedFramesReader, SpolOutput, StructureFactorOutput,
+    VanHoveOutput,
 };
 pub use feature_store::{
     ChunkIndex, FeatureIndex, FeatureSchema, FeatureStoreReader, FeatureStoreWriter,
@@ -20,11 +21,15 @@ pub use plans::analysis::{
     DensityPlan, DielectricPlan, DipoleAlignmentPlan, DockingPlan, DsspPlan, DtDecimation,
     EquipartitionPlan, FrameDecimation, FreeVolumePlan, GistDirectPlan, GistGridPlan, GroupBy,
     GroupMap, GroupSpec, HbondPlan, HelixOrientationPlan, HelixPlan, HydrationOrderPlan,
-    IonPairCorrelationPlan, MdmatPlan, MolSurfPlan, MsdPlan, MultiPuckerMode, MultiPuckerPlan,
-    NmrIredPlan, OrientationSpec, PotentialPlan, RamaPlan, RotAcfPlan, SaltBridgePlan,
-    SolventOrientationPlan, SolventPolarizationPlan, StructureFactorPlan, SurfAlgorithm, SurfPlan,
-    TimeBinning, ToroidalDiffusionPlan, TorsionDiffusionPlan, TorsionStat, TrajectoryClusterPlan,
-    VanHovePlan, VelocityAutoCorrPlan, VolmapPlan, WaterCountPlan, WaterOrderPlan, WaveletPlan,
+    IonPairCorrelationPlan, LipidAreaPlan, LipidCurvedLeafletPlan, LipidFlipFlopPlan,
+    LipidLargestClusterPlan, LipidLeafletPlan, LipidMembraneThicknessPlan, LipidMsdPlan,
+    LipidNeighbourMatrixPlan, LipidNeighbourPlan, LipidRegistrationPlan, LipidSccPlan,
+    LipidZAnglePlan, LipidZPositionPlan, LipidZThicknessPlan, MdmatPlan, MolSurfPlan, MsdPlan,
+    MultiPuckerMode, MultiPuckerPlan, NmrIredPlan, OrientationSpec, PotentialPlan, RamaPlan,
+    RotAcfPlan, SaltBridgePlan, SolventOrientationPlan, SolventPolarizationPlan,
+    StructureFactorPlan, SurfAlgorithm, SurfPlan, TimeBinning, ToroidalDiffusionPlan,
+    TorsionDiffusionPlan, TorsionStat, TrajectoryClusterPlan, VanHovePlan, VelocityAutoCorrPlan,
+    VolmapPlan, WaterCountPlan, WaterOrderPlan, WaveletPlan,
 };
 pub use plans::{
     AlignPlan, AlignPrincipalAxisPlan, AnalyzeModesPlan, AnglePlan, AtomMapPlan, AtomicAdpPlan,

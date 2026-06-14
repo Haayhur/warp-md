@@ -236,3 +236,4 @@ include!("tests/analysis_smoke_tests.rs");
 include!("tests/torsion_gist_tests.rs");
 include!("tests/geometry_matrix_tests.rs");
 include!("tests/correlation_structure_tests.rs");
+include!("tests/lipid_analysis_tests.rs");

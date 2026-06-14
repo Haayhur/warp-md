@@ -120,3 +120,52 @@ def test_cg_cli_build_validate_accepts_native_example(tmp_path: Path) -> None:
     exit_code = cg_cli.run_cli(["build", "validate", str(request)])
 
     assert exit_code == 0
+
+
+def test_cg_cli_simulate_capabilities_and_schema(capsys) -> None:
+    if cg_contract.traj_py is None:
+        pytest.skip("native warp-md bindings unavailable")
+
+    assert cg_cli.run_cli(["simulate", "capabilities"]) == 0
+    caps = capsys.readouterr().out
+    assert '"tool": "warp-cg simulate"' in caps
+    assert "planning_manifest_status_only" in caps
+
+    assert cg_cli.run_cli(["simulate", "schema", "--kind", "request"]) == 0
+    schema = capsys.readouterr().out
+    assert '"SimulateRequest"' in schema
+    assert '"protocol"' in schema
+
+
+def test_cg_cli_simulate_example_validate_and_plan(tmp_path: Path, capsys) -> None:
+    if cg_contract.traj_py is None:
+        pytest.skip("native warp-md bindings unavailable")
+
+    request = tmp_path / "simulate.json"
+    request.write_text(
+        json.dumps(cg_contract.simulate_example_request("gromacs")),
+        encoding="utf-8",
+    )
+
+    assert cg_cli.run_cli(["simulate", "validate", str(request)]) == 0
+    assert '"valid": true' in capsys.readouterr().out.lower()
+
+    assert cg_cli.run_cli(["simulate", "plan", str(request)]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["engine"] == "gromacs"
+    assert plan["commands"][0]["program"] == "gmx"
+    assert plan["commands"][0]["args"][0] == "grompp"
+
+
+def test_cg_cli_simulate_status_detects_checkpoint(tmp_path: Path, capsys) -> None:
+    if cg_contract.traj_py is None:
+        pytest.skip("native warp-md bindings unavailable")
+
+    (tmp_path / "nvt.cpt").write_text("checkpoint", encoding="utf-8")
+    (tmp_path / "nvt.log").write_text("Finished mdrun", encoding="utf-8")
+
+    assert cg_cli.run_cli(["simulate", "status", str(tmp_path)]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["restart_capable"] is True
+    assert status["last_checkpoint"] == "nvt.cpt"
+    assert status["completed_stages"] == ["nvt"]

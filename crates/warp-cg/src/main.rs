@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use warp_cg::{agent, build_contract};
+use warp_cg::{agent, build_contract, simulate_contract};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -42,6 +42,11 @@ enum Command {
         #[command(subcommand)]
         command: BuildCommand,
     },
+    /// Plan and inspect CG simulation handoffs without owning execution.
+    Simulate {
+        #[command(subcommand)]
+        command: SimulateCommand,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -72,6 +77,38 @@ enum BuildCommand {
     Example,
     /// Print build capabilities.
     Capabilities,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum SimulateCommand {
+    /// Print simulate JSON schema.
+    Schema {
+        #[arg(long, value_parser = ["request", "plan", "result", "status", "manifest"], default_value = "request")]
+        kind: String,
+    },
+    /// Print an example simulate request.
+    Example {
+        #[arg(long, value_parser = ["gromacs", "openmm"], default_value = "gromacs")]
+        engine: String,
+    },
+    /// Print simulate capabilities.
+    Capabilities,
+    /// Validate a simulate request JSON.
+    Validate {
+        request: Option<String>,
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Emit an execution handoff plan.
+    Plan {
+        request: Option<String>,
+        #[arg(long)]
+        stdin: bool,
+        #[arg(long, value_parser = ["gromacs", "openmm"])]
+        engine: Option<String>,
+    },
+    /// Inspect a run directory for artifacts/checkpoints/status.
+    Status { run_dir: String },
 }
 
 fn main() -> Result<()> {
@@ -115,6 +152,7 @@ fn run_agent_command(command: Command) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&agent::capabilities())?);
         }
         Command::Build { command } => return run_build_command(command),
+        Command::Simulate { command } => return run_simulate_command(command),
     }
     Ok(())
 }
@@ -152,6 +190,49 @@ fn run_build_command(command: BuildCommand) -> Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&build_contract::capabilities())?
             );
+        }
+    }
+    Ok(())
+}
+
+fn run_simulate_command(command: SimulateCommand) -> Result<()> {
+    match command {
+        SimulateCommand::Schema { kind } => {
+            println!("{}", simulate_contract::schema_json(&kind)?);
+        }
+        SimulateCommand::Example { engine } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&simulate_contract::example_request(&engine)?)?
+            );
+        }
+        SimulateCommand::Capabilities => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&simulate_contract::capabilities())?
+            );
+        }
+        SimulateCommand::Validate { request, stdin } => {
+            let payload = read_payload(request, stdin)?;
+            let (exit_code, result) = simulate_contract::validate_request_json(&payload);
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            std::process::exit(exit_code);
+        }
+        SimulateCommand::Plan {
+            request,
+            stdin,
+            engine,
+        } => {
+            let payload = read_payload(request, stdin)?;
+            let (exit_code, result) =
+                simulate_contract::plan_request_json(&payload, engine.as_deref());
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            std::process::exit(exit_code);
+        }
+        SimulateCommand::Status { run_dir } => {
+            let (exit_code, result) = simulate_contract::status_json(run_dir);
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            std::process::exit(exit_code);
         }
     }
     Ok(())

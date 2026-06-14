@@ -1,5 +1,788 @@
 use super::*;
 
+fn lipid_matrix_to_py<'py>(
+    py: Python<'py>,
+    output: traj_engine::LipidMatrixOutput,
+) -> PyResult<PyObject> {
+    let arr = Array2::from_shape_vec((output.rows, output.cols), output.values)
+        .map_err(|_| PyRuntimeError::new_err("failed to build lipid matrix"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("values", arr.into_pyarray_bound(py))?;
+    dict.set_item("residue_ids", output.residue_ids)?;
+    dict.set_item("frames", output.frames)?;
+    dict.set_item("kind", output.kind)?;
+    Ok(dict.into_py(py))
+}
+
+fn lipid_flipflop_to_py<'py>(
+    py: Python<'py>,
+    output: traj_engine::LipidFlipFlopOutput,
+) -> PyResult<PyObject> {
+    let arr = Array2::from_shape_vec((output.rows, output.cols), output.events)
+        .map_err(|_| PyRuntimeError::new_err("failed to build flip-flop events"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("events", arr.into_pyarray_bound(py))?;
+    dict.set_item("success", output.success)?;
+    dict.set_item("residue_ids", output.residue_ids)?;
+    Ok(dict.into_py(py))
+}
+
+#[pyclass]
+struct PyLipidLeafletPlan {
+    plan: RefCell<LipidLeafletPlan>,
+}
+
+#[pymethods]
+impl PyLipidLeafletPlan {
+    #[new]
+    #[pyo3(signature = (selection, midplane_selection=None, midplane_cutoff=0.0, bins=1, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        midplane_selection: Option<&PySelection>,
+        midplane_cutoff: f64,
+        bins: usize,
+        length_scale: Option<f64>,
+    ) -> Self {
+        let mut plan = LipidLeafletPlan::new(selection.selection.clone()).with_bins(bins);
+        if let Some(mid) = midplane_selection {
+            plan = plan.with_midplane(mid.selection.clone(), midplane_cutoff);
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidCurvedLeafletPlan {
+    plan: RefCell<LipidCurvedLeafletPlan>,
+}
+
+#[pymethods]
+impl PyLipidCurvedLeafletPlan {
+    #[new]
+    #[pyo3(signature = (selection, cutoff=15.0, midplane_selection=None, midplane_cutoff=0.0, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        cutoff: f64,
+        midplane_selection: Option<&PySelection>,
+        midplane_cutoff: f64,
+        length_scale: Option<f64>,
+    ) -> Self {
+        let mut plan = LipidCurvedLeafletPlan::new(selection.selection.clone(), cutoff);
+        if let Some(mid) = midplane_selection {
+            plan = plan.with_midplane(mid.selection.clone(), midplane_cutoff);
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidZPositionPlan {
+    plan: RefCell<LipidZPositionPlan>,
+}
+
+#[pymethods]
+impl PyLipidZPositionPlan {
+    #[new]
+    #[pyo3(signature = (membrane_selection, height_selection, bins=1, length_scale=None))]
+    fn new(
+        membrane_selection: &PySelection,
+        height_selection: &PySelection,
+        bins: usize,
+        length_scale: Option<f64>,
+    ) -> Self {
+        let mut plan = LipidZPositionPlan::new(
+            membrane_selection.selection.clone(),
+            height_selection.selection.clone(),
+        )
+        .with_bins(bins);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidZThicknessPlan {
+    plan: RefCell<LipidZThicknessPlan>,
+}
+
+#[pymethods]
+impl PyLipidZThicknessPlan {
+    #[new]
+    #[pyo3(signature = (selection, length_scale=None))]
+    fn new(selection: &PySelection, length_scale: Option<f64>) -> Self {
+        let mut plan = LipidZThicknessPlan::new(selection.selection.clone());
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidZAnglePlan {
+    plan: RefCell<LipidZAnglePlan>,
+}
+
+#[pymethods]
+impl PyLipidZAnglePlan {
+    #[new]
+    #[pyo3(signature = (atom_a, atom_b, degrees=true, length_scale=None))]
+    fn new(
+        atom_a: &PySelection,
+        atom_b: &PySelection,
+        degrees: bool,
+        length_scale: Option<f64>,
+    ) -> Self {
+        let mut plan = LipidZAnglePlan::new(atom_a.selection.clone(), atom_b.selection.clone())
+            .with_degrees(degrees);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidAreaPlan {
+    plan: RefCell<LipidAreaPlan>,
+}
+
+#[pymethods]
+impl PyLipidAreaPlan {
+    #[new]
+    #[pyo3(signature = (selection, leaflets, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        leaflets: PyReadonlyArray2<i8>,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let view = leaflets.as_array();
+        let rows = view.shape()[0];
+        let cols = view.shape()[1];
+        let mut plan = LipidAreaPlan::new(
+            selection.selection.clone(),
+            view.iter().copied().collect(),
+            rows,
+            cols,
+        );
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidFlipFlopPlan {
+    plan: RefCell<LipidFlipFlopPlan>,
+}
+
+#[pymethods]
+impl PyLipidFlipFlopPlan {
+    #[new]
+    #[pyo3(signature = (leaflets, residue_ids=None, frame_cutoff=1))]
+    fn new(
+        leaflets: PyReadonlyArray2<i8>,
+        residue_ids: Option<Vec<i32>>,
+        frame_cutoff: usize,
+    ) -> PyResult<Self> {
+        let view = leaflets.as_array();
+        let rows = view.shape()[0];
+        let cols = view.shape()[1];
+        let ids = residue_ids.unwrap_or_else(|| (0..rows).map(|i| i as i32).collect());
+        if ids.len() != rows {
+            return Err(PyValueError::new_err(
+                "residue_ids length must match leaflets rows",
+            ));
+        }
+        Ok(Self {
+            plan: RefCell::new(LipidFlipFlopPlan::new(
+                view.iter().copied().collect(),
+                rows,
+                cols,
+                ids,
+                frame_cutoff,
+            )),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+        )?;
+        match output {
+            PlanOutput::LipidFlipFlop(output) => lipid_flipflop_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidNeighbourPlan {
+    plan: RefCell<LipidNeighbourPlan>,
+}
+
+#[pymethods]
+impl PyLipidNeighbourPlan {
+    #[new]
+    #[pyo3(signature = (selection, cutoff=10.0, length_scale=None))]
+    fn new(selection: &PySelection, cutoff: f64, length_scale: Option<f64>) -> Self {
+        let mut plan = LipidNeighbourPlan::new(selection.selection.clone(), cutoff);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidNeighbourMatrixPlan {
+    plan: RefCell<LipidNeighbourMatrixPlan>,
+}
+
+#[pymethods]
+impl PyLipidNeighbourMatrixPlan {
+    #[new]
+    #[pyo3(signature = (selection, cutoff=10.0, length_scale=None))]
+    fn new(selection: &PySelection, cutoff: f64, length_scale: Option<f64>) -> Self {
+        let mut plan = LipidNeighbourMatrixPlan::new(selection.selection.clone(), cutoff);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidLargestClusterPlan {
+    plan: RefCell<LipidLargestClusterPlan>,
+}
+
+#[pymethods]
+impl PyLipidLargestClusterPlan {
+    #[new]
+    #[pyo3(signature = (selection, cutoff=10.0, length_scale=None))]
+    fn new(selection: &PySelection, cutoff: f64, length_scale: Option<f64>) -> Self {
+        let mut plan = LipidLargestClusterPlan::new(selection.selection.clone(), cutoff);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidMembraneThicknessPlan {
+    plan: RefCell<LipidMembraneThicknessPlan>,
+}
+
+#[pymethods]
+impl PyLipidMembraneThicknessPlan {
+    #[new]
+    #[pyo3(signature = (selection, leaflets, bins=1, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        leaflets: PyReadonlyArray2<i8>,
+        bins: usize,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let view = leaflets.as_array();
+        let rows = view.shape()[0];
+        let cols = view.shape()[1];
+        let mut plan = LipidMembraneThicknessPlan::new(
+            selection.selection.clone(),
+            view.iter().copied().collect(),
+            rows,
+            cols,
+        )
+        .with_bins(bins);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidRegistrationPlan {
+    plan: RefCell<LipidRegistrationPlan>,
+}
+
+#[pymethods]
+impl PyLipidRegistrationPlan {
+    #[new]
+    #[pyo3(signature = (upper_selection, lower_selection, leaflets, bins=1, gaussian_sd=0.0, length_scale=None))]
+    fn new(
+        upper_selection: &PySelection,
+        lower_selection: &PySelection,
+        leaflets: PyReadonlyArray2<i8>,
+        bins: usize,
+        gaussian_sd: f64,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let view = leaflets.as_array();
+        let rows = view.shape()[0];
+        let cols = view.shape()[1];
+        let mut plan = LipidRegistrationPlan::new(
+            upper_selection.selection.clone(),
+            lower_selection.selection.clone(),
+            view.iter().copied().collect(),
+            rows,
+            cols,
+        )
+        .with_bins(bins)
+        .with_gaussian_sd(gaussian_sd);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidMsdPlan {
+    plan: RefCell<LipidMsdPlan>,
+}
+
+#[pymethods]
+impl PyLipidMsdPlan {
+    #[new]
+    #[pyo3(signature = (selection, com_removal_selection=None, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        com_removal_selection: Option<&PySelection>,
+        length_scale: Option<f64>,
+    ) -> Self {
+        let mut plan = LipidMsdPlan::new(selection.selection.clone());
+        if let Some(sel) = com_removal_selection {
+            plan = plan.with_com_removal(sel.selection.clone());
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyLipidSccPlan {
+    plan: RefCell<LipidSccPlan>,
+}
+
+#[pymethods]
+impl PyLipidSccPlan {
+    #[new]
+    #[pyo3(signature = (selection, normals=None, length_scale=None))]
+    fn new(
+        selection: &PySelection,
+        normals: Option<PyReadonlyArray3<f32>>,
+        length_scale: Option<f64>,
+    ) -> PyResult<Self> {
+        let mut plan = LipidSccPlan::new(selection.selection.clone());
+        if let Some(normals) = normals {
+            let view = normals.as_array();
+            let rows = view.shape()[0];
+            let cols = view.shape()[1];
+            if view.shape()[2] != 3 {
+                return Err(PyValueError::new_err(
+                    "normals must have shape (n_residues, n_frames, 3)",
+                ));
+            }
+            plan = plan.with_normals(view.iter().copied().collect(), rows, cols);
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::LipidMatrix(output) => lipid_matrix_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
 #[pyclass]
 struct PyCountInVoxelPlan {
     plan: RefCell<CountInVoxelPlan>,
@@ -897,6 +1680,20 @@ impl PyBondAngleDistributionPlan {
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyLipidLeafletPlan>()?;
+    m.add_class::<PyLipidCurvedLeafletPlan>()?;
+    m.add_class::<PyLipidZPositionPlan>()?;
+    m.add_class::<PyLipidZThicknessPlan>()?;
+    m.add_class::<PyLipidZAnglePlan>()?;
+    m.add_class::<PyLipidAreaPlan>()?;
+    m.add_class::<PyLipidFlipFlopPlan>()?;
+    m.add_class::<PyLipidNeighbourPlan>()?;
+    m.add_class::<PyLipidNeighbourMatrixPlan>()?;
+    m.add_class::<PyLipidLargestClusterPlan>()?;
+    m.add_class::<PyLipidMembraneThicknessPlan>()?;
+    m.add_class::<PyLipidRegistrationPlan>()?;
+    m.add_class::<PyLipidMsdPlan>()?;
+    m.add_class::<PyLipidSccPlan>()?;
     m.add_class::<PyCountInVoxelPlan>()?;
     m.add_class::<PyDensityPlan>()?;
     m.add_class::<PyVolmapPlan>()?;

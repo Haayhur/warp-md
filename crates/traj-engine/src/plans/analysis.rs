@@ -24,6 +24,7 @@ pub mod helix_orientation;
 pub mod hydration_order;
 pub mod ion_pair;
 pub mod legacy;
+pub mod lipid;
 pub mod msd;
 pub mod nmr;
 pub mod potential;
@@ -66,6 +67,12 @@ pub use helix::HelixPlan;
 pub use helix_orientation::HelixOrientationPlan;
 pub use hydration_order::HydrationOrderPlan;
 pub use ion_pair::IonPairCorrelationPlan;
+pub use lipid::{
+    LipidAreaPlan, LipidCurvedLeafletPlan, LipidFlipFlopPlan, LipidLargestClusterPlan,
+    LipidLeafletPlan, LipidMembraneThicknessPlan, LipidMsdPlan, LipidNeighbourMatrixPlan,
+    LipidNeighbourPlan, LipidRegistrationPlan, LipidSccPlan, LipidZAnglePlan, LipidZPositionPlan,
+    LipidZThicknessPlan,
+};
 pub use msd::{DtDecimation, FrameDecimation, MsdPlan, TimeBinning};
 pub use nmr::NmrIredPlan;
 pub use potential::PotentialPlan;

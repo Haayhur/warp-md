@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Dict
+
+import numpy as np
 
 from .cli_api import (
     BondiFfvPlan,
@@ -41,6 +45,32 @@ class _CallablePlan:
         kwargs["chunk_frames"] = kwargs.get("chunk_frames", chunk_frames)
         kwargs["device"] = kwargs.get("device", device)
         return self._fn(traj, system, **kwargs)
+
+
+def _load_array_spec(value: Any, *, field: str, default_npz_key: str = "values"):
+    if isinstance(value, np.ndarray):
+        return value
+    if isinstance(value, (list, tuple)):
+        return np.asarray(value)
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be an array or array path")
+    path = Path(value)
+    if not path.exists():
+        if "," in value:
+            return np.asarray([int(part.strip()) for part in value.split(",") if part.strip()])
+        raise ValueError(f"{field} array path does not exist: {value}")
+    suffix = path.suffix.lower()
+    if suffix == ".npy":
+        return np.load(path, allow_pickle=False)
+    if suffix == ".npz":
+        with np.load(path, allow_pickle=False) as data:
+            key = default_npz_key if default_npz_key in data else next(iter(data.keys()))
+            return np.asarray(data[key])
+    if suffix == ".csv":
+        return np.loadtxt(path, delimiter=",")
+    if suffix == ".json":
+        return np.asarray(json.loads(path.read_text()))
+    raise ValueError(f"{field} array path must end in .npy, .npz, .csv, or .json")
 
 
 def _build_rg(system: System, spec: Dict[str, Any]):
@@ -532,6 +562,141 @@ def _build_gist(system: System, spec: Dict[str, Any]):
     raise NotImplementedError(
         "GIST analysis requires OpenMM system construction which is not yet supported in the agent runner."
     )
+
+
+def _lipid_kwargs(spec: Dict[str, Any], names: list[str]):
+    return _pick(spec, [*names, "length_scale", "frame_indices", "chunk_frames", "device"])
+
+
+def _build_lipid_leaflets(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_leaflets
+    kwargs = _lipid_kwargs(spec, ["selection", "midplane_selection", "midplane_cutoff", "bins"])
+    if not kwargs.get("selection"):
+        raise ValueError("lipid_leaflets.selection is required")
+    return _CallablePlan(lipid_leaflets, kwargs)
+
+
+def _build_lipid_curved_leaflets(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_curved_leaflets
+    kwargs = _lipid_kwargs(
+        spec,
+        ["selection", "cutoff", "midplane_selection", "midplane_cutoff"],
+    )
+    if not kwargs.get("selection"):
+        raise ValueError("lipid_curved_leaflets.selection is required")
+    return _CallablePlan(lipid_curved_leaflets, kwargs)
+
+
+def _build_lipid_z_positions(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_z_positions
+    kwargs = _lipid_kwargs(spec, ["membrane_selection", "height_selection", "bins"])
+    if not kwargs.get("membrane_selection") or not kwargs.get("height_selection"):
+        raise ValueError("lipid_z_positions requires membrane_selection and height_selection")
+    return _CallablePlan(lipid_z_positions, kwargs)
+
+
+def _build_lipid_z_thickness(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_z_thickness
+    kwargs = _lipid_kwargs(spec, ["selection"])
+    if not kwargs.get("selection"):
+        raise ValueError("lipid_z_thickness.selection is required")
+    return _CallablePlan(lipid_z_thickness, kwargs)
+
+
+def _build_lipid_z_angles(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_z_angles
+    kwargs = _lipid_kwargs(spec, ["atom_a", "atom_b", "degrees"])
+    if not kwargs.get("atom_a") or not kwargs.get("atom_b"):
+        raise ValueError("lipid_z_angles requires atom_a and atom_b")
+    return _CallablePlan(lipid_z_angles, kwargs)
+
+
+def _build_lipid_area(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_area
+    kwargs = _lipid_kwargs(spec, ["selection"])
+    if not kwargs.get("selection"):
+        raise ValueError("lipid_area.selection is required")
+    kwargs["leaflets"] = _load_array_spec(spec.get("leaflets"), field="lipid_area.leaflets")
+    return _CallablePlan(lipid_area, kwargs)
+
+
+def _build_lipid_flip_flop(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_flip_flop
+    kwargs = _pick(spec, ["frame_cutoff", "chunk_frames", "device"])
+    kwargs["leaflets"] = _load_array_spec(spec.get("leaflets"), field="lipid_flip_flop.leaflets")
+    if spec.get("residue_ids") is not None:
+        kwargs["residue_ids"] = _load_array_spec(
+            spec.get("residue_ids"),
+            field="lipid_flip_flop.residue_ids",
+            default_npz_key="residue_ids",
+        ).astype(np.int32)
+    return _CallablePlan(lipid_flip_flop, kwargs)
+
+
+def _build_lipid_neighbours(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_neighbours
+    kwargs = _lipid_kwargs(spec, ["selection", "cutoff"])
+    if not kwargs.get("selection"):
+        raise ValueError("lipid_neighbours.selection is required")
+    return _CallablePlan(lipid_neighbours, kwargs)
+
+
+def _build_lipid_neighbour_matrix(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_neighbour_matrix
+    kwargs = _lipid_kwargs(spec, ["selection", "cutoff"])
+    if not kwargs.get("selection"):
+        raise ValueError("lipid_neighbour_matrix.selection is required")
+    return _CallablePlan(lipid_neighbour_matrix, kwargs)
+
+
+def _build_lipid_largest_cluster(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_largest_cluster
+    kwargs = _lipid_kwargs(spec, ["selection", "cutoff"])
+    if not kwargs.get("selection"):
+        raise ValueError("lipid_largest_cluster.selection is required")
+    return _CallablePlan(lipid_largest_cluster, kwargs)
+
+
+def _build_lipid_membrane_thickness(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_membrane_thickness
+    kwargs = _lipid_kwargs(spec, ["selection", "bins"])
+    if not kwargs.get("selection"):
+        raise ValueError("lipid_membrane_thickness.selection is required")
+    kwargs["leaflets"] = _load_array_spec(
+        spec.get("leaflets"),
+        field="lipid_membrane_thickness.leaflets",
+    )
+    return _CallablePlan(lipid_membrane_thickness, kwargs)
+
+
+def _build_lipid_registration(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_registration
+    kwargs = _lipid_kwargs(spec, ["upper_selection", "lower_selection", "bins", "gaussian_sd"])
+    if not kwargs.get("upper_selection") or not kwargs.get("lower_selection"):
+        raise ValueError("lipid_registration requires upper_selection and lower_selection")
+    kwargs["leaflets"] = _load_array_spec(
+        spec.get("leaflets"),
+        field="lipid_registration.leaflets",
+    )
+    return _CallablePlan(lipid_registration, kwargs)
+
+
+def _build_lipid_msd(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_msd
+    kwargs = _lipid_kwargs(spec, ["selection", "com_removal_selection"])
+    if not kwargs.get("selection"):
+        raise ValueError("lipid_msd.selection is required")
+    return _CallablePlan(lipid_msd, kwargs)
+
+
+def _build_lipid_scc(system: System, spec: Dict[str, Any]):
+    from .analysis.lipid import lipid_scc
+    kwargs = _lipid_kwargs(spec, ["tail_selection"])
+    if not kwargs.get("tail_selection"):
+        raise ValueError("lipid_scc.tail_selection is required")
+    if spec.get("normals") is not None:
+        kwargs["normals"] = _load_array_spec(spec.get("normals"), field="lipid_scc.normals")
+    return _CallablePlan(lipid_scc, kwargs)
 
 
 PLAN_BUILDERS = {

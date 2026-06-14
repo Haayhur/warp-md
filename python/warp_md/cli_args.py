@@ -343,6 +343,112 @@ def setup_persistence_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--selection", required=True, help="Selection string")
 
 
+def add_lipid_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--length-scale", type=float, help="Coordinate length scale")
+    parser.add_argument("--frame-indices", help="Comma-separated frame indices")
+
+
+def add_lipid_leaflet_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--midplane-selection", help="Selection used to define membrane midplane")
+    parser.add_argument("--midplane-cutoff", type=float, default=0.0, help="Midplane exclusion cutoff")
+    parser.add_argument("--bins", type=int, default=1, help="XY bins per dimension")
+
+
+def add_lipid_cutoff_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--cutoff", type=float, default=10.0, help="Neighbour cutoff")
+
+
+def add_lipid_leaflets_file_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--leaflets", required=True, help="Leaflet array path (.npy/.npz/.csv/.json)")
+
+
+def setup_lipid_leaflets_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Lipid headgroup selection")
+    add_lipid_leaflet_args(parser)
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_curved_leaflets_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Lipid headgroup selection")
+    parser.add_argument("--cutoff", type=float, default=15.0, help="Graph cutoff")
+    parser.add_argument("--midplane-selection", help="Selection used to define membrane midplane")
+    parser.add_argument("--midplane-cutoff", type=float, default=0.0, help="Midplane exclusion cutoff")
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_z_positions_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--membrane-selection", required=True, help="Membrane reference selection")
+    parser.add_argument("--height-selection", required=True, help="Height selection")
+    parser.add_argument("--bins", type=int, default=1, help="XY bins per dimension")
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_z_thickness_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Lipid selection")
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_z_angles_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--atom-a", required=True, help="First atom selection")
+    parser.add_argument("--atom-b", required=True, help="Second atom selection")
+    parser.add_argument("--degrees", action=argparse.BooleanOptionalAction, default=True)
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_area_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Lipid selection")
+    add_lipid_leaflets_file_arg(parser)
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_flip_flop_args(parser: argparse.ArgumentParser) -> None:
+    add_lipid_leaflets_file_arg(parser)
+    parser.add_argument("--residue-ids", help="Residue ids path or comma-separated ids")
+    parser.add_argument("--frame-cutoff", type=int, default=1)
+
+
+def setup_lipid_neighbours_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Lipid selection")
+    add_lipid_cutoff_args(parser)
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_neighbour_matrix_args(parser: argparse.ArgumentParser) -> None:
+    setup_lipid_neighbours_args(parser)
+
+
+def setup_lipid_largest_cluster_args(parser: argparse.ArgumentParser) -> None:
+    setup_lipid_neighbours_args(parser)
+
+
+def setup_lipid_membrane_thickness_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Lipid selection")
+    add_lipid_leaflets_file_arg(parser)
+    parser.add_argument("--bins", type=int, default=1, help="XY bins per dimension")
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_registration_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--upper-selection", required=True, help="Upper leaflet selection")
+    parser.add_argument("--lower-selection", required=True, help="Lower leaflet selection")
+    add_lipid_leaflets_file_arg(parser)
+    parser.add_argument("--bins", type=int, default=1, help="XY bins per dimension")
+    parser.add_argument("--gaussian-sd", type=float, default=0.0)
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_msd_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Lipid selection")
+    parser.add_argument("--com-removal-selection", help="COM removal selection")
+    add_lipid_common_args(parser)
+
+
+def setup_lipid_scc_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--tail-selection", required=True, help="Tail atom selection")
+    parser.add_argument("--normals", help="Normal vector array path (.npy/.npz/.csv/.json)")
+    add_lipid_common_args(parser)
+
+
 REGISTRY = {
     entry.cli_name: globals()[entry.setup_fn]
     for entry in ANALYSIS_REGISTRY
