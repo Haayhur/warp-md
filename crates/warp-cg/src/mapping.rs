@@ -300,7 +300,6 @@ fn group_features(mol: &Molecule, group: &[usize]) -> Vec<String> {
             let carbon_neighbors = mol
                 .graph
                 .neighbors(atom_idx)
-                .filter(|neighbor| group_set.contains(&neighbor.index()))
                 .filter(|neighbor| mol.graph[*neighbor].atomic_number == 6)
                 .count();
             if carbon_neighbors >= 2 {

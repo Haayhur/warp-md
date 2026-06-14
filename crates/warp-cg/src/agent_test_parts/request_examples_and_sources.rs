@@ -481,6 +481,62 @@ fn paa_like_source_auto_template_replay_preserves_carboxylate_features() {
 }
 
 #[test]
+fn pes_like_source_auto_mapping_preserves_aromatic_ring_semantics() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("pes_like.pdb");
+    std::fs::write(&source_path, pes_like_source_pdb()).unwrap();
+    let mut request = source_request("pes_like", &source_path, tmp.path(), "auto", None);
+    if let Some(mapping) = request.mapping.as_mut() {
+        mapping.repeat_unit_hint = Some("PES".to_string());
+        mapping.terminal_aware = Some(false);
+    }
+
+    let result = run_request(&request, Instant::now()).unwrap();
+    assert_eq!(result.summary.mapped_residue_count, Some(1));
+    assert_eq!(result.bead_count, 8);
+    assert_eq!(
+        result
+            .beads
+            .iter()
+            .filter(|bead| bead
+                .features
+                .iter()
+                .any(|feature| feature == "aromatic_ring"))
+            .count(),
+        6
+    );
+    assert!(result.beads.iter().any(|bead| bead
+        .features
+        .iter()
+        .any(|feature| feature == "sulfone_or_sulfonate")));
+    assert!(result
+        .beads
+        .iter()
+        .any(|bead| bead.features.iter().any(|feature| feature == "ether")));
+
+    let mapping: Value = serde_json::from_slice(
+        &std::fs::read(tmp.path().join("pes_like_martini_mapping.json")).unwrap(),
+    )
+    .unwrap();
+    let middle_beads = mapping["generated_mapping_template"]["residue_role_templates"]["middle"]
+        ["beads"]
+        .as_array()
+        .unwrap();
+    assert_eq!(middle_beads.len(), 8);
+    assert_eq!(
+        middle_beads
+            .iter()
+            .filter(|bead| bead["features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| feature == "aromatic_ring"))
+            .count(),
+        6
+    );
+}
+
+#[test]
 fn template_replay_rejects_wrong_local_bond_signature() {
     let tmp = tempfile::tempdir().unwrap();
     let source_path = tmp.path().join("paa_like.pdb");

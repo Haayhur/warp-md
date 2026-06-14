@@ -80,11 +80,19 @@ fn source_atom_groups_for_residue(
         .iter()
         .map(|idx| source_atom_element(&atoms[*idx]))
         .collect::<Vec<_>>();
+    let positions = residue_atoms
+        .iter()
+        .map(|idx| {
+            let pos = atoms[*idx].position;
+            [pos.x, pos.y, pos.z]
+        })
+        .collect::<Vec<_>>();
     let local_bonds = bonds
         .iter()
         .filter_map(|&(a, b)| Some((*local_by_global.get(&a)?, *local_by_global.get(&b)?)))
         .collect::<Vec<_>>();
-    let residue_molecule = Molecule::from_elements_and_bonds(&elements, &local_bonds);
+    let residue_molecule =
+        Molecule::from_elements_bonds_and_positions(&elements, &local_bonds, Some(&positions));
     let mapping = map_molecule_with_options(
         &residue_molecule,
         &MappingOptions {

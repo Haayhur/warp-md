@@ -51,6 +51,41 @@ fn paa_like_polymer_pdb() -> String {
     .join("\n")
 }
 
+fn pes_like_source_pdb() -> String {
+    [
+        "ATOM      1 C1   PES A   1       1.400   0.000   0.000  1.00  0.00           C",
+        "ATOM      2 C2   PES A   1       0.700   1.212   0.000  1.00  0.00           C",
+        "ATOM      3 C3   PES A   1      -0.700   1.212   0.000  1.00  0.00           C",
+        "ATOM      4 C4   PES A   1      -1.400   0.000   0.000  1.00  0.00           C",
+        "ATOM      5 C5   PES A   1      -0.700  -1.212   0.000  1.00  0.00           C",
+        "ATOM      6 C6   PES A   1       0.700  -1.212   0.000  1.00  0.00           C",
+        "ATOM      7 C7   PES A   1       6.400   0.000   0.000  1.00  0.00           C",
+        "ATOM      8 C8   PES A   1       5.700   1.212   0.000  1.00  0.00           C",
+        "ATOM      9 C9   PES A   1       4.300   1.212   0.000  1.00  0.00           C",
+        "ATOM     10 C10  PES A   1       3.600   0.000   0.000  1.00  0.00           C",
+        "ATOM     11 C11  PES A   1       4.300  -1.212   0.000  1.00  0.00           C",
+        "ATOM     12 C12  PES A   1       5.700  -1.212   0.000  1.00  0.00           C",
+        "ATOM     13 S1   PES A   1       2.500   0.900   0.000  1.00  0.00           S",
+        "ATOM     14 O1   PES A   1       2.500   2.100   0.000  1.00  0.00           O",
+        "ATOM     15 O2   PES A   1       2.500   0.900   1.200  1.00  0.00           O",
+        "ATOM     16 O3   PES A   1       2.500  -1.000   0.000  1.00  0.00           O",
+        "CONECT    1    2    6   13",
+        "CONECT    2    3",
+        "CONECT    3    4",
+        "CONECT    4    5   16",
+        "CONECT    5    6",
+        "CONECT    7    8   12   13",
+        "CONECT    8    9",
+        "CONECT    9   10",
+        "CONECT   10   11   16",
+        "CONECT   11   12",
+        "CONECT   13   14   15",
+        "END",
+        "",
+    ]
+    .join("\n")
+}
+
 fn source_request(
     name: &str,
     source_path: &Path,
