@@ -153,6 +153,8 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
         bead_count: mapping.bead_names.len(),
         beads: beads(&mapping),
         connections: mapping.connections.iter().map(|&(i, j)| [i, j]).collect(),
+        warnings: Vec::new(),
+        mapping_summary: None,
         artifact_paths: artifact_paths(&artifacts),
         artifacts,
         reference: reference_result,
@@ -578,6 +580,8 @@ fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult>
             .iter()
             .map(|&(i, j)| [i, j])
             .collect(),
+        warnings: source_mapping.warnings,
+        mapping_summary: Some(source_mapping.mapping_summary),
         artifact_paths: artifact_paths(&artifacts),
         artifacts,
         reference: reference_result,

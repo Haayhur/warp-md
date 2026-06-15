@@ -177,7 +177,7 @@ fn validate_source_files(
 
     validate_target_selection(
         source,
-        topology.as_deref(),
+        topology.as_deref().or(coordinates.as_deref()),
         coordinate_atoms,
         checks,
         warnings,
@@ -197,7 +197,8 @@ fn validate_source_files(
 fn source_mapping_mode_for_source(source: &CgSource) -> Option<&'static str> {
     matches!(
         source.kind.as_str(),
-        "polymer_build_manifest"
+        "structure"
+            | "polymer_build_manifest"
             | "polymer_pack_manifest"
             | "coordinates_topology"
             | "coordinates_topology_charge_manifest"
@@ -214,7 +215,7 @@ fn validate_target_selection(
     warnings: &mut Vec<Value>,
     errors: &mut Vec<Value>,
 ) {
-    let Some(selection_expr) = source.target_selection.as_deref() else {
+    let Some(selection_expr) = source_selection(source) else {
         checks.push(json!({
             "name": "target_selection_declared",
             "status": "not_declared"
@@ -393,6 +394,13 @@ pub(super) fn resolve_source_handoff(source: &CgSource) -> Result<SourceHandoff>
         coordinate_format: source.format.clone(),
         topology_format: source.topology_format.clone(),
     })
+}
+
+pub(super) fn source_selection(source: &CgSource) -> Option<&str> {
+    source
+        .selection
+        .as_deref()
+        .or(source.target_selection.as_deref())
 }
 
 fn validate_path_exists(field: &str, path: &str, checks: &mut Vec<Value>, errors: &mut Vec<Value>) {

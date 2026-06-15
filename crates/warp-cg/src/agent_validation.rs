@@ -6,9 +6,11 @@ mod candidate_extraction;
 use candidate_extraction::validate_candidate_trajectory_extraction;
 
 use super::{
-    validate_positive, BondedTermSource, CgRequest, CgSource, JsonFileEvaluatorRequest,
-    ObjectiveEvaluatorRequest, ParameterTuningRequest, PrecomputedReferenceRequest,
-    ReferenceMetricSourceRequest, ReferenceTransformRequest, XtbRequest, AGENT_SCHEMA_VERSION,
+    validate_positive, BondedTermSource, BondingPolicyRequest, CgRequest, CgSource,
+    ChemistryHintRequest, ChemistryPolicyRequest, JsonFileEvaluatorRequest,
+    ObjectiveEvaluatorRequest, ParameterTuningRequest, PolymerPolicyRequest,
+    PrecomputedReferenceRequest, ReferenceMetricSourceRequest, ReferenceTransformRequest,
+    XtbRequest, AGENT_SCHEMA_VERSION,
 };
 
 pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
@@ -55,6 +57,18 @@ pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
     }
     if let Some(source) = &request.source {
         validate_source_shape(source)?;
+    }
+    if let Some(bonding) = &request.bonding {
+        validate_bonding_policy(bonding)?;
+    }
+    for hint in &request.chemistry_hints {
+        validate_chemistry_hint(hint)?;
+    }
+    if let Some(policy) = &request.chemistry_policy {
+        validate_chemistry_policy(policy)?;
+    }
+    if let Some(polymer) = &request.polymer {
+        validate_polymer_policy(polymer)?;
     }
     if let Some(mapping) = &request.mapping {
         if mapping.mode.trim().is_empty() {
@@ -323,7 +337,8 @@ fn validate_source_shape(source: &CgSource) -> Result<()> {
     }
     let valid_kind = matches!(
         source.kind.as_str(),
-        "polymer_build_manifest"
+        "structure"
+            | "polymer_build_manifest"
             | "polymer_pack_manifest"
             | "coordinates_topology"
             | "coordinates_topology_charge_manifest"
@@ -331,7 +346,7 @@ fn validate_source_shape(source: &CgSource) -> Result<()> {
     );
     if !valid_kind {
         return Err(anyhow!(
-            "source.kind must be polymer_build_manifest, polymer_pack_manifest, coordinates_topology, coordinates_topology_charge_manifest, or source_manifest"
+            "source.kind must be structure, polymer_build_manifest, polymer_pack_manifest, coordinates_topology, coordinates_topology_charge_manifest, or source_manifest"
         ));
     }
     for (field, value) in [
@@ -341,12 +356,23 @@ fn validate_source_shape(source: &CgSource) -> Result<()> {
         ("source.charge_manifest", source.charge_manifest.as_ref()),
         ("source.trajectory", source.trajectory.as_ref()),
         ("source.target_selection", source.target_selection.as_ref()),
+        ("source.selection", source.selection.as_ref()),
     ] {
         if value.is_some_and(|item| item.trim().is_empty()) {
             return Err(anyhow!("{field} must not be empty"));
         }
     }
+    if source.selection.is_some() && source.target_selection.is_some() {
+        return Err(anyhow!(
+            "use either source.selection or source.target_selection, not both"
+        ));
+    }
     match source.kind.as_str() {
+        "structure" => {
+            if source.coordinates.is_none() {
+                return Err(anyhow!("source.coordinates is required for structure"));
+            }
+        }
         "polymer_build_manifest" | "polymer_pack_manifest" | "source_manifest" => {
             if source.path.is_none() {
                 return Err(anyhow!("source.path is required for {}", source.kind));
@@ -370,6 +396,87 @@ fn validate_source_shape(source: &CgSource) -> Result<()> {
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn validate_bonding_policy(policy: &BondingPolicyRequest) -> Result<()> {
+    if let Some(source) = policy.source.as_deref() {
+        if !matches!(
+            source,
+            "explicit_topology" | "infer_from_coordinates" | "template"
+        ) {
+            return Err(anyhow!(
+                "bonding.source must be explicit_topology, infer_from_coordinates, or template"
+            ));
+        }
+    }
+    if let Some(on_ambiguous) = policy.on_ambiguous.as_deref() {
+        if !matches!(on_ambiguous, "warn" | "error") {
+            return Err(anyhow!("bonding.on_ambiguous must be warn or error"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_chemistry_hint(hint: &ChemistryHintRequest) -> Result<()> {
+    if !matches!(hint.kind.as_str(), "smiles" | "template" | "inline_graph") {
+        return Err(anyhow!(
+            "chemistry_hints[].kind must be smiles, template, or inline_graph"
+        ));
+    }
+    if !matches!(
+        hint.scope.as_str(),
+        "molecule" | "repeat_unit" | "residue" | "residue_role"
+    ) {
+        return Err(anyhow!(
+            "chemistry_hints[].scope must be molecule, repeat_unit, residue, or residue_role"
+        ));
+    }
+    match hint.kind.as_str() {
+        "smiles" | "inline_graph" if hint.value.as_deref().unwrap_or("").trim().is_empty() => Err(
+            anyhow!("chemistry_hints[] with kind {} requires value", hint.kind),
+        ),
+        "template" if hint.path.as_deref().unwrap_or("").trim().is_empty() => Err(anyhow!(
+            "chemistry_hints[] with kind template requires path"
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn validate_chemistry_policy(policy: &ChemistryPolicyRequest) -> Result<()> {
+    if let Some(mode) = policy.hint_mode.as_deref() {
+        if !matches!(
+            mode,
+            "validate" | "fill_missing" | "prefer_hint" | "prefer_geometry"
+        ) {
+            return Err(anyhow!(
+                "chemistry_policy.hint_mode must be validate, fill_missing, prefer_hint, or prefer_geometry"
+            ));
+        }
+    }
+    if let Some(on_conflict) = policy.on_conflict.as_deref() {
+        if !matches!(on_conflict, "warn" | "error") {
+            return Err(anyhow!(
+                "chemistry_policy.on_conflict must be warn or error"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_polymer_policy(policy: &PolymerPolicyRequest) -> Result<()> {
+    if let Some(mode) = policy.role_mode.as_deref() {
+        if !matches!(mode, "infer" | "explicit") {
+            return Err(anyhow!("polymer.role_mode must be infer or explicit"));
+        }
+    }
+    if let Some(end_group_policy) = policy.end_group_policy.as_deref() {
+        if !matches!(end_group_policy, "preserve" | "map_as_repeat") {
+            return Err(anyhow!(
+                "polymer.end_group_policy must be preserve or map_as_repeat"
+            ));
+        }
     }
     Ok(())
 }

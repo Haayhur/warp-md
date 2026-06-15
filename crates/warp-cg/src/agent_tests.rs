@@ -86,6 +86,34 @@ fn pes_like_source_pdb() -> String {
     .join("\n")
 }
 
+fn benzene_structure_pdb_without_conect() -> String {
+    [
+        "ATOM      1 C1   BEN A   1       1.400   0.000   0.000  1.00  0.00           C",
+        "ATOM      2 C2   BEN A   1       0.700   1.212   0.000  1.00  0.00           C",
+        "ATOM      3 C3   BEN A   1      -0.700   1.212   0.000  1.00  0.00           C",
+        "ATOM      4 C4   BEN A   1      -1.400   0.000   0.000  1.00  0.00           C",
+        "ATOM      5 C5   BEN A   1      -0.700  -1.212   0.000  1.00  0.00           C",
+        "ATOM      6 C6   BEN A   1       0.700  -1.212   0.000  1.00  0.00           C",
+        "END",
+        "",
+    ]
+    .join("\n")
+}
+
+fn distorted_benzene_structure_pdb_without_conect() -> String {
+    [
+        "ATOM      1 C1   BEN A   1       1.700   0.000   0.000  1.00  0.00           C",
+        "ATOM      2 C2   BEN A   1       0.850   1.472   0.000  1.00  0.00           C",
+        "ATOM      3 C3   BEN A   1      -0.850   1.472   0.000  1.00  0.00           C",
+        "ATOM      4 C4   BEN A   1      -1.700   0.000   0.000  1.00  0.00           C",
+        "ATOM      5 C5   BEN A   1      -0.850  -1.472   0.000  1.00  0.00           C",
+        "ATOM      6 C6   BEN A   1       0.850  -1.472   0.000  1.00  0.00           C",
+        "END",
+        "",
+    ]
+    .join("\n")
+}
+
 fn source_request(
     name: &str,
     source_path: &Path,
@@ -106,9 +134,14 @@ fn source_request(
             charge_manifest: None,
             trajectory: None,
             target_selection: None,
+            selection: None,
             format: Some("pdb".to_string()),
             topology_format: Some("pdb".to_string()),
         }),
+        bonding: None,
+        chemistry_hints: Vec::new(),
+        chemistry_policy: None,
+        polymer: None,
         mapping: Some(CgMappingRequest {
             mode: mode.to_string(),
             strategy: Some("polymer_residue_graph".to_string()),

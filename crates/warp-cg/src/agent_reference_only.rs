@@ -146,6 +146,8 @@ pub(super) fn run_reference_only_request(
         bead_count: mapping.bead_names.len(),
         beads: beads(&mapping),
         connections: mapping.connections.iter().map(|&(i, j)| [i, j]).collect(),
+        warnings: Vec::new(),
+        mapping_summary: None,
         artifact_paths: artifact_paths(&artifacts),
         artifacts,
         reference: Some(reference_result),

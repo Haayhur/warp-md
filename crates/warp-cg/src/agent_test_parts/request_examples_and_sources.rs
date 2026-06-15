@@ -16,6 +16,10 @@ fn benzene_mapping_has_three_beads() {
         smiles: Some("c1ccccc1".to_string()),
         repeat_smiles: None,
         source: None,
+        bonding: None,
+        chemistry_hints: Vec::new(),
+        chemistry_policy: None,
+        polymer: None,
         mapping: None,
         topology: None,
         trajectory_source: None,
@@ -50,6 +54,10 @@ fn downstream_setup_artifacts_include_pdb_itp_top_and_parameter_map() {
         smiles: Some("c1ccccc1".to_string()),
         repeat_smiles: None,
         source: None,
+        bonding: None,
+        chemistry_hints: Vec::new(),
+        chemistry_policy: None,
+        polymer: None,
         mapping: None,
         topology: None,
         trajectory_source: None,
@@ -139,6 +147,10 @@ fn external_trajectory_reference_uses_gromacs_bonded_terms() {
         smiles: Some("c1ccccc1".to_string()),
         repeat_smiles: None,
         source: None,
+        bonding: None,
+        chemistry_hints: Vec::new(),
+        chemistry_policy: None,
+        polymer: None,
         mapping: None,
         topology: None,
         trajectory_source: Some(TrajectorySource {
@@ -262,9 +274,14 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
             charge_manifest: None,
             trajectory: None,
             target_selection: None,
+            selection: None,
             format: Some("pdb".to_string()),
             topology_format: Some("pdb".to_string()),
         }),
+        bonding: None,
+        chemistry_hints: Vec::new(),
+        chemistry_policy: None,
+        polymer: None,
         mapping: Some(CgMappingRequest {
             mode: "auto".to_string(),
             strategy: Some("polymer_residue_graph".to_string()),
@@ -395,6 +412,10 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
         smiles: None,
         repeat_smiles: None,
         source: request.source.clone(),
+        bonding: None,
+        chemistry_hints: Vec::new(),
+        chemistry_policy: None,
+        polymer: None,
         mapping: Some(CgMappingRequest {
             mode: "template".to_string(),
             strategy: None,
@@ -537,6 +558,198 @@ fn pes_like_source_auto_mapping_preserves_aromatic_ring_semantics() {
 }
 
 #[test]
+fn structure_source_infers_bonds_and_reports_mapping_summary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("benzene_no_conect.pdb");
+    std::fs::write(&source_path, benzene_structure_pdb_without_conect()).unwrap();
+    let request = CgRequest {
+        schema_version: AGENT_SCHEMA_VERSION.to_string(),
+        name: "benzene_structure".to_string(),
+        smiles: None,
+        repeat_smiles: None,
+        source: Some(CgSource {
+            kind: "structure".to_string(),
+            path: None,
+            coordinates: Some(source_path.to_string_lossy().to_string()),
+            topology: None,
+            charge_manifest: None,
+            trajectory: None,
+            target_selection: None,
+            selection: Some("chain A".to_string()),
+            format: Some("pdb".to_string()),
+            topology_format: None,
+        }),
+        bonding: Some(BondingPolicyRequest {
+            source: Some("infer_from_coordinates".to_string()),
+            infer_bonds: Some(true),
+            on_ambiguous: Some("warn".to_string()),
+        }),
+        chemistry_hints: vec![ChemistryHintRequest {
+            kind: "smiles".to_string(),
+            scope: "molecule".to_string(),
+            value: Some("c1ccccc1".to_string()),
+            path: None,
+        }],
+        chemistry_policy: Some(ChemistryPolicyRequest {
+            hint_mode: Some("validate".to_string()),
+            on_conflict: Some("warn".to_string()),
+        }),
+        polymer: Some(PolymerPolicyRequest {
+            enabled: Some(false),
+            role_mode: Some("infer".to_string()),
+            terminal_aware: Some(false),
+            end_group_policy: Some("preserve".to_string()),
+        }),
+        mapping: Some(CgMappingRequest {
+            mode: "auto".to_string(),
+            strategy: None,
+            target_bead_size: Some(4),
+            preserve_functional_groups: Some(true),
+            template: None,
+            ndx: None,
+            repeat_unit_hint: None,
+            terminal_aware: None,
+        }),
+        topology: None,
+        trajectory_source: None,
+        reference_source: None,
+        optimization: None,
+        output: CgOutputRequest {
+            out_dir: tmp.path().to_string_lossy().to_string(),
+            mapped_trajectory: None,
+            write_mapping_json: true,
+            write_topology_itp: false,
+            write_topology_top: false,
+            write_cg_pdb: false,
+            cg_pdb: None,
+            write_bonded_parameter_map: false,
+        },
+    };
+
+    let result = run_request(&request, Instant::now()).unwrap();
+    assert_eq!(result.summary.input_mode, "structure");
+    assert_eq!(result.bead_count, 3);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning["code"] == "warp_cg.bonds_inferred_from_coordinates"));
+    let summary = result.mapping_summary.as_ref().unwrap();
+    assert_eq!(summary["bond_source"], "inferred_distance");
+    assert_eq!(summary["aromaticity_source"], "geometry");
+    assert_eq!(summary["polymer_enabled"], false);
+    assert_eq!(summary["chemistry_hint_count"], 1);
+    assert_eq!(summary["residue_bead_counts"][0]["role"], "standalone");
+    assert_eq!(summary["residue_bead_counts"][0]["bead_count"], 3);
+
+    let provenance: Value = serde_json::from_slice(
+        &std::fs::read(
+            tmp.path()
+                .join("benzene_structure_aa_to_cg_provenance.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        provenance["residue_interpretation"]["polymer_enabled"],
+        false
+    );
+    assert_eq!(
+        provenance["residue_interpretation"]["residues"][0]["role"],
+        "standalone"
+    );
+    assert_eq!(provenance["chemistry_hints"][0]["kind"], "smiles");
+}
+
+#[test]
+fn smiles_hint_reports_aromatic_geometry_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("distorted_benzene_no_conect.pdb");
+    std::fs::write(
+        &source_path,
+        distorted_benzene_structure_pdb_without_conect(),
+    )
+    .unwrap();
+    let mut request = CgRequest {
+        schema_version: AGENT_SCHEMA_VERSION.to_string(),
+        name: "distorted_benzene_structure".to_string(),
+        smiles: None,
+        repeat_smiles: None,
+        source: Some(CgSource {
+            kind: "structure".to_string(),
+            path: None,
+            coordinates: Some(source_path.to_string_lossy().to_string()),
+            topology: None,
+            charge_manifest: None,
+            trajectory: None,
+            target_selection: None,
+            selection: None,
+            format: Some("pdb".to_string()),
+            topology_format: None,
+        }),
+        bonding: Some(BondingPolicyRequest {
+            source: Some("infer_from_coordinates".to_string()),
+            infer_bonds: Some(true),
+            on_ambiguous: Some("warn".to_string()),
+        }),
+        chemistry_hints: vec![ChemistryHintRequest {
+            kind: "smiles".to_string(),
+            scope: "molecule".to_string(),
+            value: Some("c1ccccc1".to_string()),
+            path: None,
+        }],
+        chemistry_policy: Some(ChemistryPolicyRequest {
+            hint_mode: Some("validate".to_string()),
+            on_conflict: Some("warn".to_string()),
+        }),
+        polymer: Some(PolymerPolicyRequest {
+            enabled: Some(false),
+            role_mode: Some("infer".to_string()),
+            terminal_aware: Some(false),
+            end_group_policy: Some("preserve".to_string()),
+        }),
+        mapping: Some(CgMappingRequest {
+            mode: "auto".to_string(),
+            strategy: None,
+            target_bead_size: Some(4),
+            preserve_functional_groups: Some(true),
+            template: None,
+            ndx: None,
+            repeat_unit_hint: None,
+            terminal_aware: None,
+        }),
+        topology: None,
+        trajectory_source: None,
+        reference_source: None,
+        optimization: None,
+        output: CgOutputRequest {
+            out_dir: tmp.path().to_string_lossy().to_string(),
+            mapped_trajectory: None,
+            write_mapping_json: false,
+            write_topology_itp: false,
+            write_topology_top: false,
+            write_cg_pdb: false,
+            cg_pdb: None,
+            write_bonded_parameter_map: false,
+        },
+    };
+
+    let result = run_request(&request, Instant::now()).unwrap();
+    let conflict = result
+        .warnings
+        .iter()
+        .find(|warning| warning["code"] == "warp_cg.chemistry_hint_geometry_conflict")
+        .unwrap();
+    assert_eq!(conflict["hint_aromatic_six_ring_count"], 1);
+    assert_eq!(conflict["geometry_aromatic_six_ring_count"], 0);
+
+    request.chemistry_policy.as_mut().unwrap().on_conflict = Some("error".to_string());
+    let err = run_request(&request, Instant::now()).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("warp_cg.chemistry_hint_geometry_conflict"));
+}
+
+#[test]
 fn template_replay_rejects_wrong_local_bond_signature() {
     let tmp = tempfile::tempdir().unwrap();
     let source_path = tmp.path().join("paa_like.pdb");
@@ -608,9 +821,14 @@ fn polymer_manifest_source_run_resolves_relative_artifacts() {
             charge_manifest: None,
             trajectory: None,
             target_selection: None,
+            selection: None,
             format: Some("pdb".to_string()),
             topology_format: Some("pdb".to_string()),
         }),
+        bonding: None,
+        chemistry_hints: Vec::new(),
+        chemistry_policy: None,
+        polymer: None,
         mapping: Some(CgMappingRequest {
             mode: "auto".to_string(),
             strategy: Some("polymer_residue_graph".to_string()),

@@ -97,6 +97,22 @@ impl Molecule {
         mol
     }
 
+    pub fn aromatic_six_ring_count(&self) -> usize {
+        self.simple_cycles_with_size(6, 6)
+            .into_iter()
+            .filter(|cycle| {
+                cycle
+                    .iter()
+                    .all(|idx| matches!(self.graph[*idx].atomic_number, 6 | 7))
+                    && cycle.iter().any(|idx| {
+                        self.graph
+                            .edges(*idx)
+                            .any(|edge| *edge.weight() == BondType::Aromatic)
+                    })
+            })
+            .count()
+    }
+
     fn perceive_rings(&mut self) {
         for idx in self
             .simple_cycles_with_size(5, 6)

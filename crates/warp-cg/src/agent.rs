@@ -72,6 +72,14 @@ pub struct CgRequest {
     #[serde(default)]
     pub source: Option<CgSource>,
     #[serde(default)]
+    pub bonding: Option<BondingPolicyRequest>,
+    #[serde(default)]
+    pub chemistry_hints: Vec<ChemistryHintRequest>,
+    #[serde(default)]
+    pub chemistry_policy: Option<ChemistryPolicyRequest>,
+    #[serde(default)]
+    pub polymer: Option<PolymerPolicyRequest>,
+    #[serde(default)]
     pub mapping: Option<CgMappingRequest>,
     #[serde(default)]
     pub topology: Option<String>,
@@ -103,9 +111,55 @@ pub struct CgSource {
     #[serde(default)]
     pub target_selection: Option<String>,
     #[serde(default)]
+    pub selection: Option<String>,
+    #[serde(default)]
     pub format: Option<String>,
     #[serde(default)]
     pub topology_format: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BondingPolicyRequest {
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub infer_bonds: Option<bool>,
+    #[serde(default)]
+    pub on_ambiguous: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChemistryHintRequest {
+    pub kind: String,
+    pub scope: String,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChemistryPolicyRequest {
+    #[serde(default)]
+    pub hint_mode: Option<String>,
+    #[serde(default)]
+    pub on_conflict: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PolymerPolicyRequest {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub role_mode: Option<String>,
+    #[serde(default)]
+    pub terminal_aware: Option<bool>,
+    #[serde(default)]
+    pub end_group_policy: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -482,6 +536,10 @@ pub struct CgResult {
     pub bead_count: usize,
     pub beads: Vec<CgBead>,
     pub connections: Vec<[usize; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapping_summary: Option<Value>,
     pub artifacts: Vec<CgArtifact>,
     pub artifact_paths: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]

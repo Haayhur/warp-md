@@ -205,6 +205,42 @@ pub fn example_requests() -> Value {
             },
             "output": {"out_dir": "cg/paa_coordinates_topology"}
         },
+        "structure_to_cg": {
+            "schema_version": AGENT_SCHEMA_VERSION,
+            "name": "benzene_structure",
+            "source": {
+                "kind": "structure",
+                "coordinates": "benzene.pdb",
+                "format": "pdb",
+                "selection": "chain A"
+            },
+            "bonding": {
+                "source": "infer_from_coordinates",
+                "infer_bonds": true,
+                "on_ambiguous": "warn"
+            },
+            "chemistry_hints": [
+                {
+                    "kind": "smiles",
+                    "scope": "molecule",
+                    "value": "c1ccccc1"
+                }
+            ],
+            "chemistry_policy": {
+                "hint_mode": "validate",
+                "on_conflict": "warn"
+            },
+            "polymer": {
+                "enabled": false,
+                "role_mode": "infer",
+                "terminal_aware": false,
+                "end_group_policy": "preserve"
+            },
+            "mapping": {
+                "mode": "auto"
+            },
+            "output": {"out_dir": "cg/benzene_structure"}
+        },
         "coordinates_topology_charge_manifest_to_cg": {
             "schema_version": AGENT_SCHEMA_VERSION,
             "name": "paa_coordinates_topology_charge",
@@ -246,6 +282,7 @@ pub fn capabilities() -> Value {
                 "mapping.ndx": "Gromacs NDX bead mapping for source-driven or reference-only Swarm-CG-style workflows"
             },
             "accepted_source_kinds": {
+                "structure": {"required": ["source.coordinates"], "optional": ["source.format", "source.selection", "bonding", "chemistry_hints", "chemistry_policy", "polymer"], "example": "examples().structure_to_cg"},
                 "polymer_build_manifest": {"required": ["source.path"], "optional": ["source.target_selection"], "example": "examples/warp_cg/polymer_build_manifest_to_cg_request.json"},
                 "polymer_pack_manifest": {"required": ["source.path"], "optional": ["source.target_selection"], "example": "examples/warp_cg/polymer_pack_manifest_to_cg_request.json"},
                 "coordinates_topology": {"required": ["source.coordinates", "source.topology"], "optional": ["source.target_selection"], "example": "examples/warp_cg/coordinates_topology_to_cg_request.json"},
@@ -253,10 +290,27 @@ pub fn capabilities() -> Value {
                 "source_manifest": {"required": ["source.path"], "optional": ["source.target_selection"], "example": "examples/warp_cg/source_manifest_to_cg_request.json"}
             },
             "source_selection_semantics": {
-                "default": "when source.target_selection is omitted, source-driven polymer mapping uses every atom and residue in the resolved source coordinates",
-                "target_selection": "must be a valid warp-md topology selection expression, for example 'resname PAA' or 'chain A'; the literal string 'polymer' is not a selector",
+                "default": "when source.selection/source.target_selection is omitted, source-driven mapping uses every atom and residue in the resolved source coordinates",
+                "selection": "source.selection is the preferred agent-facing field; source.target_selection remains accepted for compatibility. It must be a valid warp-md topology selection expression, for example 'resname PAA' or 'chain A'; the literal string 'polymer' is not a selector",
                 "execution_scope": "source-driven auto/template mapping currently builds residue-aware CG topology from the selected/default coordinate scope; manifest examples omit target_selection to select the full polymer handoff",
-                "provenance": "aa_to_cg_mapping_provenance records selection policy, selected atom/residue counts, terminal roles, residue names/counts, repeat hint, and atom-to-bead links"
+                "provenance": "aa_to_cg_mapping_provenance records selection policy, selected atom/residue counts, terminal roles, residue names/counts, repeat hint, chemistry hints, and atom-to-bead links"
+            },
+            "bonding": {
+                "structure_default": "source.kind=structure may infer bonds from coordinates when no explicit bonds/topology are present; inference is reported in result.mapping_summary and warnings",
+                "policy": "bonding.source supports explicit_topology, infer_from_coordinates, or template; bonding.on_ambiguous supports warn or error"
+            },
+            "chemistry_hints": {
+                "status": "accepted_reported_and_validated",
+                "supported_kinds": ["smiles", "template", "inline_graph"],
+                "supported_scopes": ["molecule", "repeat_unit", "residue", "residue_role"],
+                "policy": "chemistry_policy.hint_mode accepts validate, fill_missing, prefer_hint, or prefer_geometry; current auto mode records hints/provenance and uses geometry unless explicit template/ndx mapping is requested",
+                "smiles_validation": "SMILES hints are parsed and compared against source geometry aromatic six-ring perception; hint/geometry conflicts are emitted as warp_cg.chemistry_hint_geometry_conflict warnings or errors according to chemistry_policy.on_conflict"
+            },
+            "polymer_policy": {
+                "default": "source.kind=structure is standalone unless polymer.enabled=true or mapping.strategy=polymer_residue_graph",
+                "role_mode": ["infer", "explicit"],
+                "end_group_policy": ["preserve", "map_as_repeat"],
+                "result": "result.mapping_summary and provenance report role assignment and per-residue bead counts"
             },
             "trajectory_mapping": {
                 "preferred_field": "trajectory_source",

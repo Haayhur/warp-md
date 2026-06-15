@@ -40,4 +40,6 @@ pub(super) struct SourceMappingResult {
     pub(super) aa_atom_count: usize,
     pub(super) templates: Value,
     pub(super) provenance: Value,
+    pub(super) warnings: Vec<Value>,
+    pub(super) mapping_summary: Value,
 }

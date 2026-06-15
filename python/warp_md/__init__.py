@@ -3,7 +3,7 @@ from pkgutil import extend_path
 # Allow local source package + installed extension module to coexist.
 __path__ = extend_path(__path__, __name__)
 
-__version__ = "0.4.21"
+__version__ = "0.4.22"
 
 _REQUIRED_BINDINGS = (
     ("System", "PySystem"),

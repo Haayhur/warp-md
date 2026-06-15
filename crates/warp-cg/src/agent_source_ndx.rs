@@ -8,7 +8,8 @@ use crate::gromacs_ndx::read_gromacs_ndx_mapping;
 use crate::mapping::MappingResult;
 
 use super::agent_source_mapping::{
-    bead_center, residue_role, source_atom_name, source_mapping_provenance,
+    bead_center, residue_role_for_policy, source_atom_name, source_mapping_provenance,
+    source_polymer_enabled,
 };
 use super::{CgRequest, SourceBeadRecord, SourceHandoff, SourceMappingResult, SourceResidue};
 
@@ -86,7 +87,11 @@ pub(super) fn build_ndx_source_mapping(
             let residue = &residues[residue_idx];
             json!({
                 "residue_index": residue_idx,
-                "role": residue_role(residue_idx, residues.len()),
+                "role": residue_role_for_policy(
+                    residue_idx,
+                    residues.len(),
+                    source_polymer_enabled(request)
+                ),
                 "resid": residue.resid,
                 "resname": residue.resname,
                 "chain": residue.chain.to_string(),
@@ -140,6 +145,27 @@ pub(super) fn build_ndx_source_mapping(
         aa_atom_count: atom_count,
         templates,
         provenance,
+        warnings: Vec::new(),
+        mapping_summary: json!({
+            "bond_source": "explicit_topology_or_coordinates_connectivity",
+            "aromaticity_source": "not_applicable_ndx_mapping",
+            "polymer_enabled": source_polymer_enabled(request),
+            "residue_count": residues.len(),
+            "bond_count": molecule.bonds.len(),
+            "warning_count": 0,
+            "chemistry_hint_count": request.chemistry_hints.len(),
+            "residue_bead_counts": residue_to_bead_indices.iter().enumerate().map(|(idx, beads)| {
+                let residue = &residues[idx];
+                json!({
+                    "residue_index": idx,
+                    "resid": residue.resid,
+                    "resname": residue.resname,
+                    "chain": residue.chain.to_string(),
+                    "role": residue_role_for_policy(idx, residues.len(), source_polymer_enabled(request)),
+                    "bead_count": beads.len()
+                })
+            }).collect::<Vec<_>>()
+        }),
     })
 }
 

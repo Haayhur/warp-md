@@ -295,5 +295,26 @@ pub(super) fn build_template_source_mapping(
         aa_atom_count: molecule.atoms.len(),
         templates,
         provenance,
+        warnings: Vec::new(),
+        mapping_summary: json!({
+            "bond_source": "template",
+            "aromaticity_source": "template",
+            "polymer_enabled": true,
+            "residue_count": residues.len(),
+            "bond_count": molecule.bonds.len(),
+            "warning_count": 0,
+            "chemistry_hint_count": request.chemistry_hints.len(),
+            "residue_bead_counts": residue_to_bead_indices.iter().enumerate().map(|(idx, beads)| {
+                let residue = &residues[idx];
+                json!({
+                    "residue_index": idx,
+                    "resid": residue.resid,
+                    "resname": residue.resname,
+                    "chain": residue.chain.to_string(),
+                    "role": residue_role(idx, residues.len()),
+                    "bead_count": beads.len()
+                })
+            }).collect::<Vec<_>>()
+        }),
     })
 }

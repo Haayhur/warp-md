@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
-use warp_structure::io::read_molecule;
+use warp_structure::io::{read_molecule, read_system_auto, MoleculeData};
 use warp_structure::AtomRecord;
 
 use crate::mapping::{map_molecule_with_options, MappingOptions, MappingResult};
@@ -11,6 +11,7 @@ use crate::molecule::Molecule;
 
 use super::agent_source_ndx::build_ndx_source_mapping;
 use super::agent_source_template::build_template_source_mapping;
+use super::agent_source_validation::source_selection;
 use super::{CgRequest, SourceBeadRecord, SourceHandoff, SourceMappingResult, SourceResidue};
 
 pub(super) fn source_residues(atoms: &[AtomRecord]) -> Vec<SourceResidue> {
@@ -172,7 +173,44 @@ pub(super) fn load_mapping_template(path: &str) -> Result<Value> {
     Ok(value)
 }
 
-pub(super) fn residue_role(residue_idx: usize, residue_count: usize) -> &'static str {
+pub(super) fn source_polymer_enabled(request: &CgRequest) -> bool {
+    request
+        .polymer
+        .as_ref()
+        .and_then(|polymer| polymer.enabled)
+        .unwrap_or(false)
+        || request
+            .mapping
+            .as_ref()
+            .and_then(|mapping| mapping.strategy.as_deref())
+            .is_some_and(|strategy| strategy == "polymer_residue_graph")
+}
+
+pub(super) fn source_terminal_aware(request: &CgRequest) -> bool {
+    if !source_polymer_enabled(request) {
+        return false;
+    }
+    request
+        .polymer
+        .as_ref()
+        .and_then(|polymer| polymer.terminal_aware)
+        .or_else(|| {
+            request
+                .mapping
+                .as_ref()
+                .and_then(|mapping| mapping.terminal_aware)
+        })
+        .unwrap_or(true)
+}
+
+pub(super) fn residue_role_for_policy(
+    residue_idx: usize,
+    residue_count: usize,
+    polymer_enabled: bool,
+) -> &'static str {
+    if !polymer_enabled {
+        return "standalone";
+    }
     if residue_idx == 0 {
         "head"
     } else if residue_idx + 1 == residue_count {
@@ -180,6 +218,10 @@ pub(super) fn residue_role(residue_idx: usize, residue_count: usize) -> &'static
     } else {
         "middle"
     }
+}
+
+pub(super) fn residue_role(residue_idx: usize, residue_count: usize) -> &'static str {
+    residue_role_for_policy(residue_idx, residue_count, true)
 }
 
 pub(super) fn source_atom_name(atom: &AtomRecord) -> String {
@@ -281,6 +323,7 @@ fn build_generated_mapping_template(
     beads: &[SourceBeadRecord],
     atoms: &[AtomRecord],
     bonds: &[(usize, usize)],
+    polymer_enabled: bool,
     terminal_aware: bool,
 ) -> Value {
     let head = residues.first().map(|residue| {
@@ -332,6 +375,7 @@ fn build_generated_mapping_template(
         "target_bead_size": request.mapping.as_ref().and_then(|mapping| mapping.target_bead_size).unwrap_or(4),
         "preserve_functional_groups": request.mapping.as_ref().and_then(|mapping| mapping.preserve_functional_groups).unwrap_or(true),
         "terminal_aware": terminal_aware,
+        "polymer_enabled": polymer_enabled,
         "repeat_unit_hint": request.mapping.as_ref().and_then(|mapping| mapping.repeat_unit_hint.clone()),
         "residue_role_templates": {
             "head": head,
@@ -355,11 +399,8 @@ pub(super) fn source_mapping_provenance(
     mode: &str,
 ) -> Value {
     let source = request.source.as_ref();
-    let terminal_aware = request
-        .mapping
-        .as_ref()
-        .and_then(|mapping| mapping.terminal_aware)
-        .unwrap_or(true);
+    let polymer_enabled = source_polymer_enabled(request);
+    let terminal_aware = source_terminal_aware(request);
     let mut residue_name_counts = BTreeMap::<String, usize>::new();
     for residue in residues {
         *residue_name_counts
@@ -374,8 +415,9 @@ pub(super) fn source_mapping_provenance(
         "source_trajectory": handoff.trajectory.clone(),
         "selection": {
             "target_selection": source.and_then(|source| source.target_selection.clone()),
-            "policy": if source.and_then(|source| source.target_selection.as_ref()).is_some() {
-                "source.target_selection declared; provenance records atoms mapped by the resolved source coordinates"
+            "selection": source.and_then(|source| source.selection.clone()),
+            "policy": if source.and_then(source_selection).is_some() {
+                "source.selection/source.target_selection declared; provenance records atoms mapped by the resolved source coordinates"
             } else {
                 "default_all_source_coordinate_atoms_and_residues"
             },
@@ -386,14 +428,17 @@ pub(super) fn source_mapping_provenance(
         },
         "residue_interpretation": {
             "terminal_aware": terminal_aware,
+            "polymer_enabled": polymer_enabled,
+            "role_mode": request.polymer.as_ref().and_then(|polymer| polymer.role_mode.clone()).unwrap_or_else(|| "infer".to_string()),
+            "end_group_policy": request.polymer.as_ref().and_then(|polymer| polymer.end_group_policy.clone()).unwrap_or_else(|| "preserve".to_string()),
             "repeat_unit_hint": request.mapping.as_ref().and_then(|mapping| mapping.repeat_unit_hint.clone()),
-            "repeat_unit_interpretation": "one source residue is treated as one polymer repeat/terminal unit for source-driven polymer mapping",
+            "repeat_unit_interpretation": if polymer_enabled { "one source residue is treated as one polymer repeat/terminal unit for source-driven polymer mapping" } else { "structure input is treated as standalone residue/molecule mapping" },
             "residue_count": residues.len(),
             "residue_name_counts": residue_name_counts,
             "residues": residues.iter().enumerate().map(|(idx, residue)| {
                 json!({
                     "residue_index": idx,
-                    "role": residue_role(idx, residues.len()),
+                    "role": residue_role_for_policy(idx, residues.len(), polymer_enabled),
                     "resid": residue.resid,
                     "resname": residue.resname,
                     "chain": residue.chain.to_string(),
@@ -406,6 +451,8 @@ pub(super) fn source_mapping_provenance(
             }).collect::<Vec<_>>()
         },
         "residue_to_bead_map": residue_to_beads,
+        "chemistry_hints": request.chemistry_hints,
+        "chemistry_policy": request.chemistry_policy,
         "aa_atom_to_cg_bead": atom_to_bead.iter().map(|(atom_idx, bead_idx)| {
             json!({"aa_atom_index": atom_idx, "cg_bead_index": bead_idx})
         }).collect::<Vec<_>>()
@@ -449,7 +496,7 @@ pub(super) fn build_source_mapping(
     if is_template_source_mapping(request) {
         return build_template_source_mapping(request, handoff);
     }
-    let molecule = read_molecule(
+    let mut molecule = read_molecule(
         Path::new(&handoff.coordinates),
         handoff.coordinate_format.as_deref(),
         false,
@@ -457,6 +504,12 @@ pub(super) fn build_source_mapping(
         handoff.topology.as_deref().map(Path::new),
     )
     .map_err(|err| anyhow!("failed to read source coordinates: {err}"))?;
+    let mut warnings = Vec::new();
+    if let Some(source) = request.source.as_ref() {
+        molecule = apply_source_selection(request, source, handoff, molecule, &mut warnings)?;
+    }
+    let bond_source = resolve_bonds(request, &mut molecule, &mut warnings)?;
+    append_chemistry_hint_warnings(request, &molecule, &mut warnings)?;
     let residues = source_residues(&molecule.atoms);
     if residues.is_empty() {
         return Err(anyhow!("source coordinates contain no residues"));
@@ -464,11 +517,8 @@ pub(super) fn build_source_mapping(
     if is_ndx_source_mapping(request) {
         return build_ndx_source_mapping(request, handoff, &molecule, &residues);
     }
-    let terminal_aware = request
-        .mapping
-        .as_ref()
-        .and_then(|mapping| mapping.terminal_aware)
-        .unwrap_or(true);
+    let polymer_enabled = source_polymer_enabled(request);
+    let terminal_aware = source_terminal_aware(request);
     let target_bead_size = request
         .mapping
         .as_ref()
@@ -528,7 +578,7 @@ pub(super) fn build_source_mapping(
         residue_to_bead_indices.push(residue_beads.clone());
         residue_to_beads.push(json!({
             "residue_index": residue_idx,
-            "role": residue_role(residue_idx, residues.len()),
+                    "role": residue_role_for_policy(residue_idx, residues.len(), polymer_enabled),
             "resid": residue.resid,
             "resname": residue.resname,
             "chain": residue.chain.to_string(),
@@ -552,6 +602,7 @@ pub(super) fn build_source_mapping(
         &beads,
         &molecule.atoms,
         &molecule.bonds,
+        polymer_enabled,
         terminal_aware,
     );
     let provenance = source_mapping_provenance(
@@ -562,6 +613,14 @@ pub(super) fn build_source_mapping(
         residue_to_beads,
         &atom_to_bead,
         "auto",
+    );
+    let mapping_summary = source_mapping_summary(
+        request,
+        &residues,
+        &residue_to_bead_indices,
+        &molecule.bonds,
+        &bond_source,
+        &warnings,
     );
 
     Ok(SourceMappingResult {
@@ -577,5 +636,325 @@ pub(super) fn build_source_mapping(
         aa_atom_count: molecule.atoms.len(),
         templates,
         provenance,
+        warnings,
+        mapping_summary,
+    })
+}
+
+fn apply_source_selection(
+    request: &CgRequest,
+    source: &super::CgSource,
+    handoff: &SourceHandoff,
+    molecule: MoleculeData,
+    warnings: &mut Vec<Value>,
+) -> Result<MoleculeData> {
+    let Some(selection_expr) = source_selection(source) else {
+        return Ok(molecule);
+    };
+    let mut system = read_system_auto(
+        Path::new(&handoff.coordinates),
+        handoff.coordinate_format.as_deref(),
+    )
+    .map_err(|err| anyhow!("failed to read source coordinates for selection: {err}"))?;
+    let selection = system
+        .select(selection_expr)
+        .map_err(|err| anyhow!("source selection '{selection_expr}' failed: {err}"))?;
+    if selection.indices.is_empty() {
+        return Err(anyhow!(
+            "source selection '{selection_expr}' selected no atoms"
+        ));
+    }
+    let selected = selection
+        .indices
+        .iter()
+        .map(|idx| *idx as usize)
+        .collect::<BTreeSet<_>>();
+    if selected.len() == molecule.atoms.len() {
+        return Ok(molecule);
+    }
+    warnings.push(json!({
+        "code": "warp_cg.source_selection_applied",
+        "severity": "info",
+        "message": "source selection was applied before CG mapping",
+        "selection": selection_expr,
+        "selected_atoms": selected.len(),
+        "source_atoms": molecule.atoms.len()
+    }));
+    let old_to_new = selected
+        .iter()
+        .enumerate()
+        .map(|(new_idx, old_idx)| (*old_idx, new_idx))
+        .collect::<BTreeMap<_, _>>();
+    let atoms = selected
+        .iter()
+        .filter_map(|idx| molecule.atoms.get(*idx).cloned())
+        .collect::<Vec<_>>();
+    let bonds = molecule
+        .bonds
+        .into_iter()
+        .filter_map(|(a, b)| Some((*old_to_new.get(&a)?, *old_to_new.get(&b)?)))
+        .collect::<Vec<_>>();
+    let ter_after = molecule
+        .ter_after
+        .into_iter()
+        .filter_map(|idx| old_to_new.get(&idx).copied())
+        .collect::<Vec<_>>();
+    let _ = request;
+    Ok(MoleculeData {
+        atoms,
+        bonds,
+        box_vectors: molecule.box_vectors,
+        ter_after,
+    })
+}
+
+fn resolve_bonds(
+    request: &CgRequest,
+    molecule: &mut MoleculeData,
+    warnings: &mut Vec<Value>,
+) -> Result<String> {
+    if !molecule.bonds.is_empty() {
+        return Ok(
+            if request
+                .source
+                .as_ref()
+                .and_then(|source| source.topology.as_ref())
+                .is_some()
+            {
+                "explicit_topology".to_string()
+            } else {
+                "coordinates_connectivity".to_string()
+            },
+        );
+    }
+    let structure_default = request
+        .source
+        .as_ref()
+        .is_some_and(|source| source.kind == "structure");
+    let infer_bonds = request
+        .bonding
+        .as_ref()
+        .and_then(|bonding| bonding.infer_bonds)
+        .unwrap_or(structure_default);
+    if !infer_bonds {
+        return Err(anyhow!(
+            "source structure has no explicit bonds; set bonding.infer_bonds=true to infer bonds from coordinates"
+        ));
+    }
+    molecule.bonds = infer_coordinate_bonds(&molecule.atoms);
+    let on_ambiguous = request
+        .bonding
+        .as_ref()
+        .and_then(|bonding| bonding.on_ambiguous.as_deref())
+        .unwrap_or("warn");
+    let unknown_elements = molecule
+        .atoms
+        .iter()
+        .filter(|atom| source_atom_element(atom) == "X")
+        .count();
+    if molecule.bonds.is_empty() || unknown_elements > 0 {
+        let warning = json!({
+            "code": "warp_cg.bond_inference_ambiguous",
+            "severity": on_ambiguous,
+            "message": "bond inference from coordinates is ambiguous",
+            "inferred_bonds": molecule.bonds.len(),
+            "unknown_element_atoms": unknown_elements
+        });
+        if on_ambiguous == "error" {
+            return Err(anyhow!("{warning}"));
+        }
+        warnings.push(warning);
+    } else {
+        warnings.push(json!({
+            "code": "warp_cg.bonds_inferred_from_coordinates",
+            "severity": "warning",
+            "message": "source had no explicit bonds; bonds were inferred from interatomic distances",
+            "inferred_bonds": molecule.bonds.len()
+        }));
+    }
+    Ok("inferred_distance".to_string())
+}
+
+fn infer_coordinate_bonds(atoms: &[AtomRecord]) -> Vec<(usize, usize)> {
+    let mut bonds = Vec::new();
+    for i in 0..atoms.len() {
+        let ri = covalent_radius_angstrom(&source_atom_element(&atoms[i]));
+        if ri <= 0.0 {
+            continue;
+        }
+        for j in (i + 1)..atoms.len() {
+            let rj = covalent_radius_angstrom(&source_atom_element(&atoms[j]));
+            if rj <= 0.0 {
+                continue;
+            }
+            let cutoff = (ri + rj + 0.45).max(0.4);
+            let pi = atoms[i].position;
+            let pj = atoms[j].position;
+            let dx = pi.x - pj.x;
+            let dy = pi.y - pj.y;
+            let dz = pi.z - pj.z;
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            if dist > 0.1 && dist <= cutoff {
+                bonds.push((i, j));
+            }
+        }
+    }
+    bonds
+}
+
+fn append_chemistry_hint_warnings(
+    request: &CgRequest,
+    molecule: &MoleculeData,
+    warnings: &mut Vec<Value>,
+) -> Result<()> {
+    if request.chemistry_hints.is_empty() {
+        return Ok(());
+    }
+    let hint_mode = request
+        .chemistry_policy
+        .as_ref()
+        .and_then(|policy| policy.hint_mode.as_deref())
+        .unwrap_or("validate");
+    warnings.push(json!({
+        "code": "warp_cg.chemistry_hints_recorded",
+        "severity": "info",
+        "message": "chemistry hints were accepted and recorded in provenance; auto mapping uses source geometry unless template or ndx mapping is selected",
+        "hint_count": request.chemistry_hints.len(),
+        "hint_mode": hint_mode
+    }));
+    for hint in &request.chemistry_hints {
+        if hint.kind == "smiles" {
+            validate_smiles_hint_against_geometry(request, hint, molecule, warnings)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_smiles_hint_against_geometry(
+    request: &CgRequest,
+    hint: &super::ChemistryHintRequest,
+    molecule: &MoleculeData,
+    warnings: &mut Vec<Value>,
+) -> Result<()> {
+    let smiles = hint.value.as_deref().unwrap_or_default();
+    let hint_molecule = match Molecule::from_smiles(smiles) {
+        Ok(molecule) => molecule,
+        Err(err) => {
+            let warning = json!({
+                "code": "warp_cg.chemistry_hint_invalid_smiles",
+                "severity": chemistry_conflict_severity(request),
+                "message": "SMILES chemistry hint could not be parsed",
+                "scope": hint.scope,
+                "error": err.to_string()
+            });
+            return handle_chemistry_warning(request, warning, warnings);
+        }
+    };
+    let hinted_aromatic_rings = hint_molecule.aromatic_six_ring_count();
+    if hinted_aromatic_rings == 0 {
+        return Ok(());
+    }
+    let elements = molecule
+        .atoms
+        .iter()
+        .map(source_atom_element)
+        .collect::<Vec<_>>();
+    let positions = molecule
+        .atoms
+        .iter()
+        .map(|atom| [atom.position.x, atom.position.y, atom.position.z])
+        .collect::<Vec<_>>();
+    let geometry_molecule =
+        Molecule::from_elements_bonds_and_positions(&elements, &molecule.bonds, Some(&positions));
+    let geometry_aromatic_rings = geometry_molecule.aromatic_six_ring_count();
+    if geometry_aromatic_rings < hinted_aromatic_rings {
+        let warning = json!({
+            "code": "warp_cg.chemistry_hint_geometry_conflict",
+            "severity": chemistry_conflict_severity(request),
+            "message": "SMILES hint contains more aromatic six-rings than source geometry supports; check bond inference, protonation/capping, or whether the input structure is minimized",
+            "hint_kind": hint.kind,
+            "hint_scope": hint.scope,
+            "hint_aromatic_six_ring_count": hinted_aromatic_rings,
+            "geometry_aromatic_six_ring_count": geometry_aromatic_rings,
+            "hint_mode": request.chemistry_policy.as_ref().and_then(|policy| policy.hint_mode.as_deref()).unwrap_or("validate")
+        });
+        return handle_chemistry_warning(request, warning, warnings);
+    }
+    warnings.push(json!({
+        "code": "warp_cg.chemistry_hint_validated",
+        "severity": "info",
+        "message": "SMILES chemistry hint aromaticity is consistent with source geometry",
+        "hint_kind": hint.kind,
+        "hint_scope": hint.scope,
+        "hint_aromatic_six_ring_count": hinted_aromatic_rings,
+        "geometry_aromatic_six_ring_count": geometry_aromatic_rings
+    }));
+    Ok(())
+}
+
+fn chemistry_conflict_severity(request: &CgRequest) -> &str {
+    request
+        .chemistry_policy
+        .as_ref()
+        .and_then(|policy| policy.on_conflict.as_deref())
+        .unwrap_or("warn")
+}
+
+fn handle_chemistry_warning(
+    request: &CgRequest,
+    warning: Value,
+    warnings: &mut Vec<Value>,
+) -> Result<()> {
+    if chemistry_conflict_severity(request) == "error" {
+        return Err(anyhow!("{warning}"));
+    }
+    warnings.push(warning);
+    Ok(())
+}
+
+fn covalent_radius_angstrom(element: &str) -> f32 {
+    match element.trim().to_ascii_uppercase().as_str() {
+        "H" => 0.31,
+        "C" => 0.76,
+        "N" => 0.71,
+        "O" => 0.66,
+        "F" => 0.57,
+        "P" => 1.07,
+        "S" => 1.05,
+        "CL" => 1.02,
+        "BR" => 1.20,
+        "I" => 1.39,
+        _ => 0.0,
+    }
+}
+
+fn source_mapping_summary(
+    request: &CgRequest,
+    residues: &[SourceResidue],
+    residue_to_bead_indices: &[Vec<usize>],
+    bonds: &[(usize, usize)],
+    bond_source: &str,
+    warnings: &[Value],
+) -> Value {
+    let polymer_enabled = source_polymer_enabled(request);
+    json!({
+        "bond_source": bond_source,
+        "aromaticity_source": if bond_source == "inferred_distance" { "geometry" } else { "explicit_or_geometry" },
+        "polymer_enabled": polymer_enabled,
+        "terminal_aware": source_terminal_aware(request),
+        "residue_count": residues.len(),
+        "bond_count": bonds.len(),
+        "warning_count": warnings.len(),
+        "chemistry_hint_count": request.chemistry_hints.len(),
+        "residue_bead_counts": residues.iter().enumerate().map(|(idx, residue)| {
+            json!({
+                "residue_index": idx,
+                "resid": residue.resid,
+                "resname": residue.resname,
+                "chain": residue.chain.to_string(),
+                "role": residue_role_for_policy(idx, residues.len(), polymer_enabled),
+                "bead_count": residue_to_bead_indices.get(idx).map(Vec::len).unwrap_or(0)
+            })
+        }).collect::<Vec<_>>()
     })
 }

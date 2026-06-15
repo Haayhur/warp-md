@@ -49,6 +49,10 @@ fn reference_target_optimization_honors_requested_target_terms() {
         smiles: Some("c1ccccc1".to_string()),
         repeat_smiles: None,
         source: None,
+        bonding: None,
+        chemistry_hints: Vec::new(),
+        chemistry_policy: None,
+        polymer: None,
         mapping: None,
         topology: None,
         trajectory_source: Some(TrajectorySource {
