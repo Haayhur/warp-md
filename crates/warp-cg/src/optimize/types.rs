@@ -178,6 +178,28 @@ pub struct OptimizationConfig {
     pub swarm_size: Option<usize>,
     pub pso: Option<PsoConfig>,
     pub bo: Option<BoConfig>,
+    pub initial_parameters: BTreeMap<String, f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructuralMetricScoringConfig {
+    pub rg_weight: f64,
+    pub sasa_weight: f64,
+    pub missing_metric_penalty: f64,
+    pub require_rg: bool,
+    pub require_sasa: bool,
+}
+
+impl Default for StructuralMetricScoringConfig {
+    fn default() -> Self {
+        Self {
+            rg_weight: 1.0,
+            sasa_weight: 1.0,
+            missing_metric_penalty: 1.0e6,
+            require_rg: false,
+            require_sasa: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

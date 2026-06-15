@@ -173,7 +173,7 @@ impl BondedTermSet {
 
     pub fn from_gromacs_topology_str(topology: &str, molecule_type: &str) -> Result<Self, String> {
         let parsed = parse_gromacs_molecule_topology(topology, molecule_type)?;
-        parse_swarm_cg_grouped_terms(topology, molecule_type).map(|terms| {
+        parse_grouped_bonded_terms(topology, molecule_type).map(|terms| {
             let fallback = Self::from_gromacs_molecule_topology(&parsed);
             if terms.is_empty() {
                 fallback
@@ -205,7 +205,7 @@ enum GromacsSection {
     Other,
 }
 
-fn parse_swarm_cg_grouped_terms(
+fn parse_grouped_bonded_terms(
     topology: &str,
     molecule_type: &str,
 ) -> Result<BondedTermSet, String> {
@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn gromacs_topology_preserves_swarm_cg_comment_grouping() {
+    fn gromacs_topology_preserves_grouped_bonded_comment_grouping() {
         let topology = r#"
 [ moleculetype ]
   MOL 1

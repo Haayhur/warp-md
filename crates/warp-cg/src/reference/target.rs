@@ -102,6 +102,7 @@ pub enum ReferenceTermKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReferenceScore {
     pub total: f64,
+    pub constraints_bonds: f64,
     pub constraints: f64,
     pub bonds: f64,
     pub angles: f64,
@@ -139,7 +140,7 @@ impl Default for ReferenceScoringConfig {
 }
 
 impl ReferenceScoringConfig {
-    pub fn swarm_cg() -> Self {
+    pub fn bonded_emd() -> Self {
         Self {
             bonds_to_angles_factor: 500.0,
             root_sum_square: true,
@@ -274,8 +275,8 @@ impl ReferenceTargetSet {
         }
     }
 
-    pub fn compare_swarm_cg(&self, candidate: &ReferenceTargetSet) -> ReferenceScore {
-        self.compare_with_config(candidate, &ReferenceScoringConfig::swarm_cg())
+    pub fn bonded_emd(&self, candidate: &ReferenceTargetSet) -> ReferenceScore {
+        self.compare_with_config(candidate, &ReferenceScoringConfig::bonded_emd())
     }
 
     pub fn compare_with_config(
@@ -312,8 +313,10 @@ impl ReferenceTargetSet {
             1.0,
             config.root_sum_square,
         );
+        let constraints_bonds = aggregate_bonded_category(&terms, config);
         ReferenceScore {
-            total: constraints + bonds + angles + dihedrals,
+            total: constraints_bonds + angles + dihedrals,
+            constraints_bonds,
             constraints,
             bonds,
             angles,
@@ -507,6 +510,31 @@ fn aggregate_category(
         scores.iter().map(|score| score.powi(2)).sum::<f64>().sqrt()
     } else {
         scores.iter().sum()
+    }
+}
+
+fn aggregate_bonded_category(terms: &[ReferenceTermScore], config: &ReferenceScoringConfig) -> f64 {
+    if config.root_sum_square {
+        terms
+            .iter()
+            .filter(|term| {
+                term.kind == ReferenceTermKind::Constraint || term.kind == ReferenceTermKind::Bond
+            })
+            .map(|term| (term.score * config.bonds_to_angles_factor).powi(2))
+            .sum::<f64>()
+            .sqrt()
+    } else {
+        aggregate_category(
+            terms,
+            ReferenceTermKind::Constraint,
+            config.bonds_to_angles_factor,
+            false,
+        ) + aggregate_category(
+            terms,
+            ReferenceTermKind::Bond,
+            config.bonds_to_angles_factor,
+            false,
+        )
     }
 }
 

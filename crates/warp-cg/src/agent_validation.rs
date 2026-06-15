@@ -7,7 +7,7 @@ use candidate_extraction::validate_candidate_trajectory_extraction;
 
 use super::{
     validate_positive, BondedTermSource, BondingPolicyRequest, CgRequest, CgSource,
-    ChemistryHintRequest, ChemistryPolicyRequest, JsonFileEvaluatorRequest,
+    ChemistryHintRequest, ChemistryPolicyRequest, JsonFileEvaluatorRequest, MetricScoringRequest,
     ObjectiveEvaluatorRequest, ParameterTuningRequest, PolymerPolicyRequest,
     PrecomputedReferenceRequest, ReferenceMetricSourceRequest, ReferenceTransformRequest,
     XtbRequest, AGENT_SCHEMA_VERSION,
@@ -79,6 +79,32 @@ pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
         }
         if mapping.mode == "template" && mapping.template.is_none() && request.source.is_some() {
             return Err(anyhow!("mapping.mode=template requires mapping.template"));
+        }
+        if let Some(policy) = mapping.template_policy.as_deref() {
+            if !matches!(policy, "strict_graph" | "assignment_only") {
+                return Err(anyhow!(
+                    "mapping.template_policy must be strict_graph or assignment_only"
+                ));
+            }
+        }
+        if let Some(on_mismatch) = mapping.on_bead_count_mismatch.as_deref() {
+            if !matches!(on_mismatch, "warn" | "error") {
+                return Err(anyhow!(
+                    "mapping.on_bead_count_mismatch must be warn or error"
+                ));
+            }
+        }
+        for (role, count) in &mapping.expected_beads_per_role {
+            if !matches!(role.as_str(), "head" | "middle" | "tail" | "standalone") {
+                return Err(anyhow!(
+                    "mapping.expected_beads_per_role keys must be head, middle, tail, or standalone"
+                ));
+            }
+            if *count == 0 {
+                return Err(anyhow!(
+                    "mapping.expected_beads_per_role values must be greater than zero"
+                ));
+            }
         }
         if mapping.mode == "ndx" && mapping.ndx.is_none() {
             return Err(anyhow!("mapping.mode=ndx requires mapping.ndx"));
@@ -509,11 +535,48 @@ fn validate_tuning_request(
             "{field}.method must be bayesian_optimization or pso"
         ));
     }
+    if let Some(mode) = tuning.fitting_mode.as_deref() {
+        if !matches!(
+            mode,
+            "auto"
+                | "direct_statistics"
+                | "distribution_fit"
+                | "external_evaluator"
+                | "simulation_fit"
+        ) {
+            return Err(anyhow!(
+                "{field}.fitting_mode must be auto, direct_statistics, distribution_fit, external_evaluator, or simulation_fit"
+            ));
+        }
+    }
+    if tuning
+        .min_samples_per_term
+        .is_some_and(|samples| samples == 0)
+    {
+        return Err(anyhow!(
+            "{field}.min_samples_per_term must be greater than zero"
+        ));
+    }
+    if let Some(policy) = tuning.on_insufficient_samples.as_deref() {
+        if !matches!(policy, "warn" | "error") {
+            return Err(anyhow!(
+                "{field}.on_insufficient_samples must be warn or error"
+            ));
+        }
+    }
     if tuning.max_evaluations == Some(0) {
         return Err(anyhow!("{field}.max_evaluations must be greater than zero"));
     }
     if tuning.swarm_size == Some(0) {
         return Err(anyhow!("{field}.swarm_size must be greater than zero"));
+    }
+    for (name, value) in &tuning.initial_parameters {
+        if name.trim().is_empty() {
+            return Err(anyhow!("{field}.initial_parameters keys must not be empty"));
+        }
+        if !value.is_finite() {
+            return Err(anyhow!("{field}.initial_parameters.{name} must be finite"));
+        }
     }
     if tuning.pso.is_some() && tuning.method != "pso" {
         return Err(anyhow!("{field}.pso requires method pso"));
@@ -583,8 +646,24 @@ fn validate_tuning_request(
     if let Some(xtb) = &tuning.xtb {
         validate_xtb_request(xtb, &format!("{field}.xtb"))?;
     }
+    if let Some(metric_scoring) = &tuning.metric_scoring {
+        validate_metric_scoring(metric_scoring, &format!("{field}.metric_scoring"))?;
+    }
     if let Some(evaluator) = &tuning.evaluator {
         validate_objective_evaluator(evaluator, field)?;
+    }
+    if tuning.fitting_mode.as_deref() == Some("simulation_fit") {
+        let has_candidate_extraction = tuning
+            .evaluator
+            .as_ref()
+            .and_then(|evaluator| evaluator.json_file.as_ref())
+            .and_then(|json_file| json_file.candidate_extraction.as_ref())
+            .is_some();
+        if !has_candidate_extraction {
+            return Err(anyhow!(
+                "{field}.fitting_mode=simulation_fit requires optimization.evaluator.json_file.candidate_extraction"
+            ));
+        }
     }
     if tuning.enabled
         && (tuning.source == "external_trajectory" || tuning.source == "aa_trajectory")
@@ -611,6 +690,24 @@ fn validate_tuning_request(
             "{field} xtb parameter tuning requires reference_source.kind=xtb"
         ));
     }
+    Ok(())
+}
+
+fn validate_metric_scoring(source: &MetricScoringRequest, field: &str) -> Result<()> {
+    for (name, value) in [
+        ("rg_weight", source.rg_weight),
+        ("sasa_weight", source.sasa_weight),
+    ] {
+        if let Some(value) = value {
+            if !value.is_finite() || value < 0.0 {
+                return Err(anyhow!("{field}.{name} must be finite and non-negative"));
+            }
+        }
+    }
+    validate_positive(
+        source.missing_metric_penalty,
+        &format!("{field}.missing_metric_penalty"),
+    )?;
     Ok(())
 }
 

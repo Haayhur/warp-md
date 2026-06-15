@@ -41,6 +41,10 @@ fn json_file_evaluator_runs_command_and_reads_result() {
             args: Vec::new(),
         }),
         reference_targets: None,
+        reference_metrics: Default::default(),
+        metric_scoring: Default::default(),
+        force_reference_scoring: false,
+        require_candidate_trajectory: false,
         candidate_extraction: None,
     });
     let bounds = vec![ParameterBound {
@@ -101,6 +105,10 @@ fn json_file_evaluator_returns_failed_status_from_result() {
             args: Vec::new(),
         }),
         reference_targets: None,
+        reference_metrics: Default::default(),
+        metric_scoring: Default::default(),
+        force_reference_scoring: false,
+        require_candidate_trajectory: false,
         candidate_extraction: None,
     });
     let candidate = OptimizationCandidate::from_parameters(
@@ -152,6 +160,10 @@ fn json_file_evaluator_can_drive_shared_optimizer_entrypoint() {
             args: Vec::new(),
         }),
         reference_targets: None,
+        reference_metrics: Default::default(),
+        metric_scoring: Default::default(),
+        force_reference_scoring: false,
+        require_candidate_trajectory: false,
         candidate_extraction: None,
     });
     let report = optimize_with_named_evaluator(
@@ -173,6 +185,7 @@ fn json_file_evaluator_can_drive_shared_optimizer_entrypoint() {
                 ..PsoConfig::default()
             }),
             bo: None,
+            initial_parameters: std::collections::BTreeMap::new(),
         },
         &[],
     );
@@ -223,6 +236,10 @@ fn json_file_evaluator_scores_candidate_targets_against_reference() {
             args: Vec::new(),
         }),
         reference_targets: Some(reference_targets),
+        reference_metrics: Default::default(),
+        metric_scoring: Default::default(),
+        force_reference_scoring: false,
+        require_candidate_trajectory: false,
         candidate_extraction: None,
     });
     let candidate = OptimizationCandidate::from_parameters(
@@ -245,6 +262,132 @@ fn json_file_evaluator_scores_candidate_targets_against_reference() {
     )
     .unwrap();
     assert_eq!(request_json["reference_targets"]["bonds"][0]["mean"], 0.47);
+}
+
+#[test]
+fn json_file_evaluator_adds_rg_sasa_metric_objective() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let runner = tempdir.path().join("runner.sh");
+    std::fs::write(
+        &runner,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "python3 - <<'PY'\n",
+            "import json, os\n",
+            "with open(os.environ['WARP_CG_CANDIDATE_JSON']) as fp:\n",
+            "    req = json.load(fp)\n",
+            "with open(os.environ['WARP_CG_RESULT_JSON'], 'w') as fp:\n",
+            "    json.dump({\n",
+            "        'schema_version': 'warp-cg.objective-result.v1',\n",
+            "        'status': 'completed',\n",
+            "        'metrics': {'rg_mean_nm': 1.2, 'sasa_approx_mean_nm2': 11.0},\n",
+            "        'candidate_targets': req['reference_targets']\n",
+            "    }, fp)\n",
+            "PY\n",
+        ),
+    )
+    .unwrap();
+    make_executable(&runner);
+    let mut evaluator = JsonFileObjectiveEvaluator::new(JsonFileEvaluatorConfig {
+        work_dir: tempdir.path().join("runs"),
+        request_filename: "candidate.json".to_string(),
+        result_filename: "result.json".to_string(),
+        command: Some(JsonFileEvaluatorCommand {
+            program: runner.to_string_lossy().to_string(),
+            args: Vec::new(),
+        }),
+        reference_targets: Some(single_bond_target_set()),
+        reference_metrics: std::collections::BTreeMap::from([
+            ("rg_mean_nm".to_string(), 1.0),
+            ("rg_std_nm".to_string(), 0.1),
+            ("sasa_approx_mean_nm2".to_string(), 10.0),
+            ("sasa_approx_std_nm2".to_string(), 2.0),
+        ]),
+        metric_scoring: StructuralMetricScoringConfig {
+            rg_weight: 2.0,
+            sasa_weight: 0.5,
+            ..StructuralMetricScoringConfig::default()
+        },
+        force_reference_scoring: false,
+        require_candidate_trajectory: false,
+        candidate_extraction: None,
+    });
+    let candidate = OptimizationCandidate::from_parameters(
+        &[0.47],
+        &[ParameterBound {
+            name: "bond:B1".to_string(),
+            min: 0.0,
+            max: 1.0,
+        }],
+    );
+
+    let evaluation = evaluator.evaluate_candidate(&candidate);
+
+    assert_eq!(evaluation.status, EvaluationStatus::Completed);
+    assert!((evaluation.objective.unwrap() - 8.125).abs() < 1.0e-12);
+    assert!((evaluation.metrics["rg_objective"] - 8.0).abs() < 1.0e-12);
+    assert!((evaluation.metrics["sasa_objective"] - 0.125).abs() < 1.0e-12);
+    assert!((evaluation.metrics["structural_metric_objective"] - 8.125).abs() < 1.0e-12);
+    assert!(evaluation.metrics["bonded_emd_objective"].abs() < 1.0e-12);
+}
+
+#[test]
+fn json_file_evaluator_penalizes_missing_sasa_metric() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let runner = tempdir.path().join("runner.sh");
+    std::fs::write(
+        &runner,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "python3 - <<'PY'\n",
+            "import json, os\n",
+            "with open(os.environ['WARP_CG_CANDIDATE_JSON']) as fp:\n",
+            "    req = json.load(fp)\n",
+            "with open(os.environ['WARP_CG_RESULT_JSON'], 'w') as fp:\n",
+            "    json.dump({\n",
+            "        'schema_version': 'warp-cg.objective-result.v1',\n",
+            "        'status': 'completed',\n",
+            "        'candidate_targets': req['reference_targets']\n",
+            "    }, fp)\n",
+            "PY\n",
+        ),
+    )
+    .unwrap();
+    make_executable(&runner);
+    let mut evaluator = JsonFileObjectiveEvaluator::new(JsonFileEvaluatorConfig {
+        work_dir: tempdir.path().join("runs"),
+        request_filename: "candidate.json".to_string(),
+        result_filename: "result.json".to_string(),
+        command: Some(JsonFileEvaluatorCommand {
+            program: runner.to_string_lossy().to_string(),
+            args: Vec::new(),
+        }),
+        reference_targets: Some(single_bond_target_set()),
+        reference_metrics: std::collections::BTreeMap::from([(
+            "sasa_approx_mean_nm2".to_string(),
+            10.0,
+        )]),
+        metric_scoring: Default::default(),
+        force_reference_scoring: false,
+        require_candidate_trajectory: false,
+        candidate_extraction: None,
+    });
+    let candidate = OptimizationCandidate::from_parameters(
+        &[0.47],
+        &[ParameterBound {
+            name: "bond:B1".to_string(),
+            min: 0.0,
+            max: 1.0,
+        }],
+    );
+
+    let evaluation = evaluator.evaluate_candidate(&candidate);
+
+    assert_eq!(evaluation.status, EvaluationStatus::Completed);
+    assert!(evaluation.objective.unwrap() >= 1.0e6);
+    assert_eq!(evaluation.metrics["sasa_missing_penalty"], 1.0e6);
 }
 
 #[test]
@@ -289,6 +432,10 @@ fn json_file_evaluator_extracts_candidate_targets_from_runner_trajectory() {
             args: Vec::new(),
         }),
         reference_targets: Some(default_binned_single_bond_target_set()),
+        reference_metrics: Default::default(),
+        metric_scoring: Default::default(),
+        force_reference_scoring: false,
+        require_candidate_trajectory: false,
         candidate_extraction: Some(CandidateTrajectoryExtractionConfig {
             mapping,
             connections: vec![(0, 1)],
@@ -322,6 +469,140 @@ fn json_file_evaluator_extracts_candidate_targets_from_runner_trajectory() {
         .path()
         .join("runs/evaluation_000000/candidate_reference_targets.json")
         .is_file());
+}
+
+#[test]
+fn json_file_evaluator_force_scores_candidate_trajectory() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let runner = tempdir.path().join("runner.sh");
+    std::fs::write(
+        &runner,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "cat > candidate.xyz <<'XYZ'\n",
+            "2\n",
+            "frame 0\n",
+            "C 0.0 0.0 0.0\n",
+            "C 0.75 0.0 0.0\n",
+            "2\n",
+            "frame 1\n",
+            "C 0.0 0.0 0.0\n",
+            "C 0.75 0.0 0.0\n",
+            "XYZ\n",
+            "cat > \"$WARP_CG_RESULT_JSON\" <<'JSON'\n",
+            "{\"schema_version\":\"warp-cg.objective-result.v1\",",
+            "\"status\":\"completed\",",
+            "\"objective\":999.0,",
+            "\"candidate_trajectory\":{\"path\":\"candidate.xyz\"}}\n",
+            "JSON\n",
+        ),
+    )
+    .unwrap();
+    make_executable(&runner);
+    let mapping = BeadMapping {
+        bead_names: vec!["B0".to_string(), "B1".to_string()],
+        atom_indices: vec![vec![0], vec![1]],
+    };
+    let mut evaluator = JsonFileObjectiveEvaluator::new(JsonFileEvaluatorConfig {
+        work_dir: tempdir.path().join("runs"),
+        request_filename: "candidate.json".to_string(),
+        result_filename: "result.json".to_string(),
+        command: Some(JsonFileEvaluatorCommand {
+            program: runner.to_string_lossy().to_string(),
+            args: Vec::new(),
+        }),
+        reference_targets: Some(default_binned_single_bond_target_set()),
+        reference_metrics: Default::default(),
+        metric_scoring: Default::default(),
+        force_reference_scoring: true,
+        require_candidate_trajectory: true,
+        candidate_extraction: Some(CandidateTrajectoryExtractionConfig {
+            mapping,
+            connections: vec![(0, 1)],
+            term_set: None,
+            options: NativeTrajectoryOptions::default(),
+            transform: None,
+            mapped_trajectory_name: None,
+        }),
+    });
+    let candidate = OptimizationCandidate::from_parameters(
+        &[0.75],
+        &[ParameterBound {
+            name: "bond:B1".to_string(),
+            min: 0.0,
+            max: 1.0,
+        }],
+    );
+
+    let evaluation = evaluator.evaluate_candidate(&candidate);
+
+    assert_eq!(evaluation.status, EvaluationStatus::Completed);
+    assert_ne!(evaluation.objective, Some(999.0));
+    assert!(evaluation
+        .metrics
+        .contains_key("candidate_trajectory.rg_samples"));
+    assert!(evaluation.metrics.contains_key("bonds_emd"));
+}
+
+#[test]
+fn json_file_evaluator_rejects_candidate_targets_only_when_trajectory_required() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let runner = tempdir.path().join("runner.sh");
+    std::fs::write(
+        &runner,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "python3 - <<'PY'\n",
+            "import json, os\n",
+            "with open(os.environ['WARP_CG_CANDIDATE_JSON']) as fp:\n",
+            "    req = json.load(fp)\n",
+            "with open(os.environ['WARP_CG_RESULT_JSON'], 'w') as fp:\n",
+            "    json.dump({\n",
+            "        'schema_version': 'warp-cg.objective-result.v1',\n",
+            "        'status': 'completed',\n",
+            "        'candidate_targets': req['reference_targets']\n",
+            "    }, fp)\n",
+            "PY\n",
+        ),
+    )
+    .unwrap();
+    make_executable(&runner);
+    let mut evaluator = JsonFileObjectiveEvaluator::new(JsonFileEvaluatorConfig {
+        work_dir: tempdir.path().join("runs"),
+        request_filename: "candidate.json".to_string(),
+        result_filename: "result.json".to_string(),
+        command: Some(JsonFileEvaluatorCommand {
+            program: runner.to_string_lossy().to_string(),
+            args: Vec::new(),
+        }),
+        reference_targets: Some(single_bond_target_set()),
+        reference_metrics: Default::default(),
+        metric_scoring: Default::default(),
+        force_reference_scoring: true,
+        require_candidate_trajectory: true,
+        candidate_extraction: None,
+    });
+    let candidate = OptimizationCandidate::from_parameters(
+        &[0.47],
+        &[ParameterBound {
+            name: "bond:B1".to_string(),
+            min: 0.0,
+            max: 1.0,
+        }],
+    );
+
+    let evaluation = evaluator.evaluate_candidate(&candidate);
+
+    assert!(matches!(
+        evaluation.status,
+        EvaluationStatus::FailedExtraction { .. }
+    ));
+    let EvaluationStatus::FailedExtraction { reason } = evaluation.status else {
+        unreachable!();
+    };
+    assert!(reason.contains("candidate_trajectory"));
 }
 
 #[test]
@@ -419,6 +700,10 @@ fn evaluate_single_bond_runner(
             args: Vec::new(),
         }),
         reference_targets: Some(single_bond_target_set()),
+        reference_metrics: Default::default(),
+        metric_scoring: Default::default(),
+        force_reference_scoring: false,
+        require_candidate_trajectory: false,
         candidate_extraction: None,
     });
     let candidate = OptimizationCandidate::from_parameters(

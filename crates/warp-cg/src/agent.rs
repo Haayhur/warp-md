@@ -25,6 +25,8 @@ mod agent_reference_result;
 mod agent_render;
 #[path = "agent_runtime.rs"]
 mod agent_runtime;
+#[path = "agent_source_bonded_terms.rs"]
+mod agent_source_bonded_terms;
 #[path = "agent_source_mapping.rs"]
 mod agent_source_mapping;
 #[path = "agent_source_ndx.rs"]
@@ -51,7 +53,9 @@ use agent_execution::run_request;
 #[cfg(test)]
 use agent_render::{render_martini_itp, render_martini_top};
 use agent_runtime::validate_positive;
-use agent_source_types::{SourceBeadRecord, SourceHandoff, SourceMappingResult, SourceResidue};
+use agent_source_types::{
+    SourceBeadClassContext, SourceBeadRecord, SourceHandoff, SourceMappingResult, SourceResidue,
+};
 use agent_source_validation::validation_report;
 use agent_validation::validate_request;
 #[cfg(test)]
@@ -176,6 +180,12 @@ pub struct CgMappingRequest {
     pub preserve_functional_groups: Option<bool>,
     #[serde(default)]
     pub template: Option<String>,
+    #[serde(default)]
+    pub template_policy: Option<String>,
+    #[serde(default)]
+    pub expected_beads_per_role: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub on_bead_count_mismatch: Option<String>,
     #[serde(default)]
     pub ndx: Option<String>,
     #[serde(default)]
@@ -314,9 +324,19 @@ pub struct ParameterTuningRequest {
     #[schemars(default = "default_tuning_method")]
     pub method: String,
     #[serde(default)]
+    pub fitting_mode: Option<String>,
+    #[serde(default)]
+    pub allow_single_frame: Option<bool>,
+    #[serde(default)]
+    pub min_samples_per_term: Option<usize>,
+    #[serde(default)]
+    pub on_insufficient_samples: Option<String>,
+    #[serde(default)]
     pub max_evaluations: Option<usize>,
     #[serde(default)]
     pub seed: Option<u64>,
+    #[serde(default)]
+    pub initial_parameters: BTreeMap<String, f64>,
     #[serde(default)]
     pub swarm_size: Option<usize>,
     #[serde(default)]
@@ -331,7 +351,24 @@ pub struct ParameterTuningRequest {
     #[serde(default)]
     pub xtb: Option<XtbRequest>,
     #[serde(default)]
+    pub metric_scoring: Option<MetricScoringRequest>,
+    #[serde(default)]
     pub evaluator: Option<ObjectiveEvaluatorRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MetricScoringRequest {
+    #[serde(default)]
+    pub rg_weight: Option<f64>,
+    #[serde(default)]
+    pub sasa_weight: Option<f64>,
+    #[serde(default)]
+    pub missing_metric_penalty: Option<f64>,
+    #[serde(default)]
+    pub require_rg: Option<bool>,
+    #[serde(default)]
+    pub require_sasa: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

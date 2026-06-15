@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -73,6 +74,8 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
     let mut first_cg_coords: Option<Vec<[f32; 3]>> = None;
     let mut reference_targets = None;
     let mut reference_result = None;
+    let mut reference_metrics = BTreeMap::new();
+    let mut reference_frames_read = None;
     let bead_mapping = BeadMapping {
         bead_names: mapping.bead_names.clone(),
         atom_indices: mapping.atom_groups.clone(),
@@ -89,6 +92,8 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
         bond_stats = reference_data.bonded_stats.bonds;
         angle_stats = reference_data.bonded_stats.angles;
         dihedral_stats = reference_data.bonded_stats.dihedrals;
+        reference_metrics = reference_data.metrics.clone();
+        reference_frames_read = nonzero_frames_read(reference_data.metadata.frames_read);
         first_cg_coords = reference_data.first_cg_coords;
         reference_targets = reference_data.target_set;
     }
@@ -106,6 +111,8 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
                 tuning,
                 &bonded_stats,
                 reference_targets.as_ref(),
+                reference_frames_read,
+                Some(&reference_metrics),
                 &out_dir,
                 &request.name,
                 &mut artifacts,
@@ -122,6 +129,7 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
         &angle_stats,
         &dihedral_stats,
         first_cg_coords.as_deref(),
+        reference_targets.as_ref(),
         optimization_result
             .as_ref()
             .and_then(|tuning| tuning.report.as_ref()),
@@ -172,6 +180,7 @@ fn write_small_molecule_artifacts(
     angle_stats: &[AngleStats],
     dihedral_stats: &[DihedralStats],
     first_cg_coords: Option<&[[f32; 3]]>,
+    reference_targets: Option<&crate::reference::ReferenceTargetSet>,
     optimization_report: Option<&OptimizationReport>,
 ) -> Result<()> {
     if request.output.write_cg_pdb {
@@ -204,6 +213,7 @@ fn write_small_molecule_artifacts(
             bond_stats,
             angle_stats,
             dihedral_stats,
+            reference_targets,
             optimization_report,
         );
         std::fs::write(&itp_path, itp)?;
@@ -219,6 +229,7 @@ fn write_small_molecule_artifacts(
                 bond_stats,
                 angle_stats,
                 dihedral_stats,
+                reference_targets,
                 optimization_report,
             );
             std::fs::write(&map_path, serde_json::to_vec_pretty(&parameter_map)?)?;
@@ -391,6 +402,10 @@ fn append_reference_artifacts(artifacts: &mut Vec<CgArtifact>, reference: &Refer
     }
 }
 
+fn nonzero_frames_read(frames_read: usize) -> Option<usize> {
+    (frames_read > 0).then_some(frames_read)
+}
+
 fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult> {
     let source = request
         .source
@@ -444,6 +459,8 @@ fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult>
     );
     let mut reference_targets = None;
     let mut reference_result = None;
+    let mut reference_metrics = BTreeMap::new();
+    let mut reference_frames_read = None;
 
     if request
         .reference_source
@@ -473,6 +490,8 @@ fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult>
         bond_stats = reference.bonded_stats.bonds;
         angle_stats = reference.bonded_stats.angles;
         dihedral_stats = reference.bonded_stats.dihedrals;
+        reference_metrics = reference.metrics.clone();
+        reference_frames_read = nonzero_frames_read(reference.metadata.frames_read);
         reference_targets = reference.target_set;
     }
 
@@ -492,7 +511,8 @@ fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult>
                 bead_names: source_mapping.mapping.bead_names.clone(),
                 atom_indices: source_mapping.mapping.atom_groups.clone(),
             };
-            let term_set = resolve_reference_term_set(request)?;
+            let term_set = resolve_reference_term_set(request)?
+                .or_else(|| source_mapping.bonded_terms.clone());
             let metric_sources = resolve_reference_metric_sources(request);
             let transform = resolve_reference_transform(request);
             let reference = provider.load_reference(&ReferenceRequest {
@@ -510,6 +530,8 @@ fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult>
             bond_stats = reference.bonded_stats.bonds;
             angle_stats = reference.bonded_stats.angles;
             dihedral_stats = reference.bonded_stats.dihedrals;
+            reference_metrics = reference.metrics.clone();
+            reference_frames_read = nonzero_frames_read(reference.metadata.frames_read);
             reference_targets = reference.target_set;
             first_cg_coords = reference.first_cg_coords.or(first_cg_coords);
         }
@@ -528,6 +550,8 @@ fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult>
                 tuning,
                 &bonded_stats,
                 reference_targets.as_ref(),
+                reference_frames_read,
+                Some(&reference_metrics),
                 &out_dir,
                 &request.name,
                 &mut artifacts,
@@ -544,6 +568,7 @@ fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult>
         &angle_stats,
         &dihedral_stats,
         first_cg_coords.as_deref(),
+        reference_targets.as_ref(),
         optimization_result
             .as_ref()
             .and_then(|tuning| tuning.report.as_ref()),
@@ -599,6 +624,7 @@ fn write_source_artifacts(
     angle_stats: &[AngleStats],
     dihedral_stats: &[DihedralStats],
     first_cg_coords: Option<&[[f32; 3]]>,
+    reference_targets: Option<&crate::reference::ReferenceTargetSet>,
     optimization_report: Option<&OptimizationReport>,
 ) -> Result<()> {
     if request.output.write_cg_pdb {
@@ -631,6 +657,7 @@ fn write_source_artifacts(
             bond_stats,
             angle_stats,
             dihedral_stats,
+            reference_targets,
             optimization_report,
         );
         std::fs::write(&itp_path, itp)?;
@@ -646,6 +673,7 @@ fn write_source_artifacts(
                 bond_stats,
                 angle_stats,
                 dihedral_stats,
+                reference_targets,
                 optimization_report,
             );
             std::fs::write(&map_path, serde_json::to_vec_pretty(&parameter_map)?)?;

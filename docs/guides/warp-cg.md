@@ -39,6 +39,7 @@ Core inputs:
 | `optimization.target_terms` | Bonded terms to optimize: `bonds`, `angles`, and/or `dihedrals` |
 | `optimization.max_evaluations` | Positive evaluation budget for BO/PSO |
 | `optimization.swarm_size` | Positive PSO swarm size when provided |
+| `optimization.initial_parameters` | Optional parameter-name map used as the first BO/PSO initial guess; missing names use midpoint defaults |
 | `output.write_topology_itp` | Write the molecule-level Martini-style ITP |
 | `output.write_topology_top` | Write a top-level Gromacs topology wrapper; requires `write_topology_itp=true` and should be set explicitly in partial `output` objects |
 | `output.write_cg_pdb` | Write a bead-level CG PDB coordinate artifact for quick downstream setup |
@@ -257,6 +258,14 @@ For every term, it records:
   }
 }
 ```
+
+For grouped template or ITP-derived targets, parameter names use class labels
+instead of bead indices, for example
+`bond.middle.M0_AR1__M0_SO2_length_nm` and
+`bond.middle.M0_AR1__M0_SO2_force`. The same names can be supplied in
+`optimization.initial_parameters` to seed BO/PSO from previous runs, direct
+statistics, or a curated force-field guess. Unknown names fail before
+optimization starts; finite values are clamped to generated bounds.
 
 The same structure is emitted for angles and dihedrals, including the exact BO/PSO parameter names used in the tuning report. This keeps the ITP human-readable while giving agents a deterministic crosswalk from fitted parameters back to source statistics.
 

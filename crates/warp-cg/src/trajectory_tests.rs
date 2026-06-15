@@ -16,7 +16,7 @@ fn map_frame_can_use_mass_weighted_centers() {
 }
 
 #[test]
-fn mass_weighted_mapping_splits_shared_atom_mass_like_swarm_cg() {
+fn mass_weighted_mapping_splits_shared_atom_mass_by_fractional_membership() {
     let dir = tempfile::tempdir().unwrap();
     let top = dir.path().join("split.prmtop");
     fs::write(

@@ -370,6 +370,46 @@ fn json_file_objective_evaluator_fields_are_validated() {
         .as_str()
         .unwrap()
         .contains("optimization.evaluator.json_file"));
+
+    let mut simulation_without_extraction = json!({
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "name": "runner_reference",
+        "smiles": "CC",
+        "reference_source": {
+            "kind": "precomputed",
+            "precomputed": {
+                "target_set": target_path.to_string_lossy()
+            }
+        },
+        "optimization": {
+            "enabled": true,
+            "source": "external_trajectory",
+            "method": "pso",
+            "fitting_mode": "simulation_fit",
+            "evaluator": {
+                "kind": "json_file",
+                "json_file": {
+                    "work_dir": "runner_evaluations",
+                    "command": {"program": "/bin/true"}
+                }
+            }
+        }
+    });
+    let (exit_code, result) = validate_request_json(&simulation_without_extraction.to_string());
+    assert_eq!(exit_code, 2);
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("candidate_extraction"));
+
+    simulation_without_extraction["optimization"]["metric_scoring"] = json!({"rg_weight": -1.0});
+    simulation_without_extraction["optimization"]["fitting_mode"] = json!("external_evaluator");
+    let (exit_code, result) = validate_request_json(&simulation_without_extraction.to_string());
+    assert_eq!(exit_code, 2);
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("metric_scoring.rg_weight"));
 }
 
 #[test]
@@ -578,7 +618,7 @@ fn output_paths_must_not_be_empty() {
 fn martini_itp_contains_atoms_and_bonds() {
     let mol = Molecule::from_smiles("c1ccccc1").unwrap();
     let mapping = map_molecule(&mol);
-    let itp = render_martini_itp("benzene", &mapping, &[], &[], &[], None);
+    let itp = render_martini_itp("benzene", &mapping, &[], &[], &[], None, None);
 
     assert!(itp.contains("[ moleculetype ]"));
     assert!(itp.contains("[ atoms ]"));
@@ -627,10 +667,129 @@ fn martini_itp_contains_angle_and_dihedral_sections() {
             samples: 4,
         }],
         None,
+        None,
     );
 
     assert!(itp.contains("[ angles ]"));
     assert!(itp.contains("[ dihedrals ]"));
+}
+
+#[test]
+fn martini_itp_applies_grouped_reference_target_parameters_to_all_members() {
+    let mapping = MappingResult {
+        bead_names: vec![
+            "C1".to_string(),
+            "C1".to_string(),
+            "C1".to_string(),
+            "C1".to_string(),
+        ],
+        atom_groups: vec![vec![0], vec![1], vec![2], vec![3]],
+        connections: vec![(0, 1), (2, 3)],
+        bead_features: vec![Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+        bead_formal_charges: vec![0, 0, 0, 0],
+    };
+    let targets = crate::reference::ReferenceTargetSet {
+        version: 1,
+        bin_config: crate::reference::ReferenceBinConfig::default(),
+        constraints: Vec::new(),
+        bonds: vec![crate::reference::ReferenceDistributionTarget::from_samples(
+            crate::reference::ReferenceTermKind::Bond,
+            Some("bond.middle.M0_AR1__M0_SO2".to_string()),
+            vec![0, 1],
+            vec![vec![0, 1], vec![2, 3]],
+            &[4.7, 4.9],
+            "angstrom",
+            false,
+            0.0,
+            30.0,
+            0.1,
+        )],
+        angles: Vec::new(),
+        dihedrals: Vec::new(),
+    };
+    let report = OptimizationReport {
+        status: "ok".to_string(),
+        method: "direct_statistics".to_string(),
+        objective: "bonded_parameter_parity".to_string(),
+        objective_value: 0.0,
+        converged: true,
+        bounds: Vec::new(),
+        best_parameters: vec![
+            (
+                "bond.middle.M0_AR1__M0_SO2_length_angstrom".to_string(),
+                5.0,
+            ),
+            ("bond.middle.M0_AR1__M0_SO2_force".to_string(), 777.0),
+        ],
+        evaluations: Vec::new(),
+        message: String::new(),
+    };
+
+    let itp = render_martini_itp(
+        "chain",
+        &mapping,
+        &[],
+        &[],
+        &[],
+        Some(&targets),
+        Some(&report),
+    );
+
+    assert!(itp.contains("; class: bond.middle.M0_AR1__M0_SO2"));
+    assert!(itp.contains("    1     2     1    0.50000    777.000"));
+    assert!(itp.contains("    3     4     1    0.50000    777.000"));
+    assert!(!itp.contains("bond_0_1_length_angstrom"));
+}
+
+#[test]
+fn martini_itp_preserves_grouped_reference_target_nm_lengths() {
+    let mapping = MappingResult {
+        bead_names: vec![
+            "C1".to_string(),
+            "C1".to_string(),
+            "C1".to_string(),
+            "C1".to_string(),
+        ],
+        atom_groups: vec![vec![0], vec![1], vec![2], vec![3]],
+        connections: vec![(0, 1), (2, 3)],
+        bead_features: vec![Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+        bead_formal_charges: vec![0, 0, 0, 0],
+    };
+    let targets = crate::reference::ReferenceTargetSet {
+        version: 1,
+        bin_config: crate::reference::ReferenceBinConfig::default(),
+        constraints: vec![crate::reference::ReferenceDistributionTarget::from_samples(
+            crate::reference::ReferenceTermKind::Constraint,
+            Some("constraint group 1".to_string()),
+            vec![0, 1],
+            vec![vec![0, 1]],
+            &[0.5],
+            "nm",
+            false,
+            0.0,
+            3.0,
+            0.01,
+        )],
+        bonds: vec![crate::reference::ReferenceDistributionTarget::from_samples(
+            crate::reference::ReferenceTermKind::Bond,
+            Some("bond group 1".to_string()),
+            vec![2, 3],
+            vec![vec![2, 3]],
+            &[0.5],
+            "nm",
+            false,
+            0.0,
+            3.0,
+            0.01,
+        )],
+        angles: Vec::new(),
+        dihedrals: Vec::new(),
+    };
+
+    let itp = render_martini_itp("chain", &mapping, &[], &[], &[], Some(&targets), None);
+
+    assert!(itp.contains("    1     2     1    0.50000"));
+    assert!(itp.contains("    3     4     1    0.50000   2500.000"));
 }
 
 #[test]

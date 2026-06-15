@@ -76,7 +76,7 @@ pub fn example_requests() -> Value {
             },
             "output": {"out_dir": "cg/pamam_g1_ndx_reference"}
         },
-        "swarm_cg_style_reference_only": {
+        "grouped_bonded_reference_only": {
             "schema_version": AGENT_SCHEMA_VERSION,
             "name": "pamam_g1_reference_only",
             "trajectory_source": {
@@ -116,6 +116,10 @@ pub fn example_requests() -> Value {
                 "source": "aa_trajectory",
                 "method": "bayesian_optimization",
                 "target_terms": ["constraints", "bonds", "angles", "dihedrals"],
+                "initial_parameters": {
+                    "bond.group_1_length_nm": 0.47,
+                    "bond.group_1_force": 1250.0
+                },
                 "max_evaluations": 64
             },
             "output": {"out_dir": "cg/benzene_traj_tuned"}
@@ -241,6 +245,27 @@ pub fn example_requests() -> Value {
             },
             "output": {"out_dir": "cg/benzene_structure"}
         },
+        "template_assignment_only_to_cg": {
+            "schema_version": AGENT_SCHEMA_VERSION,
+            "name": "pes_chain_from_trimer_template",
+            "source": {
+                "kind": "structure",
+                "coordinates": "pes_chain.pdb",
+                "format": "pdb"
+            },
+            "mapping": {
+                "mode": "template",
+                "template": "pes_trimer_mapping_template.json",
+                "template_policy": "assignment_only",
+                "expected_beads_per_role": {
+                    "head": 8,
+                    "middle": 8,
+                    "tail": 8
+                },
+                "on_bead_count_mismatch": "error"
+            },
+            "output": {"out_dir": "cg/pes_chain"}
+        },
         "coordinates_topology_charge_manifest_to_cg": {
             "schema_version": AGENT_SCHEMA_VERSION,
             "name": "paa_coordinates_topology_charge",
@@ -279,7 +304,7 @@ pub fn capabilities() -> Value {
                 "repeat_smiles": "polymer repeat-unit template input",
                 "source": "built-system or APS handoff input",
                 "mapping.template": "known or generated warp-cg.mapping_template.v1 path for mapping.mode=template",
-                "mapping.ndx": "Gromacs NDX bead mapping for source-driven or reference-only Swarm-CG-style workflows"
+                "mapping.ndx": "Gromacs NDX bead mapping for source-driven or reference-only grouped bonded workflows"
             },
             "accepted_source_kinds": {
                 "structure": {"required": ["source.coordinates"], "optional": ["source.format", "source.selection", "bonding", "chemistry_hints", "chemistry_policy", "polymer"], "example": "examples().structure_to_cg"},
@@ -303,7 +328,7 @@ pub fn capabilities() -> Value {
                 "status": "accepted_reported_and_validated",
                 "supported_kinds": ["smiles", "template", "inline_graph"],
                 "supported_scopes": ["molecule", "repeat_unit", "residue", "residue_role"],
-                "policy": "chemistry_policy.hint_mode accepts validate, fill_missing, prefer_hint, or prefer_geometry; current auto mode records hints/provenance and uses geometry unless explicit template/ndx mapping is requested",
+                "policy": "chemistry_policy.hint_mode accepts validate, fill_missing, prefer_hint, or prefer_geometry; current auto mode records hints/provenance and uses geometry unless explicit template/ndx mapping is requested. Prefer a curated mapping.template with mapping.template_policy=assignment_only when the hint/template should be the mapping authority.",
                 "smiles_validation": "SMILES hints are parsed and compared against source geometry aromatic six-ring perception; hint/geometry conflicts are emitted as warp_cg.chemistry_hint_geometry_conflict warnings or errors according to chemistry_policy.on_conflict"
             },
             "polymer_policy": {
@@ -323,15 +348,15 @@ pub fn capabilities() -> Value {
                 "preferred_field": "reference_source.bonded_terms",
                 "accepted_kinds": ["gromacs_topology", "gromacs_itp"],
                 "required": ["reference_source.bonded_terms.path", "reference_source.bonded_terms.molecule_type"],
-                "semantics": "derive Swarm-CG-style grouped constraint/bond/angle/dihedral reference distributions from the mapped reference trajectory using the supplied CG topology/ITP",
+                "semantics": "derive grouped constraint/bond/angle/dihedral reference distributions from the mapped reference trajectory using the supplied CG topology/ITP",
                 "reference_only_ndx": "trajectory_source + mapping.mode=ndx + reference_source.bonded_terms can map an AA/fine-grained trajectory into CG reference targets without smiles/repeat_smiles/source",
                 "precomputed": "reference_source.kind=precomputed + reference_source.precomputed.target_set loads an existing ReferenceTargetSet JSON without rerunning trajectory mapping",
-                "transforms": "reference_source.transform supports Swarm-CG-style bond_scaling, min_bond_length_nm, specific_bond_lengths_nm, and rg_offset_nm"
+                "transforms": "reference_source.transform supports bonded reference bond_scaling, min_bond_length_nm, specific_bond_lengths_nm, and rg_offset_nm"
             },
             "reference_metrics": {
                 "preferred_field": "reference_source.metrics",
                 "accepted_kinds": ["json"],
-                "semantics": "consumer-owned metric sidecars are merged into result.reference.metrics; use this for exact Gromacs/OpenMM/xTB analyses such as gmx sasa without making warp-cg own the simulation routine",
+                "semantics": "consumer-owned metric sidecars are merged into result.reference.metrics; use this for exact Gromacs/OpenMM/xTB analyses such as gmx sasa without making warp-cg own the simulation routine. External candidate scoring compares rg_mean_nm and sasa*_mean_nm2 when both reference and candidate metrics are available, and applies a large finite penalty when a declared reference metric is missing from candidate results.",
                 "json_shape": {"metrics": {"metric_name": "number"}, "artifacts": [{"path": "optional relative/absolute path", "kind": "artifact kind"}]},
                 "namespace": "optional prefix applied as namespace.metric_name"
             },
@@ -352,14 +377,14 @@ pub fn capabilities() -> Value {
                     "selection": "trajectory_source.target_selection or trajectory_source.atom_indices selects the mapped solute; omit only for single-molecule trajectories",
                     "reference_targets": "optional reference_source.bonded_terms selects topology-defined grouped terms instead of graph-derived bonds only",
                     "units": {"length_scale": "multiply input coordinates by this value before writing CG output; use 10.0 for nm-to-Angstrom input when needed"},
-                    "pbc": "set trajectory_source.make_whole=true for Swarm-CG-like periodic repair of CG reference bonded targets",
+                    "pbc": "set trajectory_source.make_whole=true for connectivity-based periodic repair of CG reference bonded targets",
                     "artifacts": ["coarse_grained_trajectory", "reference_targets_json", "bond_stats_json", "bonded_stats_json", "bonded_optimization_report"],
                     "example": "examples/warp_cg/solvated_external_bo_request.json"
                 },
                 "aa_trajectory": {
                     "required": ["smiles/repeat_smiles or mapping.mode=ndx", "trajectory_source.path", "optimization.enabled=true", "optimization.source=aa_trajectory"],
                     "selection": "same as external_trajectory",
-                    "reference_targets": "optional reference_source.bonded_terms.path + molecule_type derives Swarm-CG-style grouped targets from the CG topology/ITP",
+                    "reference_targets": "optional reference_source.bonded_terms.path + molecule_type derives grouped bonded targets from the CG topology/ITP",
                     "artifacts": ["coarse_grained_trajectory", "reference_targets_json", "bonded_parameter_map_json", "bonded_optimization_report"],
                     "example": "examples/warp_cg/aa_trajectory_tuning_request.json"
                 },
@@ -372,18 +397,49 @@ pub fn capabilities() -> Value {
                 "precomputed_reference_with_runner": {
                     "required": ["smiles/repeat_smiles or source mapping", "reference_source.kind=precomputed", "reference_source.precomputed.target_set", "optimization.evaluator.kind=json_file"],
                     "semantics": "use existing ReferenceTargetSet JSON as the reference and delegate candidate simulation to a consumer-owned JSON-file runner",
-                    "runner_result": "runner may return objective directly, candidate_targets for immediate warp-cg EMD scoring, or candidate_trajectory when evaluator-side extraction context is configured"
+                    "runner_result": "runner may return objective directly, candidate_targets for immediate warp-cg EMD scoring, or candidate_trajectory when evaluator-side extraction context is configured; auto mode uses simulation-backed scoring when candidate_extraction is present"
                 }
             },
             "objective": "bonded_parameter_parity",
+            "fitting_modes": {
+                "auto": "default behavior: if a json_file evaluator has candidate_extraction, require candidate_trajectory and score extracted candidate targets/Rg/SASA in warp-cg; otherwise use external evaluator when provided, distribution_fit when reference targets exist, or stats-proxy BO/PSO",
+                "direct_statistics": "do not run BO/PSO; assign equilibrium values from mapped AA bonded statistics and estimate force constants from inverse fluctuations",
+                "distribution_fit": "optimize equilibrium value/phase and force constant parameters per selected grouped reference target against mapped AA reference distributions with EMD scoring",
+                "external_evaluator": "delegate candidate CG simulation/scoring to optimization.evaluator and use returned objective/candidate_targets/candidate_trajectory",
+                "simulation_fit": "strict simulation-backed mode; requires optimization.evaluator.json_file.candidate_extraction and candidate_trajectory results, ignores runner objective, and scores extracted candidate bonded targets plus Rg/SASA metrics in warp-cg"
+            },
+            "metric_scoring": {
+                "field": "optimization.metric_scoring",
+                "rg_weight": "non-negative multiplier for normalized rg_mean_nm residual; default 1.0",
+                "sasa_weight": "non-negative multiplier for normalized sasa*_mean_nm2 residual; default 1.0",
+                "missing_metric_penalty": "positive finite penalty applied per required or reference-declared metric missing from candidate results; default 1e6",
+                "require_rg": "when true, missing reference or candidate Rg is penalized",
+                "require_sasa": "when true, missing reference or candidate SASA is penalized"
+            },
+            "sample_policy": {
+                "min_samples_per_term": "default 2",
+                "allow_single_frame": "set true only for smoke tests or geometry-center checks",
+                "on_insufficient_samples": "warn by default; error fails production fitting when any selected term has fewer than min_samples_per_term samples"
+            },
+            "initial_parameters": {
+                "field": "optimization.initial_parameters",
+                "semantics": "optional map from generated parameter name to initial value; used as the first BO/PSO initial guess before midpoint/random proposals",
+                "partial": "partial maps are allowed; missing parameters are filled from the parameter-space midpoint",
+                "validation": "unknown parameter names fail before optimization starts; finite values are clamped to generated bounds",
+                "examples": ["bond.middle.M0_AR1__M0_SO2_length_nm", "bond.middle.M0_AR1__M0_SO2_force", "angle.middle.M0_A__M0_B__M1_A_angle_deg", "dihedral.middle.M0_A__M0_B__M1_A__M1_B_force"]
+            },
+            "unit_policy": {
+                "generated_bond_reference_units": "nm",
+                "gromacs_rendering": "bond equilibrium values are converted to nm from the declared reference target units when writing topology files"
+            },
             "runner_contract": {
                 "request_schema": "warp-cg.objective-request.v1",
                 "result_schema": "warp-cg.objective-result.v1",
                 "request_fields": ["candidate", "reference_targets when available"],
                 "result_fields": {
-                    "objective": "optional finite scalar objective; used directly when supplied",
-                    "candidate_targets": "optional ReferenceTargetSet JSON for candidate CG simulation distributions; when objective is omitted, warp-cg scores this against reference_targets with Swarm-CG-style EMD",
-                    "candidate_trajectory": "optional object with path and optional mapped_trajectory_name; when evaluator candidate_extraction is configured, warp-cg maps/extracts targets from this trajectory using the same TargetExtractor path as ReferenceProvider",
+                    "objective": "optional finite scalar objective; used directly when supplied except in simulation_fit or auto+candidate_extraction scoring",
+                    "candidate_targets": "optional ReferenceTargetSet JSON for candidate CG simulation distributions; when objective is omitted, warp-cg scores this against reference_targets with bonded EMD plus available Rg/SASA metric residuals",
+                    "candidate_trajectory": "optional object with path and optional mapped_trajectory_name; when evaluator candidate_extraction is configured, warp-cg maps/extracts targets and trajectory metrics from this trajectory using the same TargetExtractor path as ReferenceProvider",
                     "metrics": "optional finite numeric map copied into optimizer evaluation records",
                     "status": "completed, failed_simulation, failed_extraction, timed_out, or invalid_parameters"
                 },
@@ -391,7 +447,7 @@ pub fn capabilities() -> Value {
                     "field": "optimization.evaluator.json_file.candidate_extraction",
                     "required_for_candidate_trajectory": ["mapping.bead_names", "mapping.atom_indices", "connections or bonded_terms"],
                     "optional_reader_fields": ["format", "topology", "topology_format", "start", "stop", "stride", "length_scale", "target_selection", "atom_indices", "mass_weighted", "make_whole", "chunk_frames"],
-                    "bonded_terms": "optional Gromacs topology/ITP source for grouped Swarm-CG-style constraint/bond/angle/dihedral candidate target extraction"
+                    "bonded_terms": "optional Gromacs topology/ITP source for grouped constraint/bond/angle/dihedral candidate target extraction"
                 },
                 "engine_boundary": "OpenMM, Gromacs, xTB, or user scripts own simulation; warp-cg exchanges candidate parameters, reference targets, candidate targets or candidate trajectory paths, metrics, and status"
             },
@@ -426,8 +482,18 @@ pub fn capabilities() -> Value {
             "execution_status": "built-system source handoffs execute in auto mode and emit reusable mapping templates; template mode replays generated/curated residue-role atom-name mappings; ndx mode consumes Gromacs NDX bead sections",
             "modes": {
                 "auto": "shared graph mapper fed by either SMILES or source coordinates/topology; source mode adds residue roles, templates, and provenance",
-                "template": "replay a warp-cg.mapping_template.v1 file against source residue atom names",
+                "template": "replay a warp-cg.mapping_template.v1 file against source residue atom names; mapping.template_policy=strict_graph validates elements/local_bonds/connected groups, while assignment_only replays atom-name assignments, bead types, features, charges, and role templates without graph-derived local-bond failures",
                 "ndx": "read Gromacs NDX bead sections as explicit AA-to-CG atom groups, preserving split mappings"
+            },
+            "template_policy": {
+                "default": "strict_graph",
+                "strict_graph": "validate template elements, local_bonds, and connected bead groups against target source geometry",
+                "assignment_only": "treat the template as the mapping authority and skip graph-derived local_bonds/connected checks after atom names resolve"
+            },
+            "bead_count_guards": {
+                "field": "mapping.expected_beads_per_role",
+                "roles": ["head", "middle", "tail", "standalone"],
+                "mismatch_policy": "mapping.on_bead_count_mismatch supports error or warn and emits warp_cg.bead_count_mismatch with residue role/count details"
             },
             "supported_handoff_schemas": ["warp-build.manifest.v1", "warp-pack manifest", "coordinates_topology"],
             "terminal_aware_polymers": true,

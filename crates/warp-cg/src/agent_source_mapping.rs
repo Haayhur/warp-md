@@ -224,6 +224,57 @@ pub(super) fn residue_role(residue_idx: usize, residue_count: usize) -> &'static
     residue_role_for_policy(residue_idx, residue_count, true)
 }
 
+pub(super) fn template_policy(request: &CgRequest) -> &str {
+    request
+        .mapping
+        .as_ref()
+        .and_then(|mapping| mapping.template_policy.as_deref())
+        .unwrap_or("strict_graph")
+}
+
+pub(super) fn append_bead_count_mismatch_warnings(
+    request: &CgRequest,
+    residues: &[SourceResidue],
+    residue_to_bead_indices: &[Vec<usize>],
+    polymer_enabled: bool,
+    warnings: &mut Vec<Value>,
+) -> Result<()> {
+    let Some(mapping) = request.mapping.as_ref() else {
+        return Ok(());
+    };
+    if mapping.expected_beads_per_role.is_empty() {
+        return Ok(());
+    }
+    let on_mismatch = mapping.on_bead_count_mismatch.as_deref().unwrap_or("error");
+    for (idx, residue) in residues.iter().enumerate() {
+        let role = residue_role_for_policy(idx, residues.len(), polymer_enabled);
+        let Some(expected) = mapping.expected_beads_per_role.get(role) else {
+            continue;
+        };
+        let actual = residue_to_bead_indices.get(idx).map(Vec::len).unwrap_or(0);
+        if actual == *expected {
+            continue;
+        }
+        let warning = json!({
+            "code": "warp_cg.bead_count_mismatch",
+            "severity": on_mismatch,
+            "message": "mapped bead count does not match mapping.expected_beads_per_role",
+            "residue_index": idx,
+            "resid": residue.resid,
+            "resname": residue.resname,
+            "chain": residue.chain.to_string(),
+            "role": role,
+            "expected_bead_count": expected,
+            "actual_bead_count": actual
+        });
+        if on_mismatch == "error" {
+            return Err(anyhow!("{warning}"));
+        }
+        warnings.push(warning);
+    }
+    Ok(())
+}
+
 pub(super) fn source_atom_name(atom: &AtomRecord) -> String {
     atom.name.trim().to_string()
 }
@@ -614,6 +665,13 @@ pub(super) fn build_source_mapping(
         &atom_to_bead,
         "auto",
     );
+    append_bead_count_mismatch_warnings(
+        request,
+        &residues,
+        &residue_to_bead_indices,
+        polymer_enabled,
+        &mut warnings,
+    )?;
     let mapping_summary = source_mapping_summary(
         request,
         &residues,
@@ -631,6 +689,7 @@ pub(super) fn build_source_mapping(
             bead_features: beads.iter().map(|bead| bead.features.clone()).collect(),
             bead_formal_charges: beads.iter().map(|bead| bead.formal_charge).collect(),
         },
+        bonded_terms: None,
         beads,
         residue_count: residues.len(),
         aa_atom_count: molecule.atoms.len(),
@@ -641,7 +700,7 @@ pub(super) fn build_source_mapping(
     })
 }
 
-fn apply_source_selection(
+pub(super) fn apply_source_selection(
     request: &CgRequest,
     source: &super::CgSource,
     handoff: &SourceHandoff,
@@ -708,7 +767,7 @@ fn apply_source_selection(
     })
 }
 
-fn resolve_bonds(
+pub(super) fn resolve_bonds(
     request: &CgRequest,
     molecule: &mut MoleculeData,
     warnings: &mut Vec<Value>,
@@ -802,7 +861,7 @@ fn infer_coordinate_bonds(atoms: &[AtomRecord]) -> Vec<(usize, usize)> {
     bonds
 }
 
-fn append_chemistry_hint_warnings(
+pub(super) fn append_chemistry_hint_warnings(
     request: &CgRequest,
     molecule: &MoleculeData,
     warnings: &mut Vec<Value>,

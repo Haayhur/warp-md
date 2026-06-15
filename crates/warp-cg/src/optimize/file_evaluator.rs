@@ -11,9 +11,10 @@ use crate::reference::{
 };
 use crate::trajectory::{BeadMapping, NativeTrajectoryOptions};
 
-use super::objective::reference_score_evaluation;
+use super::objective::reference_score_evaluation_with_metrics;
 use super::{
     EvaluationStatus, NamedObjectiveEvaluator, ObjectiveEvaluation, OptimizationCandidate,
+    StructuralMetricScoringConfig,
 };
 
 pub const JSON_OBJECTIVE_REQUEST_SCHEMA: &str = "warp-cg.objective-request.v1";
@@ -26,6 +27,10 @@ pub struct JsonFileEvaluatorConfig {
     pub result_filename: String,
     pub command: Option<JsonFileEvaluatorCommand>,
     pub reference_targets: Option<ReferenceTargetSet>,
+    pub reference_metrics: BTreeMap<String, f64>,
+    pub metric_scoring: StructuralMetricScoringConfig,
+    pub force_reference_scoring: bool,
+    pub require_candidate_trajectory: bool,
     pub candidate_extraction: Option<CandidateTrajectoryExtractionConfig>,
 }
 
@@ -37,12 +42,26 @@ impl JsonFileEvaluatorConfig {
             result_filename: "result.json".to_string(),
             command: None,
             reference_targets: None,
+            reference_metrics: BTreeMap::new(),
+            metric_scoring: StructuralMetricScoringConfig::default(),
+            force_reference_scoring: false,
+            require_candidate_trajectory: false,
             candidate_extraction: None,
         }
     }
 
     pub fn with_reference_targets(mut self, reference_targets: ReferenceTargetSet) -> Self {
         self.reference_targets = Some(reference_targets);
+        self
+    }
+
+    pub fn with_reference_metrics(mut self, reference_metrics: BTreeMap<String, f64>) -> Self {
+        self.reference_metrics = reference_metrics;
+        self
+    }
+
+    pub fn with_metric_scoring(mut self, metric_scoring: StructuralMetricScoringConfig) -> Self {
+        self.metric_scoring = metric_scoring;
         self
     }
 }
@@ -104,6 +123,10 @@ impl JsonFileObjectiveEvaluator {
         read_result(
             &result_path,
             self.config.reference_targets.as_ref(),
+            &self.config.reference_metrics,
+            &self.config.metric_scoring,
+            self.config.force_reference_scoring,
+            self.config.require_candidate_trajectory,
             self.config.candidate_extraction.as_ref(),
             &eval_dir,
         )
@@ -218,6 +241,10 @@ fn run_command(
 fn read_result(
     path: &Path,
     reference_targets: Option<&ReferenceTargetSet>,
+    reference_metrics: &BTreeMap<String, f64>,
+    metric_scoring: &StructuralMetricScoringConfig,
+    force_reference_scoring: bool,
+    require_candidate_trajectory: bool,
     candidate_extraction: Option<&CandidateTrajectoryExtractionConfig>,
     eval_dir: &Path,
 ) -> ObjectiveEvaluation {
@@ -259,28 +286,42 @@ fn read_result(
             status,
         };
     }
-    if let Some(objective) = result.objective.filter(|value| value.is_finite()) {
+    if require_candidate_trajectory && result.candidate_trajectory.is_none() {
+        return failed_extraction(format!(
+            "objective result '{}' must return candidate_trajectory for simulation-backed scoring",
+            path.display()
+        ));
+    }
+    if let Some(objective) = result
+        .objective
+        .filter(|value| value.is_finite() && !force_reference_scoring)
+    {
         let mut evaluation = ObjectiveEvaluation::completed(objective);
         evaluation
             .metrics
             .extend(finite_metrics(result.metrics.clone()));
         if let Some(reference) = reference_targets {
-            let candidate =
-                match candidate_targets_for_result(&result, path, candidate_extraction, eval_dir) {
-                    Ok(Some(candidate)) => candidate,
-                    Ok(None) => {
-                        evaluation
-                            .metrics
-                            .insert("objective".to_string(), objective);
-                        return evaluation;
-                    }
-                    Err(reason) => {
-                        return failed_extraction(format!(
-                            "objective result '{}' returned incompatible candidate data: {reason}",
-                            path.display()
-                        ));
-                    }
-                };
+            let candidate = match candidate_targets_for_result(
+                &result,
+                path,
+                candidate_extraction,
+                false,
+                eval_dir,
+            ) {
+                Ok(Some(candidate)) => candidate,
+                Ok(None) => {
+                    evaluation
+                        .metrics
+                        .insert("objective".to_string(), objective);
+                    return evaluation;
+                }
+                Err(reason) => {
+                    return failed_extraction(format!(
+                        "objective result '{}' returned incompatible candidate data: {reason}",
+                        path.display()
+                    ));
+                }
+            };
             if let Err(reason) = validate_candidate_targets(reference, &candidate.targets) {
                 return failed_extraction(format!(
                     "objective result '{}' returned incompatible candidate_targets: {reason}",
@@ -288,8 +329,17 @@ fn read_result(
                 ));
             }
             merge_candidate_extraction_metrics(&mut evaluation, &candidate.metrics);
-            let score = reference.compare_swarm_cg(&candidate.targets);
-            merge_reference_score_metrics(&mut evaluation, reference_score_evaluation(score));
+            let score = reference.bonded_emd(&candidate.targets);
+            let candidate_metrics = combined_candidate_metrics(&result.metrics, &candidate.metrics);
+            merge_reference_score_metrics(
+                &mut evaluation,
+                reference_score_evaluation_with_metrics(
+                    score,
+                    reference_metrics,
+                    &candidate_metrics,
+                    metric_scoring,
+                ),
+            );
         }
         evaluation
             .metrics
@@ -306,6 +356,7 @@ fn read_result(
         &result,
         path,
         candidate_extraction,
+        require_candidate_trajectory,
         eval_dir,
     ) {
         Ok(Some(candidate_targets)) => candidate_targets,
@@ -328,8 +379,14 @@ fn read_result(
             path.display()
         ));
     }
-    let score = reference_targets.compare_swarm_cg(&candidate_targets.targets);
-    let mut evaluation = reference_score_evaluation(score);
+    let score = reference_targets.bonded_emd(&candidate_targets.targets);
+    let candidate_metrics = combined_candidate_metrics(&result.metrics, &candidate_targets.metrics);
+    let mut evaluation = reference_score_evaluation_with_metrics(
+        score,
+        reference_metrics,
+        &candidate_metrics,
+        metric_scoring,
+    );
     evaluation
         .metrics
         .extend(finite_metrics(result.metrics.clone()));
@@ -346,15 +403,21 @@ fn candidate_targets_for_result(
     result: &JsonObjectiveResult,
     result_path: &Path,
     candidate_extraction: Option<&CandidateTrajectoryExtractionConfig>,
+    require_candidate_trajectory: bool,
     eval_dir: &Path,
 ) -> Result<Option<CandidateTargetsForScore>, String> {
-    if let Some(candidate_targets) = result.candidate_targets.as_ref() {
-        return Ok(Some(CandidateTargetsForScore {
-            targets: candidate_targets.clone(),
-            metrics: BTreeMap::new(),
-        }));
+    if !require_candidate_trajectory {
+        if let Some(candidate_targets) = result.candidate_targets.as_ref() {
+            return Ok(Some(CandidateTargetsForScore {
+                targets: candidate_targets.clone(),
+                metrics: BTreeMap::new(),
+            }));
+        }
     }
     let Some(candidate_trajectory) = result.candidate_trajectory.as_ref() else {
+        if require_candidate_trajectory {
+            return Err("simulation-backed scoring requires candidate_trajectory".to_string());
+        }
         return Ok(None);
     };
     let Some(extraction) = candidate_extraction else {
@@ -546,6 +609,19 @@ fn merge_candidate_extraction_metrics(
                 .insert(format!("candidate_trajectory.{key}"), *value);
         }
     }
+}
+
+fn combined_candidate_metrics(
+    result_metrics: &BTreeMap<String, f64>,
+    extraction_metrics: &BTreeMap<String, f64>,
+) -> BTreeMap<String, f64> {
+    let mut metrics = finite_metrics(result_metrics.clone());
+    for (key, value) in extraction_metrics {
+        if value.is_finite() {
+            metrics.insert(key.clone(), *value);
+        }
+    }
+    metrics
 }
 
 impl JsonObjectiveStatus {

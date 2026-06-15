@@ -58,7 +58,7 @@ fn precomputed_reference_targets_run_without_trajectory_source() {
             kind: "precomputed".to_string(),
             xtb: None,
             precomputed: Some(PrecomputedReferenceRequest {
-                source_kind: Some("cached_swarm_cg".to_string()),
+                source_kind: Some("cached_grouped_bonded".to_string()),
                 target_set: target_path.to_string_lossy().to_string(),
             }),
             bonded_terms: None,
@@ -86,13 +86,108 @@ fn precomputed_reference_targets_run_without_trajectory_source() {
     let result = run_request(&request, Instant::now()).unwrap();
 
     let reference = result.reference.as_ref().unwrap();
-    assert_eq!(reference.source_kind, "cached_swarm_cg");
+    assert_eq!(reference.source_kind, "cached_grouped_bonded");
     assert!(reference.target_set_available);
     assert_eq!(reference.metadata.mapped_by, "precomputed_stats");
     assert_eq!(reference.metrics["rg_mean_nm"], 1.3);
     assert!(result.artifact_paths.contains_key("reference_targets_json"));
     assert!(result.artifact_paths.contains_key("reference_metrics_json"));
     assert!(result.artifact_paths.contains_key("bond_stats_json"));
+}
+
+#[test]
+fn optimization_rejects_single_sample_reference_when_strict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target_path = tmp.path().join("single_sample_targets.json");
+    std::fs::write(
+        &target_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "bin_config": {
+                "bond_bin_width_nm": 0.01,
+                "angle_bin_width_deg": 1.0,
+                "dihedral_bin_width_deg": 1.0,
+                "bonded_max_range_nm": 3.0
+            },
+            "constraints": [],
+            "bonds": [{
+                "kind": "bond",
+                "label": "single frame bond",
+                "beads": [0, 1],
+                "members": [[0, 1]],
+                "units": "angstrom",
+                "periodic": false,
+                "mean": 4.7,
+                "std": 0.0,
+                "samples": 1,
+                "domain": [0.0, 30.0],
+                "bin_edges": [0.0, 1.0],
+                "probabilities": [1.0]
+            }],
+            "angles": [],
+            "dihedrals": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let request = CgRequest {
+        schema_version: AGENT_SCHEMA_VERSION.to_string(),
+        name: "strict_single_sample".to_string(),
+        smiles: Some("CC".to_string()),
+        repeat_smiles: None,
+        source: None,
+        bonding: None,
+        chemistry_hints: Vec::new(),
+        chemistry_policy: None,
+        polymer: None,
+        mapping: None,
+        topology: None,
+        trajectory_source: None,
+        reference_source: Some(ReferenceSource {
+            kind: "precomputed".to_string(),
+            xtb: None,
+            precomputed: Some(PrecomputedReferenceRequest {
+                source_kind: Some("cached_grouped_bonded".to_string()),
+                target_set: target_path.to_string_lossy().to_string(),
+            }),
+            bonded_terms: None,
+            metrics: Vec::new(),
+            transform: None,
+        }),
+        optimization: Some(ParameterTuningRequest {
+            enabled: true,
+            source: "external_trajectory".to_string(),
+            method: "pso".to_string(),
+            fitting_mode: Some("distribution_fit".to_string()),
+            allow_single_frame: Some(false),
+            min_samples_per_term: Some(2),
+            on_insufficient_samples: Some("error".to_string()),
+            max_evaluations: Some(2),
+            seed: Some(7),
+            initial_parameters: std::collections::BTreeMap::new(),
+            swarm_size: Some(2),
+            pso: None,
+            bo: None,
+            objective: "bonded_parameter_parity".to_string(),
+            target_terms: None,
+            xtb: None,
+            metric_scoring: None,
+            evaluator: None,
+        }),
+        output: CgOutputRequest {
+            out_dir: tmp.path().to_string_lossy().to_string(),
+            mapped_trajectory: None,
+            write_mapping_json: false,
+            write_topology_itp: false,
+            write_topology_top: false,
+            write_cg_pdb: false,
+            cg_pdb: None,
+            write_bonded_parameter_map: false,
+        },
+    };
+
+    let err = run_request(&request, Instant::now()).unwrap_err();
+    assert!(err.to_string().contains("fewer than 2 samples"));
 }
 
 #[test]
@@ -172,7 +267,7 @@ fn precomputed_reference_targets_can_use_json_file_runner_evaluator() {
             kind: "precomputed".to_string(),
             xtb: None,
             precomputed: Some(PrecomputedReferenceRequest {
-                source_kind: Some("cached_swarm_cg".to_string()),
+                source_kind: Some("cached_grouped_bonded".to_string()),
                 target_set: target_path.to_string_lossy().to_string(),
             }),
             bonded_terms: None,
@@ -183,14 +278,20 @@ fn precomputed_reference_targets_can_use_json_file_runner_evaluator() {
             enabled: true,
             source: "external_trajectory".to_string(),
             method: "pso".to_string(),
+            fitting_mode: None,
+            allow_single_frame: None,
+            min_samples_per_term: None,
+            on_insufficient_samples: None,
             max_evaluations: Some(2),
             seed: Some(7),
+            initial_parameters: std::collections::BTreeMap::new(),
             swarm_size: Some(2),
             pso: None,
             bo: None,
             objective: "external_candidate_targets".to_string(),
             target_terms: None,
             xtb: None,
+            metric_scoring: None,
             evaluator: Some(ObjectiveEvaluatorRequest {
                 kind: "json_file".to_string(),
                 json_file: Some(JsonFileEvaluatorRequest {
@@ -317,7 +418,7 @@ fn json_file_runner_can_return_candidate_trajectory_for_agent_extraction() {
             kind: "precomputed".to_string(),
             xtb: None,
             precomputed: Some(PrecomputedReferenceRequest {
-                source_kind: Some("cached_swarm_cg".to_string()),
+                source_kind: Some("cached_grouped_bonded".to_string()),
                 target_set: target_path.to_string_lossy().to_string(),
             }),
             bonded_terms: None,
@@ -328,14 +429,20 @@ fn json_file_runner_can_return_candidate_trajectory_for_agent_extraction() {
             enabled: true,
             source: "external_trajectory".to_string(),
             method: "pso".to_string(),
+            fitting_mode: None,
+            allow_single_frame: None,
+            min_samples_per_term: None,
+            on_insufficient_samples: None,
             max_evaluations: Some(2),
             seed: Some(9),
+            initial_parameters: std::collections::BTreeMap::new(),
             swarm_size: Some(2),
             pso: None,
             bo: None,
             objective: "candidate_trajectory_targets".to_string(),
             target_terms: None,
             xtb: None,
+            metric_scoring: None,
             evaluator: Some(ObjectiveEvaluatorRequest {
                 kind: "json_file".to_string(),
                 json_file: Some(JsonFileEvaluatorRequest {
@@ -493,7 +600,7 @@ fn candidate_trajectory_extraction_uses_gromacs_bonded_term_groups() {
             kind: "precomputed".to_string(),
             xtb: None,
             precomputed: Some(PrecomputedReferenceRequest {
-                source_kind: Some("cached_swarm_cg".to_string()),
+                source_kind: Some("cached_grouped_bonded".to_string()),
                 target_set: target_path.to_string_lossy().to_string(),
             }),
             bonded_terms: None,
@@ -504,14 +611,20 @@ fn candidate_trajectory_extraction_uses_gromacs_bonded_term_groups() {
             enabled: true,
             source: "external_trajectory".to_string(),
             method: "pso".to_string(),
+            fitting_mode: None,
+            allow_single_frame: None,
+            min_samples_per_term: None,
+            on_insufficient_samples: None,
             max_evaluations: Some(2),
             seed: Some(11),
+            initial_parameters: std::collections::BTreeMap::new(),
             swarm_size: Some(2),
             pso: None,
             bo: None,
             objective: "grouped_candidate_trajectory_targets".to_string(),
             target_terms: None,
             xtb: None,
+            metric_scoring: None,
             evaluator: Some(ObjectiveEvaluatorRequest {
                 kind: "json_file".to_string(),
                 json_file: Some(JsonFileEvaluatorRequest {

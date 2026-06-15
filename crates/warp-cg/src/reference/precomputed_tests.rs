@@ -95,9 +95,11 @@ fn precomputed_provider_loads_target_set_and_metric_sidecar() {
         bead_names: vec!["B0".to_string(), "B1".to_string()],
         atom_indices: vec![vec![0], vec![1]],
     };
-    let mut provider =
-        PrecomputedStatsReferenceProvider::new("precomputed_swarm_cg", BondedStats::default())
-            .with_target_set_path(&targets_path);
+    let mut provider = PrecomputedStatsReferenceProvider::new(
+        "precomputed_grouped_bonded",
+        BondedStats::default(),
+    )
+    .with_target_set_path(&targets_path);
 
     let data = provider
         .load_reference(&ReferenceRequest {
@@ -112,7 +114,7 @@ fn precomputed_provider_loads_target_set_and_metric_sidecar() {
         })
         .unwrap();
 
-    assert_eq!(data.source_kind, "precomputed_swarm_cg");
+    assert_eq!(data.source_kind, "precomputed_grouped_bonded");
     assert_eq!(data.target_set.as_ref().unwrap().bonds[0].mean, 0.47);
     assert_eq!(data.bonded_stats.bonds[0].mean, 0.47);
     assert_eq!(data.metrics["rg_mean_nm"], 1.2);

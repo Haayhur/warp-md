@@ -8,12 +8,18 @@ use warp_structure::AtomRecord;
 
 use crate::mapping::MappingResult;
 
+use super::agent_source_bonded_terms::template_bonded_term_set;
 use super::agent_source_mapping::{
+    append_bead_count_mismatch_warnings, append_chemistry_hint_warnings, apply_source_selection,
     atom_group_is_connected, atom_name_bonds_for_group, bead_center, load_mapping_template,
-    residue_role, source_atom_element, source_atom_name, source_connections_from_mapping,
-    source_mapping_provenance, source_mapping_template_ref, source_residues,
+    residue_role, resolve_bonds, source_atom_element, source_atom_name,
+    source_connections_from_mapping, source_mapping_provenance, source_mapping_template_ref,
+    source_residues, template_policy,
 };
-use super::{CgRequest, SourceBeadRecord, SourceHandoff, SourceMappingResult, SourceResidue};
+use super::{
+    CgRequest, SourceBeadClassContext, SourceBeadRecord, SourceHandoff, SourceMappingResult,
+    SourceResidue,
+};
 
 fn template_beads_for_role<'a>(template: &'a Value, role: &str) -> Result<&'a Vec<Value>> {
     template
@@ -156,8 +162,9 @@ pub(super) fn build_template_source_mapping(
 ) -> Result<SourceMappingResult> {
     let template_path = source_mapping_template_ref(request)
         .ok_or_else(|| anyhow!("mapping.mode=template requires mapping.template"))?;
+    let policy = template_policy(request);
     let template = load_mapping_template(template_path)?;
-    let molecule = read_molecule(
+    let mut molecule = read_molecule(
         Path::new(&handoff.coordinates),
         handoff.coordinate_format.as_deref(),
         false,
@@ -165,6 +172,12 @@ pub(super) fn build_template_source_mapping(
         handoff.topology.as_deref().map(Path::new),
     )
     .map_err(|err| anyhow!("failed to read source coordinates: {err}"))?;
+    let mut warnings = Vec::new();
+    if let Some(source) = request.source.as_ref() {
+        molecule = apply_source_selection(request, source, handoff, molecule, &mut warnings)?;
+    }
+    let bond_source = resolve_bonds(request, &mut molecule, &mut warnings)?;
+    append_chemistry_hint_warnings(request, &molecule, &mut warnings)?;
     let residues = source_residues(&molecule.atoms);
     if residues.is_empty() {
         return Err(anyhow!("source coordinates contain no residues"));
@@ -175,6 +188,7 @@ pub(super) fn build_template_source_mapping(
     let mut beads = Vec::new();
     let mut residue_to_beads = Vec::new();
     let mut residue_to_bead_indices = Vec::new();
+    let mut bead_contexts = Vec::new();
     for (residue_idx, residue) in residues.iter().enumerate() {
         let role = residue_role(residue_idx, residues.len());
         let bead_templates = template_beads_for_role(&template, role)?;
@@ -195,19 +209,26 @@ pub(super) fn build_template_source_mapping(
                 .and_then(Value::as_array)
                 .ok_or_else(|| anyhow!("mapping template bead {bead_name} requires atom_names"))?;
             let group = template_atom_indices_for_residue(residue, &molecule.atoms, atom_names)?;
-            validate_template_bead_match(
-                residue,
-                &bead_name,
-                &group,
-                &molecule.atoms,
-                &molecule.bonds,
-                bead_template,
-            )?;
+            if policy == "strict_graph" {
+                validate_template_bead_match(
+                    residue,
+                    &bead_name,
+                    &group,
+                    &molecule.atoms,
+                    &molecule.bonds,
+                    bead_template,
+                )?;
+            }
             let global_bead_idx = bead_names.len();
             let coord = bead_center(&group, &molecule.atoms);
             bead_names.push(bead_name.clone());
             atom_groups.push(group.clone());
             residue_bead_indices.push(global_bead_idx);
+            bead_contexts.push(SourceBeadClassContext {
+                residue_index: residue_idx,
+                role: role.to_string(),
+                template_bead_name: bead_name.clone(),
+            });
             beads.push(SourceBeadRecord {
                 index: global_bead_idx,
                 name: bead_name.clone(),
@@ -255,8 +276,51 @@ pub(super) fn build_template_source_mapping(
             atom_to_bead.insert(*atom_idx, bead_idx);
         }
     }
-    let connections =
+    let geometry_connections =
         source_connections_from_mapping(&molecule.bonds, &atom_to_bead, &residue_to_bead_indices);
+    let template_connections = template_authority_connections(&residue_to_bead_indices);
+    let connection_source = if policy == "assignment_only" {
+        "template_role_order"
+    } else {
+        "source_geometry"
+    };
+    let effective_connections = if policy == "assignment_only" {
+        template_connections
+    } else {
+        geometry_connections.clone()
+    };
+    let bonded_terms =
+        template_bonded_term_set(bead_names.len(), &effective_connections, &bead_contexts);
+    let bonded_class_summary = json!({
+        "enabled": true,
+        "class_source": "template",
+        "connection_source": connection_source,
+        "raw_instance_counts": {
+            "bonds": bonded_terms.bonds.iter().map(|group| group.members.len()).sum::<usize>(),
+            "angles": bonded_terms.angles.iter().map(|group| group.members.len()).sum::<usize>(),
+            "dihedrals": bonded_terms.dihedrals.iter().map(|group| group.members.len()).sum::<usize>()
+        },
+        "class_counts": {
+            "bonds": bonded_terms.bonds.len(),
+            "angles": bonded_terms.angles.len(),
+            "dihedrals": bonded_terms.dihedrals.len()
+        }
+    });
+    if policy == "assignment_only" {
+        warnings.push(json!({
+            "code": "warp_cg.template_assignment_only",
+            "severity": "info",
+            "message": "template replay used atom-name assignment only; local graph, local bond, and connected-bead checks were skipped; bonded classes were derived from template bead role/order, not target source geometry",
+            "template": template_path
+        }));
+    }
+    append_bead_count_mismatch_warnings(
+        request,
+        &residues,
+        &residue_to_bead_indices,
+        true,
+        &mut warnings,
+    )?;
     let mut templates = template.clone();
     if let Some(object) = templates.as_object_mut() {
         object.insert(
@@ -264,6 +328,7 @@ pub(super) fn build_template_source_mapping(
             json!({
                 "status": "ok",
                 "template": template_path,
+                "template_policy": policy,
                 "residue_count": residues.len(),
                 "matched_residues": residues.len(),
                 "unmapped_atoms": molecule.atoms.len().saturating_sub(atom_to_bead.len()),
@@ -281,28 +346,34 @@ pub(super) fn build_template_source_mapping(
         &atom_to_bead,
         "template",
     );
+    let warning_count = warnings.len();
 
     Ok(SourceMappingResult {
         mapping: MappingResult {
             bead_names,
             atom_groups,
-            connections,
+            connections: effective_connections,
             bead_features: beads.iter().map(|bead| bead.features.clone()).collect(),
             bead_formal_charges: beads.iter().map(|bead| bead.formal_charge).collect(),
         },
+        bonded_terms: Some(bonded_terms),
         beads,
         residue_count: residues.len(),
         aa_atom_count: molecule.atoms.len(),
         templates,
         provenance,
-        warnings: Vec::new(),
+        warnings,
         mapping_summary: json!({
             "bond_source": "template",
             "aromaticity_source": "template",
+            "template_policy": policy,
             "polymer_enabled": true,
             "residue_count": residues.len(),
-            "bond_count": molecule.bonds.len(),
-            "warning_count": 0,
+            "bond_count": geometry_connections.len(),
+            "source_bond_source": bond_source,
+            "template_connection_source": connection_source,
+            "bonded_parameter_classing": bonded_class_summary,
+            "warning_count": warning_count,
             "chemistry_hint_count": request.chemistry_hints.len(),
             "residue_bead_counts": residue_to_bead_indices.iter().enumerate().map(|(idx, beads)| {
                 let residue = &residues[idx];
@@ -317,4 +388,23 @@ pub(super) fn build_template_source_mapping(
             }).collect::<Vec<_>>()
         }),
     })
+}
+
+fn template_authority_connections(residue_to_bead_indices: &[Vec<usize>]) -> Vec<(usize, usize)> {
+    let mut connections = Vec::new();
+    for residue_beads in residue_to_bead_indices {
+        for pair in residue_beads.windows(2) {
+            connections.push((pair[0].min(pair[1]), pair[0].max(pair[1])));
+        }
+    }
+    let residue_first_last = residue_to_bead_indices
+        .iter()
+        .filter_map(|beads| Some((*beads.first()?, *beads.last()?)))
+        .collect::<Vec<_>>();
+    for pair in residue_first_last.windows(2) {
+        connections.push((pair[0].1.min(pair[1].0), pair[0].1.max(pair[1].0)));
+    }
+    connections.sort_unstable();
+    connections.dedup();
+    connections
 }

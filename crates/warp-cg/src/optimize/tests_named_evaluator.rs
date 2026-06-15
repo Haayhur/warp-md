@@ -75,6 +75,7 @@ fn optimize_with_named_evaluator_supplies_named_and_normalized_parameters() {
                 ..PsoConfig::default()
             }),
             bo: None,
+            initial_parameters: std::collections::BTreeMap::new(),
         },
         &[InitialGuess {
             source: "user_seed".to_string(),
@@ -132,6 +133,7 @@ fn named_evaluator_entrypoint_works_for_bayesian_optimization() {
                 failure_handling: Some(FailureHandling::Penalize { value: Some(77.0) }),
                 ..BoConfig::default()
             }),
+            initial_parameters: std::collections::BTreeMap::new(),
         },
         &[],
     );

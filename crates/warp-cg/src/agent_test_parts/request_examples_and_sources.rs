@@ -288,6 +288,9 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
             target_bead_size: Some(4),
             preserve_functional_groups: Some(true),
             template: None,
+            template_policy: None,
+            expected_beads_per_role: std::collections::BTreeMap::new(),
+            on_bead_count_mismatch: None,
             ndx: None,
             repeat_unit_hint: Some("PAA".to_string()),
             terminal_aware: Some(true),
@@ -427,6 +430,9 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
                     .to_string_lossy()
                     .to_string(),
             ),
+            template_policy: None,
+            expected_beads_per_role: std::collections::BTreeMap::new(),
+            on_bead_count_mismatch: None,
             ndx: None,
             repeat_unit_hint: Some("PAA".to_string()),
             terminal_aware: Some(true),
@@ -499,6 +505,260 @@ fn paa_like_source_auto_template_replay_preserves_carboxylate_features() {
     .unwrap();
     assert_eq!(replay.bead_count, result.bead_count);
     assert_eq!(replay.connections, result.connections);
+}
+
+#[test]
+fn template_replay_reference_uses_grouped_bonded_classes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("paa_like.pdb");
+    std::fs::write(&source_path, paa_like_polymer_pdb()).unwrap();
+    let auto = run_request(
+        &source_request("paa_like_classes", &source_path, tmp.path(), "auto", None),
+        Instant::now(),
+    )
+    .unwrap();
+    assert_eq!(auto.summary.mapping_mode, "auto");
+
+    let replay_tmp = tempfile::tempdir().unwrap();
+    let mut replay_request = source_request(
+        "paa_like_classes_replay",
+        &source_path,
+        replay_tmp.path(),
+        "template",
+        Some(
+            tmp.path()
+                .join("paa_like_classes_mapping_template.json")
+                .to_string_lossy()
+                .to_string(),
+        ),
+    );
+    replay_request.source.as_mut().unwrap().trajectory =
+        Some(source_path.to_string_lossy().to_string());
+    replay_request.optimization = Some(ParameterTuningRequest {
+        enabled: true,
+        source: "aa_trajectory".to_string(),
+        method: "bo".to_string(),
+        fitting_mode: Some("direct_statistics".to_string()),
+        allow_single_frame: Some(true),
+        min_samples_per_term: None,
+        on_insufficient_samples: None,
+        max_evaluations: Some(1),
+        seed: Some(1),
+        initial_parameters: std::collections::BTreeMap::new(),
+        swarm_size: None,
+        pso: None,
+        bo: None,
+        objective: "bonded_parameter_parity".to_string(),
+        target_terms: Some(vec!["bonds".to_string()]),
+        xtb: None,
+        metric_scoring: None,
+        evaluator: None,
+    });
+
+    let replay = run_request(&replay_request, Instant::now()).unwrap();
+    let report = replay.optimization.unwrap().report.unwrap();
+    let names = report
+        .best_parameters
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>();
+    let classing = &replay.mapping_summary.as_ref().unwrap()["bonded_parameter_classing"];
+
+    assert_eq!(classing["class_source"], "template");
+    assert!(classing["raw_instance_counts"]["bonds"].as_u64().unwrap() >= 2);
+    assert!(
+        names.iter().any(|name| name.starts_with("bond.middle.")),
+        "{names:?}"
+    );
+    assert!(!names.iter().any(|name| name.starts_with("bond_")));
+}
+
+#[test]
+fn grouped_bonded_fitting_rejects_single_frame_reference_when_strict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("paa_like.pdb");
+    std::fs::write(&source_path, paa_like_polymer_pdb()).unwrap();
+    run_request(
+        &source_request(
+            "paa_like_strict_frames",
+            &source_path,
+            tmp.path(),
+            "auto",
+            None,
+        ),
+        Instant::now(),
+    )
+    .unwrap();
+
+    let replay_tmp = tempfile::tempdir().unwrap();
+    let mut replay_request = source_request(
+        "paa_like_strict_frames_replay",
+        &source_path,
+        replay_tmp.path(),
+        "template",
+        Some(
+            tmp.path()
+                .join("paa_like_strict_frames_mapping_template.json")
+                .to_string_lossy()
+                .to_string(),
+        ),
+    );
+    replay_request.source.as_mut().unwrap().trajectory =
+        Some(source_path.to_string_lossy().to_string());
+    replay_request.optimization = Some(ParameterTuningRequest {
+        enabled: true,
+        source: "aa_trajectory".to_string(),
+        method: "bo".to_string(),
+        fitting_mode: Some("distribution_fit".to_string()),
+        allow_single_frame: Some(false),
+        min_samples_per_term: None,
+        on_insufficient_samples: Some("error".to_string()),
+        max_evaluations: Some(1),
+        seed: Some(1),
+        initial_parameters: std::collections::BTreeMap::new(),
+        swarm_size: None,
+        pso: None,
+        bo: None,
+        objective: "bonded_parameter_parity".to_string(),
+        target_terms: Some(vec!["bonds".to_string()]),
+        xtb: None,
+        metric_scoring: None,
+        evaluator: None,
+    });
+
+    let err = run_request(&replay_request, Instant::now()).unwrap_err();
+    assert!(err.to_string().contains("fewer than 2 frames"));
+}
+
+#[test]
+fn template_replay_applies_source_selection_before_mapping() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("multi_chain_paa_like.pdb");
+    let chain_a = paa_like_polymer_pdb();
+    let chain_b = paa_like_polymer_pdb()
+        .replace(" A   1", " B  11")
+        .replace(" A   2", " B  12")
+        .replace(" A   3", " B  13");
+    std::fs::write(&source_path, format!("{chain_a}{chain_b}")).unwrap();
+
+    let mut auto_request = source_request(
+        "paa_like_chain_a_template",
+        &source_path,
+        tmp.path(),
+        "auto",
+        None,
+    );
+    auto_request.source.as_mut().unwrap().selection = Some("chain A".to_string());
+    auto_request.bonding = Some(BondingPolicyRequest {
+        source: Some("infer_from_coordinates".to_string()),
+        infer_bonds: Some(true),
+        on_ambiguous: Some("warn".to_string()),
+    });
+    run_request(&auto_request, Instant::now()).unwrap();
+
+    let replay_tmp = tempfile::tempdir().unwrap();
+    let mut replay_request = source_request(
+        "paa_like_chain_a_replay",
+        &source_path,
+        replay_tmp.path(),
+        "template",
+        Some(
+            tmp.path()
+                .join("paa_like_chain_a_template_mapping_template.json")
+                .to_string_lossy()
+                .to_string(),
+        ),
+    );
+    replay_request.source.as_mut().unwrap().selection = Some("chain A".to_string());
+    replay_request.bonding = auto_request.bonding.clone();
+
+    let replay = run_request(&replay_request, Instant::now()).unwrap();
+    assert_eq!(replay.summary.mapped_residue_count, Some(3));
+    let mapping_json: Value = serde_json::from_slice(
+        &std::fs::read(
+            replay_tmp
+                .path()
+                .join("paa_like_chain_a_replay_martini_mapping.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(mapping_json["beads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|bead| bead["chain"] == "A"));
+    assert!(replay
+        .warnings
+        .iter()
+        .any(|warning| warning["code"] == "warp_cg.source_selection_applied"));
+}
+
+#[test]
+fn template_replay_source_only_render_uses_grouped_bonded_classes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("paa_like.pdb");
+    std::fs::write(&source_path, paa_like_polymer_pdb()).unwrap();
+    run_request(
+        &source_request(
+            "paa_like_grouped_render",
+            &source_path,
+            tmp.path(),
+            "auto",
+            None,
+        ),
+        Instant::now(),
+    )
+    .unwrap();
+
+    let replay_tmp = tempfile::tempdir().unwrap();
+    let replay_request = source_request(
+        "paa_like_grouped_render_replay",
+        &source_path,
+        replay_tmp.path(),
+        "template",
+        Some(
+            tmp.path()
+                .join("paa_like_grouped_render_mapping_template.json")
+                .to_string_lossy()
+                .to_string(),
+        ),
+    );
+    let replay = run_request(&replay_request, Instant::now()).unwrap();
+    assert_eq!(
+        replay.mapping_summary.as_ref().unwrap()["bonded_parameter_classing"]["class_source"],
+        "template"
+    );
+
+    let itp = std::fs::read_to_string(
+        replay_tmp
+            .path()
+            .join("paa_like_grouped_render_replay_martini.itp"),
+    )
+    .unwrap();
+    assert!(itp.contains("; class: bond.middle."), "{itp}");
+
+    let parameter_map: Value = serde_json::from_slice(
+        &std::fs::read(
+            replay_tmp
+                .path()
+                .join("paa_like_grouped_render_replay_bonded_parameter_map.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        parameter_map["bonded_parameter_classing"]["class_source"],
+        "source_mapping.bonded_terms"
+    );
+    assert!(parameter_map["bonds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["class_label"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("bond.middle.")));
 }
 
 #[test]
@@ -606,6 +866,9 @@ fn structure_source_infers_bonds_and_reports_mapping_summary() {
             target_bead_size: Some(4),
             preserve_functional_groups: Some(true),
             template: None,
+            template_policy: None,
+            expected_beads_per_role: std::collections::BTreeMap::new(),
+            on_bead_count_mismatch: None,
             ndx: None,
             repeat_unit_hint: None,
             terminal_aware: None,
@@ -713,6 +976,9 @@ fn smiles_hint_reports_aromatic_geometry_conflict() {
             target_bead_size: Some(4),
             preserve_functional_groups: Some(true),
             template: None,
+            template_policy: None,
+            expected_beads_per_role: std::collections::BTreeMap::new(),
+            on_bead_count_mismatch: None,
             ndx: None,
             repeat_unit_hint: None,
             terminal_aware: None,
@@ -788,6 +1054,40 @@ fn template_replay_rejects_wrong_local_bond_signature() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("local bond mismatch"));
+
+    let mut assignment_request = source_request(
+        "paa_like_assignment_only_replay",
+        &source_path,
+        tmp.path(),
+        "template",
+        Some(bad_template_path.to_string_lossy().to_string()),
+    );
+    assignment_request.mapping.as_mut().unwrap().template_policy =
+        Some("assignment_only".to_string());
+    let result = run_request(&assignment_request, Instant::now()).unwrap();
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning["code"] == "warp_cg.template_assignment_only"));
+    assert_eq!(
+        result.mapping_summary.as_ref().unwrap()["template_policy"],
+        "assignment_only"
+    );
+}
+
+#[test]
+fn mapping_expected_beads_per_role_rejects_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("paa_like.pdb");
+    std::fs::write(&source_path, paa_like_polymer_pdb()).unwrap();
+    let mut request = source_request("paa_like_bad_count", &source_path, tmp.path(), "auto", None);
+    let mapping = request.mapping.as_mut().unwrap();
+    mapping
+        .expected_beads_per_role
+        .insert("middle".to_string(), 99);
+    mapping.on_bead_count_mismatch = Some("error".to_string());
+    let err = run_request(&request, Instant::now()).unwrap_err();
+    assert!(err.to_string().contains("warp_cg.bead_count_mismatch"));
 }
 
 #[test]
@@ -835,6 +1135,9 @@ fn polymer_manifest_source_run_resolves_relative_artifacts() {
             target_bead_size: Some(4),
             preserve_functional_groups: Some(true),
             template: None,
+            template_policy: None,
+            expected_beads_per_role: std::collections::BTreeMap::new(),
+            on_bead_count_mismatch: None,
             ndx: None,
             repeat_unit_hint: Some("PAA".to_string()),
             terminal_aware: Some(true),

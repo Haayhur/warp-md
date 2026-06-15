@@ -1,3 +1,4 @@
+use crate::bonded_terms::BondedTermSet;
 use crate::mapping::MappingResult;
 use serde_json::Value;
 
@@ -35,6 +36,7 @@ pub(super) struct SourceBeadRecord {
 
 pub(super) struct SourceMappingResult {
     pub(super) mapping: MappingResult,
+    pub(super) bonded_terms: Option<BondedTermSet>,
     pub(super) beads: Vec<SourceBeadRecord>,
     pub(super) residue_count: usize,
     pub(super) aa_atom_count: usize,
@@ -42,4 +44,11 @@ pub(super) struct SourceMappingResult {
     pub(super) provenance: Value,
     pub(super) warnings: Vec<Value>,
     pub(super) mapping_summary: Value,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SourceBeadClassContext {
+    pub(super) residue_index: usize,
+    pub(super) role: String,
+    pub(super) template_bead_name: String,
 }

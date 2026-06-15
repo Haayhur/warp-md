@@ -60,6 +60,8 @@ fn trajectory_provider_maps_reference_and_records_artifact() {
     let target_set = data.target_set.as_ref().unwrap();
     assert_eq!(target_set.bonds.len(), 1);
     assert_eq!(target_set.bonds[0].samples, 2);
+    assert_eq!(target_set.bonds[0].units, "nm");
+    assert!((target_set.bonds[0].mean - 1.5).abs() < 1.0e-6);
     assert_eq!(target_set.bonds[0].domain, [1.0, 2.0]);
     assert!((target_set.bonds[0].probabilities.iter().sum::<f64>() - 1.0).abs() < 1.0e-12);
     assert_eq!(data.artifacts.len(), 2);
@@ -143,7 +145,7 @@ fn trajectory_provider_merges_consumer_metric_sidecar() {
 }
 
 #[test]
-fn trajectory_provider_applies_swarm_cg_style_min_bond_transform() {
+fn trajectory_provider_applies_min_bond_transform() {
     let dir = tempfile::tempdir().unwrap();
     let traj = dir.path().join("short_bonds.xyz");
     fs::write(
@@ -189,6 +191,7 @@ fn trajectory_provider_applies_swarm_cg_style_min_bond_transform() {
 
     assert!((data.bonded_stats.bonds[0].mean - 0.5).abs() < 1.0e-12);
     let target = &data.target_set.as_ref().unwrap().bonds[0];
+    assert_eq!(target.units, "nm");
     assert!((target.mean - 0.5).abs() < 1.0e-12);
     assert_eq!(target.samples, 2);
     assert!((target.domain[0] - 1.0 / 3.0).abs() < 1.0e-12);
@@ -196,7 +199,7 @@ fn trajectory_provider_applies_swarm_cg_style_min_bond_transform() {
 }
 
 #[test]
-fn trajectory_provider_applies_swarm_cg_style_rg_offset() {
+fn trajectory_provider_applies_rg_offset() {
     let dir = tempfile::tempdir().unwrap();
     let traj = dir.path().join("rg_offset.xyz");
     fs::write(
@@ -293,7 +296,7 @@ fn reference_target_compare_scores_matching_distributions_as_zero() {
 }
 
 #[test]
-fn reference_target_compare_swarm_cg_scales_bonded_distance_terms() {
+fn reference_target_bonded_emd_scales_bonded_distance_terms() {
     let reference = ReferenceTargetSet {
         version: 1,
         bin_config: ReferenceBinConfig::default(),
@@ -356,13 +359,86 @@ fn reference_target_compare_swarm_cg_scales_bonded_distance_terms() {
     };
 
     let raw = reference.compare(&candidate);
-    let swarm = reference.compare_swarm_cg(&candidate);
+    let weighted = reference.bonded_emd(&candidate);
 
     assert!(raw.raw_bonds > 0.0);
     assert!((raw.total - raw.raw_total).abs() < 1.0e-12);
-    assert!((swarm.raw_bonds - raw.raw_bonds).abs() < 1.0e-12);
-    assert!((swarm.bonds - raw.raw_bonds * 500.0).abs() < 1.0e-9);
-    assert!((swarm.angles - raw.raw_angles).abs() < 1.0e-12);
+    assert!((weighted.raw_bonds - raw.raw_bonds).abs() < 1.0e-12);
+    assert!((weighted.bonds - raw.raw_bonds * 500.0).abs() < 1.0e-9);
+    assert!((weighted.angles - raw.raw_angles).abs() < 1.0e-12);
+}
+
+#[test]
+fn reference_target_bonded_emd_combines_constraints_and_bonds_bucket() {
+    let reference = ReferenceTargetSet {
+        version: 1,
+        bin_config: ReferenceBinConfig::default(),
+        constraints: vec![ReferenceDistributionTarget::from_samples(
+            ReferenceTermKind::Constraint,
+            Some("constraint group 1".to_string()),
+            vec![0, 1],
+            vec![vec![0, 1]],
+            &[0.10],
+            "nm",
+            false,
+            0.0,
+            1.0,
+            0.1,
+        )],
+        bonds: vec![ReferenceDistributionTarget::from_samples(
+            ReferenceTermKind::Bond,
+            Some("bond group 1".to_string()),
+            vec![1, 2],
+            vec![vec![1, 2]],
+            &[0.20],
+            "nm",
+            false,
+            0.0,
+            1.0,
+            0.1,
+        )],
+        angles: Vec::new(),
+        dihedrals: Vec::new(),
+    };
+    let candidate = ReferenceTargetSet {
+        version: 1,
+        bin_config: ReferenceBinConfig::default(),
+        constraints: vec![ReferenceDistributionTarget::from_samples(
+            ReferenceTermKind::Constraint,
+            Some("constraint group 1".to_string()),
+            vec![0, 1],
+            vec![vec![0, 1]],
+            &[0.40],
+            "nm",
+            false,
+            0.0,
+            1.0,
+            0.1,
+        )],
+        bonds: vec![ReferenceDistributionTarget::from_samples(
+            ReferenceTermKind::Bond,
+            Some("bond group 1".to_string()),
+            vec![1, 2],
+            vec![vec![1, 2]],
+            &[0.50],
+            "nm",
+            false,
+            0.0,
+            1.0,
+            0.1,
+        )],
+        angles: Vec::new(),
+        dihedrals: Vec::new(),
+    };
+
+    let score = reference.bonded_emd(&candidate);
+    let expected_bucket = score.constraints.hypot(score.bonds);
+
+    assert!(score.constraints > 0.0);
+    assert!(score.bonds > 0.0);
+    assert!((score.constraints_bonds - expected_bucket).abs() < 1.0e-12);
+    assert!((score.total - score.constraints_bonds).abs() < 1.0e-12);
+    assert!(score.total < score.constraints + score.bonds);
 }
 
 #[test]
@@ -481,6 +557,8 @@ fn trajectory_provider_uses_explicit_grouped_constraints() {
         target_set.constraints[0].members,
         vec![vec![0, 1], vec![1, 2]]
     );
+    assert_eq!(target_set.constraints[0].units, "nm");
+    assert!((target_set.constraints[0].mean - 1.25).abs() < 1.0e-6);
     assert_eq!(target_set.constraints[0].samples, 4);
     assert!(target_set.bonds.is_empty());
 }
@@ -567,10 +645,12 @@ fn trajectory_provider_accepts_gromacs_topology_term_set() {
     assert_eq!(target_set.bonds[0].members, vec![vec![1, 2]]);
     assert_eq!(target_set.angles[0].members, vec![vec![0, 1, 2]]);
     assert_eq!(target_set.dihedrals[0].members, vec![vec![0, 1, 2, 3]]);
+    assert_eq!(target_set.constraints[0].units, "nm");
+    assert_eq!(target_set.bonds[0].units, "nm");
 }
 
 #[test]
-fn trajectory_provider_preserves_swarm_cg_gromacs_groups_as_targets() {
+fn trajectory_provider_preserves_gromacs_groups_as_targets() {
     let dir = tempfile::tempdir().unwrap();
     let traj = dir.path().join("aa.xyz");
     fs::write(
@@ -646,7 +726,10 @@ fn trajectory_provider_preserves_swarm_cg_gromacs_groups_as_targets() {
     assert_eq!(target_set.bonds.len(), 2);
     assert_eq!(target_set.bonds[0].label.as_deref(), Some("bond group 1"));
     assert_eq!(target_set.bonds[0].members, vec![vec![0, 1], vec![2, 3]]);
+    assert_eq!(target_set.bonds[0].units, "nm");
+    assert!((target_set.bonds[0].mean - 1.1).abs() < 1.0e-6);
     assert_eq!(target_set.bonds[0].samples, 4);
     assert_eq!(target_set.bonds[1].members, vec![vec![3, 4]]);
+    assert_eq!(target_set.bonds[1].units, "nm");
     assert_eq!(target_set.bonds[1].samples, 2);
 }

@@ -1,13 +1,15 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 
 use crate::bonded_terms::BondedTermSet;
 use crate::optimize::{
-    optimize_bonded_terms, optimize_reference_targets,
-    optimize_reference_targets_with_named_evaluator, CandidateTrajectoryExtractionConfig,
-    JsonFileEvaluatorCommand, JsonFileEvaluatorConfig, JsonFileObjectiveEvaluator,
-    OptimizationConfig,
+    direct_statistics_report, direct_statistics_report_from_targets, optimize_bonded_terms,
+    optimize_reference_targets, optimize_reference_targets_with_named_evaluator,
+    CandidateTrajectoryExtractionConfig, JsonFileEvaluatorCommand, JsonFileEvaluatorConfig,
+    JsonFileObjectiveEvaluator, OptimizationConfig, OptimizationReport,
+    StructuralMetricScoringConfig,
 };
 use crate::parameters::BondedStats;
 use crate::reference::ReferenceTargetSet;
@@ -24,6 +26,8 @@ pub(super) fn run_optimization(
     tuning: &ParameterTuningRequest,
     bonded_stats: &BondedStats,
     reference_targets: Option<&ReferenceTargetSet>,
+    reference_frames_read: Option<usize>,
+    reference_metrics: Option<&BTreeMap<String, f64>>,
     out_dir: &Path,
     name: &str,
     artifacts: &mut Vec<CgArtifact>,
@@ -36,23 +40,37 @@ pub(super) fn run_optimization(
         swarm_size: tuning.swarm_size,
         pso: tuning.pso.as_ref().map(Into::into),
         bo: tuning.bo.as_ref().map(Into::into),
+        initial_parameters: tuning.initial_parameters.clone(),
     };
     let selected_terms = tuning.target_terms.clone().unwrap_or_default();
     let filtered_stats = filter_bonded_stats(bonded_stats, &selected_terms);
     let filtered_targets = reference_targets.map(|targets| targets.filter_terms(&selected_terms));
-    let report = if let Some(evaluator) = tuning.evaluator.as_ref() {
-        let Some(targets) = filtered_targets.as_ref() else {
-            return Err(anyhow!(
-                "optimization.evaluator requires reference targets from reference_source"
-            ));
-        };
-        let mut evaluator = json_file_evaluator(evaluator, targets, out_dir)?;
-        optimize_reference_targets_with_named_evaluator(targets, &mut evaluator, &config, &[])
-    } else if let Some(targets) = filtered_targets.as_ref() {
-        optimize_reference_targets(targets, &config)
-    } else {
-        optimize_bonded_terms(&filtered_stats, &config)
-    };
+    let sample_warning = insufficient_sample_warning(
+        tuning,
+        &filtered_stats,
+        filtered_targets.as_ref(),
+        reference_frames_read,
+    )?;
+    let metric_scoring = metric_scoring_config(tuning);
+    let mut report = run_selected_fitting_mode(
+        tuning,
+        &config,
+        &filtered_stats,
+        filtered_targets.as_ref(),
+        reference_metrics,
+        &metric_scoring,
+        out_dir,
+    )?;
+    if report.status == "error" {
+        return Err(anyhow!("{}", report.message));
+    }
+    if let Some(warning) = sample_warning {
+        if report.message.is_empty() {
+            report.message = warning;
+        } else {
+            report.message = format!("{} {}", report.message, warning);
+        }
+    }
     let report_path = out_dir.join(format!("{}_tuning_report.json", name));
     std::fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
     artifacts.push(CgArtifact {
@@ -70,9 +88,176 @@ pub(super) fn run_optimization(
     })
 }
 
+fn run_selected_fitting_mode(
+    tuning: &ParameterTuningRequest,
+    config: &OptimizationConfig,
+    filtered_stats: &BondedStats,
+    filtered_targets: Option<&ReferenceTargetSet>,
+    reference_metrics: Option<&BTreeMap<String, f64>>,
+    metric_scoring: &StructuralMetricScoringConfig,
+    out_dir: &Path,
+) -> Result<OptimizationReport> {
+    match tuning.fitting_mode.as_deref().unwrap_or("auto") {
+        "direct_statistics" => {
+            if let Some(targets) = filtered_targets {
+                Ok(direct_statistics_report_from_targets(targets, config))
+            } else {
+                Ok(direct_statistics_report(filtered_stats, config))
+            }
+        }
+        "distribution_fit" => {
+            let Some(targets) = filtered_targets else {
+                return Err(anyhow!(
+                    "optimization.fitting_mode=distribution_fit requires reference targets from reference_source"
+                ));
+            };
+            Ok(optimize_reference_targets(targets, config))
+        }
+        "external_evaluator" => {
+            let Some(targets) = filtered_targets else {
+                return Err(anyhow!(
+                    "optimization.fitting_mode=external_evaluator requires reference targets from reference_source"
+                ));
+            };
+            let Some(evaluator) = tuning.evaluator.as_ref() else {
+                return Err(anyhow!(
+                    "optimization.fitting_mode=external_evaluator requires optimization.evaluator"
+                ));
+            };
+            let mut evaluator = json_file_evaluator(
+                evaluator,
+                targets,
+                reference_metrics,
+                metric_scoring,
+                false,
+                out_dir,
+            )?;
+            Ok(optimize_reference_targets_with_named_evaluator(
+                targets,
+                &mut evaluator,
+                config,
+                &[],
+            ))
+        }
+        "simulation_fit" => {
+            let Some(targets) = filtered_targets else {
+                return Err(anyhow!(
+                    "optimization.fitting_mode=simulation_fit requires reference targets from reference_source"
+                ));
+            };
+            let Some(evaluator) = tuning.evaluator.as_ref() else {
+                return Err(anyhow!(
+                    "optimization.fitting_mode=simulation_fit requires optimization.evaluator"
+                ));
+            };
+            let mut evaluator = json_file_evaluator(
+                evaluator,
+                targets,
+                reference_metrics,
+                metric_scoring,
+                true,
+                out_dir,
+            )?;
+            Ok(optimize_reference_targets_with_named_evaluator(
+                targets,
+                &mut evaluator,
+                config,
+                &[],
+            ))
+        }
+        _ => {
+            if let Some(evaluator) = tuning.evaluator.as_ref() {
+                let Some(targets) = filtered_targets else {
+                    return Err(anyhow!(
+                        "optimization.evaluator requires reference targets from reference_source"
+                    ));
+                };
+                let simulation_fit = evaluator_has_candidate_extraction(evaluator);
+                let mut evaluator = json_file_evaluator(
+                    evaluator,
+                    targets,
+                    reference_metrics,
+                    metric_scoring,
+                    simulation_fit,
+                    out_dir,
+                )?;
+                Ok(optimize_reference_targets_with_named_evaluator(
+                    targets,
+                    &mut evaluator,
+                    config,
+                    &[],
+                ))
+            } else if let Some(targets) = filtered_targets {
+                Ok(optimize_reference_targets(targets, config))
+            } else {
+                Ok(optimize_bonded_terms(filtered_stats, config))
+            }
+        }
+    }
+}
+
+fn evaluator_has_candidate_extraction(evaluator: &super::ObjectiveEvaluatorRequest) -> bool {
+    evaluator
+        .json_file
+        .as_ref()
+        .and_then(|json_file| json_file.candidate_extraction.as_ref())
+        .is_some()
+}
+
+fn insufficient_sample_warning(
+    tuning: &ParameterTuningRequest,
+    stats: &BondedStats,
+    targets: Option<&ReferenceTargetSet>,
+    reference_frames_read: Option<usize>,
+) -> Result<Option<String>> {
+    if tuning.allow_single_frame.unwrap_or(false) {
+        return Ok(None);
+    }
+    if reference_frames_read.is_some_and(|frames| frames < 2) {
+        let message = "warning: bonded fitting reference has fewer than 2 frames; repeated bonded members are not a temporal distribution. Set optimization.allow_single_frame=true for smoke runs or provide a multi-frame reference for production fitting.".to_string();
+        if tuning.on_insufficient_samples.as_deref() == Some("error") {
+            return Err(anyhow!("{message}"));
+        }
+        return Ok(Some(message));
+    }
+    let min_samples = tuning.min_samples_per_term.unwrap_or(2);
+    let insufficient_count = if let Some(targets) = targets {
+        targets
+            .constraints
+            .iter()
+            .chain(targets.bonds.iter())
+            .chain(targets.angles.iter())
+            .chain(targets.dihedrals.iter())
+            .filter(|target| target.samples < min_samples)
+            .count()
+    } else {
+        stats
+            .bonds
+            .iter()
+            .map(|stat| stat.samples)
+            .chain(stats.angles.iter().map(|stat| stat.samples))
+            .chain(stats.dihedrals.iter().map(|stat| stat.samples))
+            .filter(|samples| *samples < min_samples)
+            .count()
+    };
+    if insufficient_count == 0 {
+        return Ok(None);
+    }
+    let message = format!(
+        "warning: {insufficient_count} bonded fitting terms have fewer than {min_samples} samples; set optimization.allow_single_frame=true for smoke runs or provide a multi-frame reference for production fitting."
+    );
+    if tuning.on_insufficient_samples.as_deref().unwrap_or("warn") == "error" {
+        return Err(anyhow!("{message}"));
+    }
+    Ok(Some(message))
+}
+
 fn json_file_evaluator(
     evaluator: &super::ObjectiveEvaluatorRequest,
     reference_targets: &ReferenceTargetSet,
+    reference_metrics: Option<&BTreeMap<String, f64>>,
+    metric_scoring: &StructuralMetricScoringConfig,
+    simulation_fit: bool,
     out_dir: &Path,
 ) -> Result<JsonFileObjectiveEvaluator> {
     let json_file = evaluator
@@ -91,12 +276,34 @@ fn json_file_evaluator(
             .unwrap_or_else(|| "result.json".to_string()),
         command: json_file.command.as_ref().map(json_file_command),
         reference_targets: Some(reference_targets.clone()),
+        reference_metrics: reference_metrics.cloned().unwrap_or_default(),
+        metric_scoring: metric_scoring.clone(),
+        force_reference_scoring: simulation_fit,
+        require_candidate_trajectory: simulation_fit,
         candidate_extraction: json_file
             .candidate_extraction
             .as_ref()
-            .map(candidate_trajectory_extraction_config)
+            .map(|request| candidate_trajectory_extraction_config(request, Some(reference_targets)))
             .transpose()?,
     }))
+}
+
+fn metric_scoring_config(tuning: &ParameterTuningRequest) -> StructuralMetricScoringConfig {
+    let mut config = StructuralMetricScoringConfig::default();
+    if let Some(request) = &tuning.metric_scoring {
+        if let Some(value) = request.rg_weight {
+            config.rg_weight = value;
+        }
+        if let Some(value) = request.sasa_weight {
+            config.sasa_weight = value;
+        }
+        if let Some(value) = request.missing_metric_penalty {
+            config.missing_metric_penalty = value;
+        }
+        config.require_rg = request.require_rg.unwrap_or(false);
+        config.require_sasa = request.require_sasa.unwrap_or(false);
+    }
+    config
 }
 
 fn json_file_command(command: &JsonFileEvaluatorCommandRequest) -> JsonFileEvaluatorCommand {
@@ -108,18 +315,21 @@ fn json_file_command(command: &JsonFileEvaluatorCommandRequest) -> JsonFileEvalu
 
 fn candidate_trajectory_extraction_config(
     request: &CandidateTrajectoryExtractionRequest,
+    reference_targets: Option<&ReferenceTargetSet>,
 ) -> Result<CandidateTrajectoryExtractionConfig> {
+    let term_set = request
+        .bonded_terms
+        .as_ref()
+        .map(candidate_bonded_term_set)
+        .transpose()?
+        .or_else(|| reference_targets.map(reference_targets_to_bonded_terms));
     Ok(CandidateTrajectoryExtractionConfig {
         mapping: BeadMapping {
             bead_names: request.mapping.bead_names.clone(),
             atom_indices: request.mapping.atom_indices.clone(),
         },
         connections: request.connections.iter().map(|[i, j]| (*i, *j)).collect(),
-        term_set: request
-            .bonded_terms
-            .as_ref()
-            .map(candidate_bonded_term_set)
-            .transpose()?,
+        term_set,
         options: NativeTrajectoryOptions {
             topology: request.topology.clone(),
             topology_format: request.topology_format.clone(),
@@ -137,6 +347,67 @@ fn candidate_trajectory_extraction_config(
         transform: None,
         mapped_trajectory_name: request.mapped_trajectory_name.clone(),
     })
+}
+
+fn reference_targets_to_bonded_terms(targets: &ReferenceTargetSet) -> BondedTermSet {
+    BondedTermSet {
+        constraints: targets
+            .constraints
+            .iter()
+            .map(|target| crate::bonded_terms::BondTermGroup {
+                label: target.label.clone(),
+                members: target
+                    .members
+                    .iter()
+                    .filter_map(|member| Some([*member.first()?, *member.get(1)?]))
+                    .collect(),
+            })
+            .collect(),
+        bonds: targets
+            .bonds
+            .iter()
+            .map(|target| crate::bonded_terms::BondTermGroup {
+                label: target.label.clone(),
+                members: target
+                    .members
+                    .iter()
+                    .filter_map(|member| Some([*member.first()?, *member.get(1)?]))
+                    .collect(),
+            })
+            .collect(),
+        angles: targets
+            .angles
+            .iter()
+            .map(|target| crate::bonded_terms::AngleTermGroup {
+                label: target.label.clone(),
+                members: target
+                    .members
+                    .iter()
+                    .filter_map(|member| Some([*member.first()?, *member.get(1)?, *member.get(2)?]))
+                    .collect(),
+            })
+            .collect(),
+        dihedrals: targets
+            .dihedrals
+            .iter()
+            .map(|target| crate::bonded_terms::DihedralTermGroup {
+                label: target.label.clone(),
+                members: target
+                    .members
+                    .iter()
+                    .filter_map(|member| {
+                        Some([
+                            *member.first()?,
+                            *member.get(1)?,
+                            *member.get(2)?,
+                            *member.get(3)?,
+                        ])
+                    })
+                    .collect(),
+            })
+            .collect(),
+        virtual_sites: Vec::new(),
+    }
 }
 
 fn candidate_bonded_term_set(source: &super::BondedTermSource) -> Result<BondedTermSet> {

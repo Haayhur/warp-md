@@ -46,6 +46,7 @@ fn bayesian_optimization_uses_expected_improvement_trace() {
             swarm_size: None,
             pso: None,
             bo: None,
+            initial_parameters: std::collections::BTreeMap::new(),
         },
     );
 
@@ -74,6 +75,7 @@ fn pso_uses_same_bonded_objective() {
             swarm_size: Some(6),
             pso: None,
             bo: None,
+            initial_parameters: std::collections::BTreeMap::new(),
         },
     );
 
@@ -94,6 +96,7 @@ fn pso_counts_initial_swarm_against_evaluation_budget() {
             swarm_size: Some(12),
             pso: None,
             bo: None,
+            initial_parameters: std::collections::BTreeMap::new(),
         },
     );
 
@@ -246,6 +249,7 @@ fn pso_config_overrides_stall_termination() {
                 ..PsoConfig::default()
             }),
             bo: None,
+            initial_parameters: std::collections::BTreeMap::new(),
         },
     );
 
@@ -495,6 +499,7 @@ fn pso_optimizes_discrete_choice_probabilities() {
             ..PsoConfig::default()
         }),
         bo: None,
+        initial_parameters: std::collections::BTreeMap::new(),
     };
     let mut evaluator = ChoiceEvaluator;
     let (best_choices, best_value, evaluations) =
@@ -535,6 +540,7 @@ fn pso_discrete_choice_probability_dilation_is_configurable() {
             ..PsoConfig::default()
         }),
         bo: None,
+        initial_parameters: std::collections::BTreeMap::new(),
     };
     let mut evaluator = BatchChoiceEvaluator {
         seen_choices: Vec::new(),
@@ -559,6 +565,7 @@ fn bonded_term_optimization_includes_angles_and_dihedrals() {
             swarm_size: None,
             pso: None,
             bo: None,
+            initial_parameters: std::collections::BTreeMap::new(),
         },
     );
     let names: Vec<&str> = report
@@ -571,4 +578,35 @@ fn bonded_term_optimization_includes_angles_and_dihedrals() {
     assert!(names.contains(&"angle_0_1_2_angle_deg"));
     assert!(names.contains(&"dihedral_0_1_2_3_phase_deg"));
     assert_eq!(report.best_parameters.len(), 6);
+}
+
+#[test]
+fn direct_statistics_assigns_centers_and_force_constants_without_optimizer() {
+    let report = direct_statistics_report(
+        &sample_bonded_stats(),
+        &OptimizationConfig {
+            method: "bayesian_optimization".to_string(),
+            objective: "bonded_parameter_parity".to_string(),
+            max_evaluations: 24,
+            seed: 17,
+            swarm_size: None,
+            pso: None,
+            bo: None,
+            initial_parameters: std::collections::BTreeMap::new(),
+        },
+    );
+    let params = report
+        .best_parameters
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    assert_eq!(report.method, "direct_statistics");
+    assert!(report.evaluations.is_empty());
+    assert_eq!(params["bond_0_1_length_angstrom"], 3.0);
+    assert_eq!(params["angle_0_1_2_angle_deg"], 120.0);
+    assert_eq!(params["dihedral_0_1_2_3_phase_deg"], 180.0);
+    assert!(params.contains_key("bond_0_1_force"));
+    assert!(params.contains_key("angle_0_1_2_force"));
+    assert!(params.contains_key("dihedral_0_1_2_3_force"));
 }

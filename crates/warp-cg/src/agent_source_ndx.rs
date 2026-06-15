@@ -140,6 +140,7 @@ pub(super) fn build_ndx_source_mapping(
             bead_features: beads.iter().map(|bead| bead.features.clone()).collect(),
             bead_formal_charges: beads.iter().map(|bead| bead.formal_charge).collect(),
         },
+        bonded_terms: None,
         beads,
         residue_count: residues.len(),
         aa_atom_count: atom_count,

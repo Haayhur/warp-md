@@ -105,6 +105,8 @@ pub(super) fn run_reference_only_request(
                 tuning,
                 &bonded_stats,
                 reference.target_set.as_ref(),
+                (reference.metadata.frames_read > 0).then_some(reference.metadata.frames_read),
+                Some(&reference.metrics),
                 &out_dir,
                 &request.name,
                 &mut artifacts,

@@ -59,12 +59,15 @@ pub(super) fn reference_target_bounds(targets: &ReferenceTargetSet) -> Vec<Param
     }
     for target in &targets.bonds {
         bounds.push(term_value_bound(target));
+        bounds.push(term_force_bound(target));
     }
     for target in &targets.angles {
         bounds.push(term_value_bound(target));
+        bounds.push(term_force_bound(target));
     }
     for target in &targets.dihedrals {
         bounds.push(term_value_bound(target));
+        bounds.push(term_force_bound(target));
     }
     bounds
 }
@@ -86,9 +89,24 @@ fn term_value_bound(target: &ReferenceDistributionTarget) -> ParameterBound {
     let min = (target.mean - 4.0 * spread).clamp(range_min, range_max);
     let max = (target.mean + 4.0 * spread).clamp(range_min, range_max);
     ParameterBound {
-        name: reference_target_bound_name(target),
+        name: reference_target_value_name(target),
         min,
         max: max.max(min + 1.0e-6),
+    }
+}
+
+fn term_force_bound(target: &ReferenceDistributionTarget) -> ParameterBound {
+    let (min, max) = match target.kind {
+        ReferenceTermKind::Constraint => (0.0, 0.0),
+        ReferenceTermKind::Bond => (1.0, 5000.0),
+        ReferenceTermKind::Angle => (1.0, 500.0),
+        ReferenceTermKind::Dihedral => (0.1, 100.0),
+    };
+    ParameterBound {
+        name: reference_target_force_name(target)
+            .unwrap_or_else(|| format!("{}_force", reference_target_value_name(target))),
+        min,
+        max,
     }
 }
 
@@ -102,15 +120,37 @@ fn targets_max_domain(target: &ReferenceDistributionTarget) -> f64 {
         .max(0.01)
 }
 
-fn reference_target_bound_name(target: &ReferenceDistributionTarget) -> String {
+pub(super) fn reference_target_value_name(target: &ReferenceDistributionTarget) -> String {
+    if let Some(label) = target.label.as_deref().filter(|label| !label.is_empty()) {
+        let label = parameter_safe_label(label);
+        return match target.kind {
+            ReferenceTermKind::Constraint | ReferenceTermKind::Bond => {
+                format!("{label}_{}", reference_target_length_suffix(target))
+            }
+            ReferenceTermKind::Angle => format!("{label}_angle_deg"),
+            ReferenceTermKind::Dihedral => format!("{label}_phase_deg"),
+        };
+    }
     let beads = target
         .members
         .first()
         .cloned()
         .unwrap_or_else(|| target.beads.clone());
     match target.kind {
-        ReferenceTermKind::Constraint => format!("constraint_{}_{}_length_nm", beads[0], beads[1]),
-        ReferenceTermKind::Bond => format!("bond_{}_{}_length_angstrom", beads[0], beads[1]),
+        ReferenceTermKind::Constraint => {
+            format!(
+                "constraint_{}_{}_{}",
+                beads[0],
+                beads[1],
+                reference_target_length_suffix(target)
+            )
+        }
+        ReferenceTermKind::Bond => format!(
+            "bond_{}_{}_{}",
+            beads[0],
+            beads[1],
+            reference_target_length_suffix(target)
+        ),
         ReferenceTermKind::Angle => {
             format!("angle_{}_{}_{}_angle_deg", beads[0], beads[1], beads[2])
         }
@@ -118,6 +158,59 @@ fn reference_target_bound_name(target: &ReferenceDistributionTarget) -> String {
             "dihedral_{}_{}_{}_{}_phase_deg",
             beads[0], beads[1], beads[2], beads[3]
         ),
+    }
+}
+
+fn reference_target_length_suffix(target: &ReferenceDistributionTarget) -> &'static str {
+    match target.units.trim().to_ascii_lowercase().as_str() {
+        "nm" | "nanometer" | "nanometers" => "length_nm",
+        _ => "length_angstrom",
+    }
+}
+
+pub(super) fn reference_target_force_name(target: &ReferenceDistributionTarget) -> Option<String> {
+    let suffix = match target.kind {
+        ReferenceTermKind::Constraint => return None,
+        ReferenceTermKind::Bond | ReferenceTermKind::Angle | ReferenceTermKind::Dihedral => "force",
+    };
+    if let Some(label) = target.label.as_deref().filter(|label| !label.is_empty()) {
+        let label = parameter_safe_label(label);
+        return Some(format!("{label}_{suffix}"));
+    }
+    let beads = target
+        .members
+        .first()
+        .cloned()
+        .unwrap_or_else(|| target.beads.clone());
+    Some(match target.kind {
+        ReferenceTermKind::Constraint => return None,
+        ReferenceTermKind::Bond => format!("bond_{}_{}_force", beads[0], beads[1]),
+        ReferenceTermKind::Angle => format!("angle_{}_{}_{}_force", beads[0], beads[1], beads[2]),
+        ReferenceTermKind::Dihedral => format!(
+            "dihedral_{}_{}_{}_{}_force",
+            beads[0], beads[1], beads[2], beads[3]
+        ),
+    })
+}
+
+fn parameter_safe_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut last_was_sep = false;
+    for ch in label.chars() {
+        let safe = ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-';
+        if safe {
+            out.push(ch);
+            last_was_sep = false;
+        } else if !last_was_sep {
+            out.push('_');
+            last_was_sep = true;
+        }
+    }
+    let trimmed = out.trim_matches('_').to_string();
+    if trimmed.is_empty() {
+        "bonded_class".to_string()
+    } else {
+        trimmed
     }
 }
 

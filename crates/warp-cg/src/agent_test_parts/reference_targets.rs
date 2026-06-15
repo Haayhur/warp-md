@@ -87,14 +87,20 @@ fn reference_target_optimization_honors_requested_target_terms() {
             enabled: true,
             source: "aa_trajectory".to_string(),
             method: "pso".to_string(),
+            fitting_mode: None,
+            allow_single_frame: None,
+            min_samples_per_term: None,
+            on_insufficient_samples: None,
             max_evaluations: Some(6),
             seed: Some(4),
+            initial_parameters: std::collections::BTreeMap::new(),
             swarm_size: Some(4),
             pso: None,
             bo: None,
             objective: "reference_target_emd".to_string(),
             target_terms: Some(vec!["angles".to_string()]),
             xtb: None,
+            metric_scoring: None,
             evaluator: None,
         }),
         output: CgOutputRequest {
@@ -118,7 +124,10 @@ fn reference_target_optimization_honors_requested_target_terms() {
         .collect::<Vec<_>>();
 
     assert_eq!(result.summary.optimized_terms, vec!["angles"]);
-    assert_eq!(names, vec!["angle_0_1_2_angle_deg"]);
+    assert_eq!(
+        names,
+        vec!["angle_group_1_angle_deg", "angle_group_1_force"]
+    );
     assert!(report
         .evaluations
         .iter()
