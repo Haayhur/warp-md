@@ -26,6 +26,49 @@ const MARTINI3_FILES: &[&str] = &[
     "martini_v3.0_sterols_v1.0.itp",
 ];
 
+const EMBEDDED_MARTINI3_FILES: &[(&str, &[u8])] = &[
+    (
+        "LICENSE",
+        include_bytes!("../assets/forcefields/martini3/LICENSE"),
+    ),
+    (
+        "NOTICE.md",
+        include_bytes!("../assets/forcefields/martini3/NOTICE.md"),
+    ),
+    (
+        "martini_v3.0.0.itp",
+        include_bytes!("../assets/forcefields/martini3/martini_v3.0.0.itp"),
+    ),
+    (
+        "martini_v3.0.0_ions_v1.itp",
+        include_bytes!("../assets/forcefields/martini3/martini_v3.0.0_ions_v1.itp"),
+    ),
+    (
+        "martini_v3.0.0_nucleobases_v1.itp",
+        include_bytes!("../assets/forcefields/martini3/martini_v3.0.0_nucleobases_v1.itp"),
+    ),
+    (
+        "martini_v3.0.0_phospholipids_v1.itp",
+        include_bytes!("../assets/forcefields/martini3/martini_v3.0.0_phospholipids_v1.itp"),
+    ),
+    (
+        "martini_v3.0.0_small_molecules_v1.itp",
+        include_bytes!("../assets/forcefields/martini3/martini_v3.0.0_small_molecules_v1.itp"),
+    ),
+    (
+        "martini_v3.0.0_solvents_v1.itp",
+        include_bytes!("../assets/forcefields/martini3/martini_v3.0.0_solvents_v1.itp"),
+    ),
+    (
+        "martini_v3.0.0_sugars_v1.itp",
+        include_bytes!("../assets/forcefields/martini3/martini_v3.0.0_sugars_v1.itp"),
+    ),
+    (
+        "martini_v3.0_sterols_v1.0.itp",
+        include_bytes!("../assets/forcefields/martini3/martini_v3.0_sterols_v1.0.itp"),
+    ),
+];
+
 #[derive(Clone, Debug)]
 pub struct MaterializedForcefield {
     pub root: PathBuf,
@@ -46,12 +89,14 @@ pub fn bundled_forcefield_root(kind: &str) -> Result<PathBuf> {
 }
 
 pub fn bundled_manifest_json(kind: &str) -> Result<Value> {
-    let root = bundled_forcefield_root(kind)?;
-    manifest_json(
+    if kind != MARTINI3_KIND {
+        bail!("unsupported bundled forcefield kind '{kind}'");
+    }
+    embedded_manifest_json(
         kind,
         MARTINI3_VERSION,
         "bundled",
-        &root,
+        "embedded:warp-cg/assets/forcefields/martini3",
         MARTINI3_DEFAULT_INCLUDE,
     )
 }
@@ -60,8 +105,7 @@ pub fn install_bundled_forcefield(kind: &str, dest: &Path, overwrite: bool) -> R
     if kind != MARTINI3_KIND {
         bail!("unsupported bundled forcefield kind '{kind}'");
     }
-    let root = bundled_forcefield_root(kind)?;
-    copy_forcefield_files(&root, dest, MARTINI3_FILES, overwrite)?;
+    copy_embedded_forcefield_files(dest, overwrite)?;
     let manifest = manifest_json(
         kind,
         MARTINI3_VERSION,
@@ -81,6 +125,9 @@ pub fn materialize_request_forcefield(
     out_dir: &Path,
 ) -> Result<MaterializedForcefield> {
     validate_request_forcefield(request)?;
+    if request.source == "bundled" {
+        return materialize_bundled_request_forcefield(request, out_dir);
+    }
     let source_root = source_root(request)?;
     let source_version = request
         .version
@@ -188,6 +235,9 @@ pub fn validate_request_forcefield(request: &ForcefieldRequest) -> Result<()> {
 }
 
 pub fn forcefield_path_exists(request: &ForcefieldRequest) -> bool {
+    if request.source == "bundled" {
+        return request.kind == MARTINI3_KIND;
+    }
     source_root(request).is_ok()
 }
 
@@ -236,6 +286,70 @@ fn copy_forcefield_files(
     Ok(())
 }
 
+fn copy_embedded_forcefield_files(dest: &Path, overwrite: bool) -> Result<()> {
+    std::fs::create_dir_all(dest)
+        .with_context(|| format!("failed to create forcefield directory '{}'", dest.display()))?;
+    for (file, bytes) in EMBEDDED_MARTINI3_FILES {
+        let dest_path = dest.join(file);
+        if dest_path.exists() && !overwrite {
+            bail!(
+                "forcefield destination '{}' already exists; pass overwrite=true to replace it",
+                dest_path.display()
+            );
+        }
+        std::fs::write(&dest_path, bytes).with_context(|| {
+            format!(
+                "failed to write bundled forcefield file '{}'",
+                dest_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn materialize_bundled_request_forcefield(
+    request: &ForcefieldRequest,
+    out_dir: &Path,
+) -> Result<MaterializedForcefield> {
+    let dest_name = request
+        .dest
+        .as_deref()
+        .unwrap_or_else(|| default_dest(&request.kind));
+    let dest = out_dir.join(dest_name);
+    copy_embedded_forcefield_files(&dest, request.overwrite.unwrap_or(true))?;
+    let include_files = include_files(request);
+    ensure_include_files(&dest, &include_files)?;
+    let include_paths = include_files
+        .iter()
+        .map(|file| {
+            PathBuf::from(dest_name)
+                .join(file)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect::<Vec<_>>();
+    let manifest = manifest_json(
+        &request.kind,
+        request
+            .version
+            .as_deref()
+            .unwrap_or_else(|| default_version(&request.kind)),
+        &request.source,
+        &dest,
+        include_files
+            .first()
+            .map(String::as_str)
+            .unwrap_or_else(|| default_include(&request.kind)),
+    )?;
+    let manifest_path = dest.join(MANIFEST_FILE);
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    Ok(MaterializedForcefield {
+        root: dest,
+        manifest_path,
+        include_paths,
+    })
+}
+
 fn manifest_json(
     kind: &str,
     version: &str,
@@ -253,6 +367,42 @@ fn manifest_json(
         "version": version,
         "source": source,
         "root": root.to_string_lossy(),
+        "default_include": default_include,
+        "license": "Apache-2.0 for bundled Martini force-field parameter files; see NOTICE.md",
+        "upstream": {
+            "repository": "https://github.com/marrink-lab/martini-forcefields",
+            "description": "Martini 3 force-field interaction and molecule parameter files"
+        },
+        "files": files
+    }))
+}
+
+fn embedded_manifest_json(
+    kind: &str,
+    version: &str,
+    source: &str,
+    root: &str,
+    default_include: &str,
+) -> Result<Value> {
+    if kind != MARTINI3_KIND {
+        bail!("unsupported forcefield kind '{kind}'");
+    }
+    let files = EMBEDDED_MARTINI3_FILES
+        .iter()
+        .map(|(file, bytes)| {
+            Ok(json!({
+                "path": file,
+                "bytes": bytes.len(),
+                "sha256": sha256_hex(bytes)
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(json!({
+        "schema_version": FORCEFIELD_MANIFEST_SCHEMA,
+        "kind": kind,
+        "version": version,
+        "source": source,
+        "root": root,
         "default_include": default_include,
         "license": "Apache-2.0 for bundled Martini force-field parameter files; see NOTICE.md",
         "upstream": {

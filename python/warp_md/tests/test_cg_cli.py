@@ -62,6 +62,27 @@ def test_cg_cli_forcefield_inspect(monkeypatch, capsys) -> None:
     assert "martini_v3.0.0.itp" in output
 
 
+def test_cg_contract_native_forcefield_install_writes_bundled_files(tmp_path: Path) -> None:
+    if cg_contract.traj_py is None:
+        pytest.skip("native warp-md bindings unavailable")
+
+    manifest = cg_contract.cg_forcefield_inspect("martini3")
+    assert manifest["kind"] == "martini3"
+    assert {entry["path"] for entry in manifest["files"]} >= {
+        "LICENSE",
+        "NOTICE.md",
+        "martini_v3.0.0.itp",
+    }
+
+    dest = tmp_path / "forcefields" / "martini3"
+    installed = cg_contract.cg_forcefield_install(str(dest), kind="martini3", overwrite=True)
+
+    assert installed["kind"] == "martini3"
+    assert (dest / "martini_v3.0.0.itp").is_file()
+    assert (dest / "NOTICE.md").is_file()
+    assert (dest / "warp_cg_forcefield_manifest.json").is_file()
+
+
 def test_cg_cli_martini_openmm_runner_dry_run(capsys, tmp_path: Path) -> None:
     exit_code = cg_cli.run_cli(
         [
