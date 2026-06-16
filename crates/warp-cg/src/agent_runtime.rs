@@ -2,8 +2,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
+use serde_json::{json, Value};
 
 use crate::bonded_terms::BondedTermSet;
+use crate::forcefield::materialize_request_forcefield;
 use crate::optimize::{
     direct_statistics_report, direct_statistics_report_from_targets, optimize_bonded_terms,
     optimize_reference_targets, optimize_reference_targets_with_named_evaluator,
@@ -13,13 +15,13 @@ use crate::optimize::{
 };
 use crate::parameters::BondedStats;
 use crate::reference::ReferenceTargetSet;
-use crate::trajectory::{BeadMapping, NativeTrajectoryOptions};
+use crate::trajectory::{BeadMapping, NativeSasaOptions, NativeTrajectoryOptions};
 use crate::xtb::XtbRunConfig;
 
 use super::{
-    CandidateTrajectoryExtractionRequest, CgArtifact, CgRequest, CgSource,
-    JsonFileEvaluatorCommandRequest, ParameterTuningRequest, ParameterTuningResult, SourceHandoff,
-    TrajectorySource, XtbRequest,
+    CandidateTrajectoryExtractionRequest, CgArtifact, CgRequest, CgSource, ForcefieldRequest,
+    JsonFileEvaluatorCommandRequest, ParameterTuningRequest, ParameterTuningResult,
+    SimulationRunnerRequest, SourceHandoff, TrajectorySource, XtbRequest,
 };
 
 pub(super) fn run_optimization(
@@ -30,10 +32,12 @@ pub(super) fn run_optimization(
     reference_metrics: Option<&BTreeMap<String, f64>>,
     out_dir: &Path,
     name: &str,
+    forcefield: Option<&ForcefieldRequest>,
     artifacts: &mut Vec<CgArtifact>,
 ) -> Result<ParameterTuningResult> {
+    let method = normalized_tuning_method(&tuning.method);
     let config = OptimizationConfig {
-        method: tuning.method.clone(),
+        method: method.clone(),
         objective: tuning.objective.clone(),
         max_evaluations: tuning.max_evaluations.unwrap_or(32),
         seed: tuning.seed.unwrap_or(42),
@@ -60,6 +64,7 @@ pub(super) fn run_optimization(
         reference_metrics,
         &metric_scoring,
         out_dir,
+        forcefield,
     )?;
     if report.status == "error" {
         return Err(anyhow!("{}", report.message));
@@ -80,12 +85,19 @@ pub(super) fn run_optimization(
 
     Ok(ParameterTuningResult {
         status: report.status.clone(),
-        method: tuning.method.clone(),
+        method,
         source: tuning.source.clone(),
         objective: tuning.objective.clone(),
         message: report.message.clone(),
         report: Some(report),
     })
+}
+
+fn normalized_tuning_method(method: &str) -> String {
+    match method {
+        "bo" => "bayesian_optimization".to_string(),
+        _ => method.to_string(),
+    }
 }
 
 fn run_selected_fitting_mode(
@@ -96,6 +108,7 @@ fn run_selected_fitting_mode(
     reference_metrics: Option<&BTreeMap<String, f64>>,
     metric_scoring: &StructuralMetricScoringConfig,
     out_dir: &Path,
+    forcefield: Option<&ForcefieldRequest>,
 ) -> Result<OptimizationReport> {
     match tuning.fitting_mode.as_deref().unwrap_or("auto") {
         "direct_statistics" => {
@@ -119,19 +132,30 @@ fn run_selected_fitting_mode(
                     "optimization.fitting_mode=external_evaluator requires reference targets from reference_source"
                 ));
             };
-            let Some(evaluator) = tuning.evaluator.as_ref() else {
+            let mut evaluator = if let Some(runner) = tuning.runner.as_ref() {
+                runner_json_file_evaluator(
+                    runner,
+                    targets,
+                    reference_metrics,
+                    metric_scoring,
+                    false,
+                    out_dir,
+                    forcefield,
+                )?
+            } else if let Some(evaluator) = tuning.evaluator.as_ref() {
+                json_file_evaluator(
+                    evaluator,
+                    targets,
+                    reference_metrics,
+                    metric_scoring,
+                    false,
+                    out_dir,
+                )?
+            } else {
                 return Err(anyhow!(
-                    "optimization.fitting_mode=external_evaluator requires optimization.evaluator"
+                    "optimization.fitting_mode=external_evaluator requires optimization.evaluator or optimization.runner"
                 ));
             };
-            let mut evaluator = json_file_evaluator(
-                evaluator,
-                targets,
-                reference_metrics,
-                metric_scoring,
-                false,
-                out_dir,
-            )?;
             Ok(optimize_reference_targets_with_named_evaluator(
                 targets,
                 &mut evaluator,
@@ -145,19 +169,30 @@ fn run_selected_fitting_mode(
                     "optimization.fitting_mode=simulation_fit requires reference targets from reference_source"
                 ));
             };
-            let Some(evaluator) = tuning.evaluator.as_ref() else {
+            let mut evaluator = if let Some(runner) = tuning.runner.as_ref() {
+                runner_json_file_evaluator(
+                    runner,
+                    targets,
+                    reference_metrics,
+                    metric_scoring,
+                    true,
+                    out_dir,
+                    forcefield,
+                )?
+            } else if let Some(evaluator) = tuning.evaluator.as_ref() {
+                json_file_evaluator(
+                    evaluator,
+                    targets,
+                    reference_metrics,
+                    metric_scoring,
+                    true,
+                    out_dir,
+                )?
+            } else {
                 return Err(anyhow!(
-                    "optimization.fitting_mode=simulation_fit requires optimization.evaluator"
+                    "optimization.fitting_mode=simulation_fit requires optimization.evaluator or optimization.runner"
                 ));
             };
-            let mut evaluator = json_file_evaluator(
-                evaluator,
-                targets,
-                reference_metrics,
-                metric_scoring,
-                true,
-                out_dir,
-            )?;
             Ok(optimize_reference_targets_with_named_evaluator(
                 targets,
                 &mut evaluator,
@@ -166,7 +201,29 @@ fn run_selected_fitting_mode(
             ))
         }
         _ => {
-            if let Some(evaluator) = tuning.evaluator.as_ref() {
+            if let Some(runner) = tuning.runner.as_ref() {
+                let Some(targets) = filtered_targets else {
+                    return Err(anyhow!(
+                        "optimization.runner requires reference targets from reference_source"
+                    ));
+                };
+                let simulation_fit = runner_has_candidate_extraction(runner);
+                let mut evaluator = runner_json_file_evaluator(
+                    runner,
+                    targets,
+                    reference_metrics,
+                    metric_scoring,
+                    simulation_fit,
+                    out_dir,
+                    forcefield,
+                )?;
+                Ok(optimize_reference_targets_with_named_evaluator(
+                    targets,
+                    &mut evaluator,
+                    config,
+                    &[],
+                ))
+            } else if let Some(evaluator) = tuning.evaluator.as_ref() {
                 let Some(targets) = filtered_targets else {
                     return Err(anyhow!(
                         "optimization.evaluator requires reference targets from reference_source"
@@ -202,6 +259,10 @@ fn evaluator_has_candidate_extraction(evaluator: &super::ObjectiveEvaluatorReque
         .as_ref()
         .and_then(|json_file| json_file.candidate_extraction.as_ref())
         .is_some()
+}
+
+fn runner_has_candidate_extraction(runner: &SimulationRunnerRequest) -> bool {
+    runner.candidate_extraction.is_some()
 }
 
 fn insufficient_sample_warning(
@@ -288,6 +349,90 @@ fn json_file_evaluator(
     }))
 }
 
+fn runner_json_file_evaluator(
+    runner: &SimulationRunnerRequest,
+    reference_targets: &ReferenceTargetSet,
+    reference_metrics: Option<&BTreeMap<String, f64>>,
+    metric_scoring: &StructuralMetricScoringConfig,
+    simulation_fit: bool,
+    out_dir: &Path,
+    forcefield: Option<&ForcefieldRequest>,
+) -> Result<JsonFileObjectiveEvaluator> {
+    let work_dir = runner
+        .work_dir
+        .clone()
+        .unwrap_or_else(|| "martini_openmm_evaluations".to_string());
+    let evaluator_work_dir = resolve_output_path(out_dir, &work_dir);
+    std::fs::create_dir_all(&evaluator_work_dir)?;
+    let spec_path = evaluator_work_dir.join("martini_openmm_runner_spec.json");
+    std::fs::write(
+        &spec_path,
+        serde_json::to_vec_pretty(&runner_spec_json(runner, out_dir, forcefield)?)?,
+    )?;
+    Ok(JsonFileObjectiveEvaluator::new(JsonFileEvaluatorConfig {
+        work_dir: evaluator_work_dir,
+        request_filename: "candidate.json".to_string(),
+        result_filename: "result.json".to_string(),
+        command: Some(JsonFileEvaluatorCommand {
+            program: runner
+                .python
+                .clone()
+                .unwrap_or_else(|| "python".to_string()),
+            args: vec![
+                "-m".to_string(),
+                "warp_md.cg_martini_openmm_evaluator".to_string(),
+                "--spec".to_string(),
+                spec_path.to_string_lossy().to_string(),
+            ],
+        }),
+        reference_targets: Some(reference_targets.clone()),
+        reference_metrics: reference_metrics.cloned().unwrap_or_default(),
+        metric_scoring: metric_scoring.clone(),
+        force_reference_scoring: simulation_fit,
+        require_candidate_trajectory: simulation_fit,
+        candidate_extraction: runner
+            .candidate_extraction
+            .as_ref()
+            .map(|request| candidate_trajectory_extraction_config(request, Some(reference_targets)))
+            .transpose()?,
+    }))
+}
+
+fn runner_spec_json(
+    runner: &SimulationRunnerRequest,
+    out_dir: &Path,
+    forcefield: Option<&ForcefieldRequest>,
+) -> Result<Value> {
+    let mut value = serde_json::to_value(runner)?;
+    let Value::Object(map) = &mut value else {
+        return Err(anyhow!("failed to serialize optimization.runner"));
+    };
+    map.insert(
+        "schema_version".to_string(),
+        json!("warp-cg.martini-openmm-runner.v1"),
+    );
+    map.insert(
+        "base_dir".to_string(),
+        json!(std::env::current_dir()?.to_string_lossy().to_string()),
+    );
+    map.insert(
+        "out_dir".to_string(),
+        json!(out_dir.to_string_lossy().to_string()),
+    );
+    if let Some(forcefield) = forcefield {
+        let materialized = materialize_request_forcefield(forcefield, out_dir)?;
+        map.insert(
+            "forcefield_directory".to_string(),
+            json!(materialized.root.to_string_lossy().to_string()),
+        );
+        map.insert(
+            "forcefield_includes".to_string(),
+            json!(materialized.include_paths),
+        );
+    }
+    Ok(value)
+}
+
 fn metric_scoring_config(tuning: &ParameterTuningRequest) -> StructuralMetricScoringConfig {
     let mut config = StructuralMetricScoringConfig::default();
     if let Some(request) = &tuning.metric_scoring {
@@ -343,6 +488,7 @@ fn candidate_trajectory_extraction_config(
             mass_weighted: request.mass_weighted.unwrap_or(false),
             make_whole: request.make_whole.unwrap_or(false),
             chunk_frames: request.chunk_frames,
+            sasa: native_sasa_options(request.sasa.as_ref()),
         },
         transform: None,
         mapped_trajectory_name: request.mapped_trajectory_name.clone(),
@@ -484,6 +630,7 @@ pub(super) fn normalized_trajectory_source(
             atom_indices: None,
             mass_weighted: None,
             make_whole: None,
+            sasa: None,
         })
     })
 }
@@ -509,6 +656,7 @@ pub(super) fn native_options(
             .unwrap_or(false),
         make_whole: source.and_then(|source| source.make_whole).unwrap_or(false),
         chunk_frames: None,
+        sasa: native_sasa_options(source.and_then(|source| source.sasa.as_ref())),
     }
 }
 
@@ -536,7 +684,27 @@ pub(super) fn source_native_options(
         mass_weighted: false,
         make_whole: false,
         chunk_frames: None,
+        sasa: NativeSasaOptions::default(),
     }
+}
+
+fn native_sasa_options(request: Option<&super::SasaRequest>) -> NativeSasaOptions {
+    let mut options = NativeSasaOptions::default();
+    if let Some(request) = request {
+        if let Some(value) = request.probe_radius_nm {
+            options.probe_radius_nm = value;
+        }
+        if let Some(value) = request.n_sphere_points {
+            options.n_sphere_points = value;
+        }
+        if let Some(value) = &request.radii_nm {
+            options.radii_nm = Some(value.clone());
+        }
+        if let Some(value) = request.fallback_radius_nm {
+            options.fallback_radius_nm = value;
+        }
+    }
+    options
 }
 
 pub(super) fn xtb_run_config(request: &XtbRequest) -> XtbRunConfig {

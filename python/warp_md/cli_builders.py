@@ -18,6 +18,7 @@ from .cli_api import (
     EndToEndPlan,
     EquipartitionPlan,
     FreeVolumePlan,
+    HydrophobicDefectPlan,
     HbondPlan,
     IonPairCorrelationPlan,
     MsdPlan,
@@ -286,6 +287,33 @@ def _build_free_volume(system: System, spec: Dict[str, Any]):
     return FreeVolumePlan(sel, center_sel, **kwargs)
 
 
+def _build_hydrophobic_defects(system: System, spec: Dict[str, Any]):
+    lipid_sel = _select(system, spec.get("lipid_selection"), "hydrophobic_defects.lipid_selection")
+    ref_sel = _select(system, spec.get("reference_selection"), "hydrophobic_defects.reference_selection")
+    kwargs = _pick(
+        spec,
+        [
+            "voxel_size",
+            "z_bounds",
+            "probe_radius",
+            "defect_radius",
+            "length_scale",
+            "grid_mode",
+            "leaflet",
+            "leaflet_bins",
+        ],
+    )
+    if "z_bounds" in kwargs:
+        kwargs["z_bounds"] = _as_tuple(kwargs["z_bounds"], 2, "z_bounds")
+    if spec.get("midplane_selection"):
+        kwargs["midplane_selection"] = _select(
+            system,
+            spec.get("midplane_selection"),
+            "hydrophobic_defects.midplane_selection",
+        )
+    return HydrophobicDefectPlan(lipid_sel, ref_sel, **kwargs)
+
+
 def _build_bondi_ffv(system: System, spec: Dict[str, Any]):
     sel = _select(system, spec.get("selection"), "bondi_ffv.selection")
     kwargs = _pick(spec, ["bondi_scale", "probe_radius", "seed", "ninsert_per_nm3", "length_scale"])
@@ -486,13 +514,44 @@ def _build_volmap(system: System, spec: Dict[str, Any]):
 
 def _build_surf(system: System, spec: Dict[str, Any]):
     from .analysis.surf import surf as surf_analysis
-    kwargs = _pick(spec, ["mask", "algorithm", "probe_radius", "n_sphere_points", "radii", "frame_indices", "chunk_frames", "device"])
+
+    kwargs = _pick(
+        spec,
+        [
+            "mask",
+            "algorithm",
+            "probe_radius",
+            "offset",
+            "nbrcut",
+            "solutemask",
+            "n_sphere_points",
+            "radii",
+            "frame_indices",
+            "chunk_frames",
+            "device",
+        ],
+    )
     return _CallablePlan(surf_analysis, kwargs)
 
 
 def _build_molsurf(system: System, spec: Dict[str, Any]):
     from .analysis.surf import molsurf as molsurf_analysis
-    kwargs = _pick(spec, ["mask", "algorithm", "probe_radius", "n_sphere_points", "radii", "frame_indices", "chunk_frames", "device"])
+
+    kwargs = _pick(
+        spec,
+        [
+            "mask",
+            "algorithm",
+            "probe",
+            "probe_radius",
+            "offset",
+            "n_sphere_points",
+            "radii",
+            "frame_indices",
+            "chunk_frames",
+            "device",
+        ],
+    )
     return _CallablePlan(molsurf_analysis, kwargs)
 
 

@@ -816,6 +816,96 @@ pub(crate) fn atomic_number_to_symbol(z: i32) -> Option<String> {
     }
 }
 
+pub(crate) fn parse_radii_for_topology(topo: &AmberTopology) -> Vec<f32> {
+    let n_atoms = topo.atom_names.len();
+    let mut radii = Vec::with_capacity(n_atoms);
+    for i in 0..n_atoms {
+        let symbol = topo
+            .atomic_numbers
+            .get(i)
+            .and_then(|z| atomic_number_to_symbol(*z))
+            .unwrap_or_else(|| infer_symbol_from_name(&topo.atom_names[i]));
+        radii.push(parse_radius_from_symbol(&symbol));
+    }
+    radii
+}
+
+pub(crate) fn vdw_radii_for_topology(topo: &AmberTopology) -> Vec<f32> {
+    let n_atoms = topo.atom_names.len();
+    let n_types = topo.atom_type_indices.iter().copied().max().unwrap_or(0);
+    if n_types == 0
+        || topo.nonbonded_parm_index.len() < n_types * n_types
+        || topo.lennard_jones_acoef.is_empty()
+        || topo.lennard_jones_bcoef.is_empty()
+    {
+        return Vec::new();
+    }
+
+    let mut radii = Vec::with_capacity(n_atoms);
+    for i in 0..n_atoms {
+        let Some(type_idx) = topo.atom_type_indices.get(i).copied() else {
+            radii.push(0.0);
+            continue;
+        };
+        let Some(type0) = type_idx.checked_sub(1) else {
+            radii.push(0.0);
+            continue;
+        };
+        let Some(raw_nb_index) = topo
+            .nonbonded_parm_index
+            .get(n_types * type0 + type0)
+            .copied()
+        else {
+            radii.push(0.0);
+            continue;
+        };
+        let Some(nb_index) = raw_nb_index.checked_sub(1) else {
+            radii.push(0.0);
+            continue;
+        };
+        let a = topo
+            .lennard_jones_acoef
+            .get(nb_index)
+            .copied()
+            .unwrap_or(0.0);
+        let b = topo
+            .lennard_jones_bcoef
+            .get(nb_index)
+            .copied()
+            .unwrap_or(0.0);
+        radii.push(vdw_radius_from_lj(a, b));
+    }
+    radii
+}
+
+fn parse_radius_from_symbol(symbol: &str) -> f32 {
+    match symbol.trim().to_ascii_uppercase().as_str() {
+        "H" => 1.0,
+        "C" => 1.7,
+        "N" => 1.5,
+        "O" => 1.4,
+        "P" => 2.0,
+        "S" => 1.85,
+        _ => 0.0,
+    }
+}
+
+fn vdw_radius_from_lj(a: f32, b: f32) -> f32 {
+    if b > 0.0 {
+        0.5 * ((2.0 * a / b) as f64).powf(1.0 / 6.0) as f32
+    } else {
+        0.0
+    }
+}
+
+fn infer_symbol_from_name(name: &str) -> String {
+    let trimmed = name.trim();
+    let first_alpha = trimmed.chars().find(|ch| ch.is_ascii_alphabetic());
+    first_alpha
+        .map(|ch| ch.to_ascii_uppercase().to_string())
+        .unwrap_or_default()
+}
+
 fn bond_adjacency(atom_count: usize, bonds: &[(usize, usize)]) -> Vec<Vec<usize>> {
     let mut adjacency = vec![Vec::new(); atom_count];
     for &(a, b) in bonds {

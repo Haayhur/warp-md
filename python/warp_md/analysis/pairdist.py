@@ -9,22 +9,35 @@ from typing import Optional, Sequence
 import numpy as np
 
 from ._runtime import (
+    coerce_native_system,
+    is_native_traj,
     load_native_symbol,
-    native_inputs,
     native_selection,
-    read_all_frames,
-    selection_indices,
-    subset_frames,
 )
-from .trajectory import ArrayTrajectory
 
 
-def _rmax_upper_bound(coords: np.ndarray, idx_a: np.ndarray, idx_b: np.ndarray) -> float:
-    sel_a = coords[:, idx_a, :]
-    sel_b = coords[:, idx_b, :]
-    lo = np.minimum(sel_a.min(axis=(0, 1)), sel_b.min(axis=(0, 1)))
-    hi = np.maximum(sel_a.max(axis=(0, 1)), sel_b.max(axis=(0, 1)))
-    return float(np.linalg.norm(hi - lo))
+def _format_pairdist(centers, hist, std, counts, n_frames: int, dtype: str):
+    out = {
+        "bin_centers": np.asarray(centers, dtype=np.float32),
+        "hist": np.asarray(hist, dtype=np.float32),
+        "std": np.asarray(std, dtype=np.float32),
+        "counts": np.asarray(counts, dtype=np.uint64),
+        "n_frames": int(n_frames),
+    }
+    key = str(dtype).lower()
+    if key == "dict":
+        return out
+    if key in ("tuple", "ndarray"):
+        return out["bin_centers"], out["hist"]
+    return out
+
+
+def _format_extrema(values, mode: str, dtype: str):
+    out = np.asarray(values, dtype=np.float32)
+    key = str(dtype).lower()
+    if key == "dict":
+        return {"pairdist": out, "mode": mode, "n_frames": int(out.shape[0])}
+    return out
 
 
 def pairdist(
@@ -33,77 +46,112 @@ def pairdist(
     mask: str = "*",
     mask2: str = "",
     delta: float = 0.1,
+    maxdist: Optional[float] = None,
+    mode: str = "hist",
     frame_indices: Optional[Sequence[int]] = None,
     dtype: str = "dict",
     chunk_frames: Optional[int] = None,
 ):
-    """Compute pair distance histogram."""
-    if delta <= 0.0:
+    """Compute pair distance histogram or per-frame extrema."""
+    mode_value = str(mode).lower()
+    histogram_mode = mode_value in ("hist", "histogram", "distribution")
+    extrema_mode = mode_value in ("min", "minimum", "max", "maximum")
+    if not histogram_mode and not extrema_mode:
+        raise ValueError("mode must be 'hist', 'min', or 'max'")
+    if histogram_mode and delta <= 0.0:
         raise ValueError("delta must be positive")
 
-    coords, _box, _time = read_all_frames(traj, chunk_frames)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
-    coords, _box, _time = subset_frames(coords, frame_indices)
-    coords = np.asarray(coords, dtype=np.float32)
-    if coords.size == 0:
-        empty = np.empty((0,), dtype=np.float32)
-        return {"bin_centers": empty, "hist": empty, "n_frames": 0}
+    same = not bool(mask2)
 
-    idx_a = selection_indices(system, mask)
-    idx_b = selection_indices(system, mask2) if mask2 else idx_a
-    same = not mask2 or np.array_equal(idx_a, idx_b)
-    if idx_a.size == 0 or idx_b.size == 0 or (same and idx_a.size < 2):
-        empty = np.empty((0,), dtype=np.float32)
-        return {"bin_centers": empty, "hist": empty, "n_frames": int(coords.shape[0])}
+    if not is_native_traj(traj):
+        raise RuntimeError(
+            "pairdist requires a Rust-backed trajectory so frame/atom loops stay in Rust."
+        )
+    native_system = coerce_native_system(system)
+    if native_system is None:
+        raise RuntimeError("failed to prepare native pairdist system")
+    frame_indices_list = (
+        None if frame_indices is None else [int(value) for value in frame_indices]
+    )
+    sel_a = native_selection(system, native_system, mask)
+    sel_b = sel_a if same else native_selection(system, native_system, mask2)
 
-    plan_cls = load_native_symbol("PairDistPlan")
+    if extrema_mode:
+        plan_cls = load_native_symbol("PairDistanceExtremaPlan")
+        if plan_cls is None:
+            raise RuntimeError("PairDistanceExtremaPlan binding unavailable")
+        plan_mode = "min" if mode_value in ("min", "minimum") else "max"
+        try:
+            values = plan_cls(
+                sel_a,
+                sel_b,
+                plan_mode,
+                "none",
+                unique_pairs=bool(same),
+            ).run(
+                traj,
+                native_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=frame_indices_list,
+            )
+        except Exception as exc:
+            raise RuntimeError("native PairDistanceExtremaPlan execution failed") from exc
+        return _format_extrema(values, plan_mode, dtype)
+
+    if maxdist is not None:
+        maxdist_value = float(maxdist)
+        if not np.isfinite(maxdist_value) or maxdist_value <= 0.0:
+            raise ValueError("maxdist must be finite and positive")
+        plan_cls = load_native_symbol("PairDistPlan")
+        if plan_cls is None:
+            raise RuntimeError("PairDistPlan binding unavailable")
+        n_bins = max(1, int(np.ceil(maxdist_value / float(delta))))
+        r_max = np.float32(n_bins * float(delta))
+        try:
+            centers, hist, std, counts, n_frames = plan_cls(
+                sel_a,
+                sel_b,
+                n_bins,
+                r_max,
+                "none",
+                output_distribution=True,
+                unique_pairs=bool(same),
+                compact_output=True,
+            ).run(
+                traj,
+                native_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=frame_indices_list,
+            )
+        except Exception as exc:
+            raise RuntimeError("native PairDistPlan execution failed") from exc
+        return _format_pairdist(centers, hist, std, counts, n_frames, dtype)
+
+    plan_cls = load_native_symbol("PairDistDynamicPlan")
     if plan_cls is None:
-        raise RuntimeError("PairDistPlan binding unavailable")
-
-    upper = _rmax_upper_bound(coords, idx_a, idx_b)
-    n_bins = max(1, int(np.ceil(max(upper, float(delta)) / float(delta))))
-    r_max = np.float32(n_bins * float(delta))
-
-    source = ArrayTrajectory(coords)
-    native_traj, native_system = native_inputs(source, system, chunk_frames)
-    if native_traj is None or native_system is None:
-        raise RuntimeError("failed to prepare native pairdist inputs")
+        raise RuntimeError("PairDistDynamicPlan binding unavailable")
     try:
-        sel_a = native_selection(system, native_system, mask)
-        sel_b = sel_a if same else native_selection(system, native_system, mask2)
-        out = plan_cls(
+        centers, hist, std, counts, n_frames = plan_cls(
             sel_a,
             sel_b,
-            n_bins,
-            r_max,
+            np.float32(delta),
             "none",
-        ).run(native_traj, native_system, chunk_frames=chunk_frames, device="auto")
-        centers, counts = out
-        centers = np.asarray(centers, dtype=np.float32)
-        counts = np.asarray(counts, dtype=np.float64)
+            output_distribution=True,
+            unique_pairs=bool(same),
+            compact_output=True,
+        ).run(
+            traj,
+            native_system,
+            chunk_frames=chunk_frames,
+            device="auto",
+            frame_indices=frame_indices_list,
+        )
     except Exception as exc:
-        raise RuntimeError("native PairDistPlan execution failed") from exc
+        raise RuntimeError("native PairDistDynamicPlan execution failed") from exc
 
-    if same:
-        counts *= 0.5
-    nonzero = np.nonzero(counts > 0)[0]
-    if nonzero.size == 0:
-        centers = centers[:0]
-        counts = counts[:0]
-    else:
-        stop = int(nonzero[-1]) + 1
-        centers = centers[:stop]
-        counts = counts[:stop]
-
-    out = {
-        "bin_centers": centers.astype(np.float32),
-        "hist": counts.astype(np.float32),
-        "n_frames": int(coords.shape[0]),
-    }
-    if dtype == "dict":
-        return out
-    return out
+    return _format_pairdist(centers, hist, std, counts, n_frames, dtype)
 
 
 __all__ = ["pairdist"]

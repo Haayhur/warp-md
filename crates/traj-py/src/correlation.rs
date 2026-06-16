@@ -578,32 +578,93 @@ struct PySurfPlan {
     plan: RefCell<SurfPlan>,
 }
 
+fn parse_surface_radii_mode(mode: &str) -> PyResult<SurfaceRadiiMode> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "gb" => Ok(SurfaceRadiiMode::Gb),
+        "parse" => Ok(SurfaceRadiiMode::Parse),
+        "vdw" => Ok(SurfaceRadiiMode::Vdw),
+        _ => Err(PyRuntimeError::new_err(
+            "radii_mode must be 'gb', 'parse', or 'vdw'",
+        )),
+    }
+}
+
+fn surface_to_py(py: Python<'_>, output: traj_engine::SurfaceOutput) -> PyResult<PyObject> {
+    let total = PyArray1::from_vec_bound(py, output.total);
+    let atom_area = if output.atom_area.is_empty() {
+        py.None()
+    } else {
+        matrix_to_py(py, output.atom_area, output.frames, output.atoms)?.into_py(py)
+    };
+    let volume = if output.volume.is_empty() {
+        py.None()
+    } else {
+        PyArray1::from_vec_bound(py, output.volume).into_py(py)
+    };
+    let residue_area = if output.residue_area.is_empty() {
+        py.None()
+    } else {
+        matrix_to_py(py, output.residue_area, output.frames, output.residues)?.into_py(py)
+    };
+    let residue_ids = if output.residue_ids.is_empty() {
+        py.None()
+    } else {
+        PyArray1::from_vec_bound(py, output.residue_ids).into_py(py)
+    };
+    Ok((
+        total,
+        atom_area,
+        volume,
+        residue_area,
+        residue_ids,
+        output.frames,
+        output.atoms,
+    )
+        .into_py(py))
+}
+
 #[pymethods]
 impl PySurfPlan {
     #[new]
-    #[pyo3(signature = (selection, algorithm="bbox", probe_radius=1.4, n_sphere_points=64, radii=None))]
+    #[pyo3(signature = (selection, algorithm="bbox", probe_radius=1.4, n_sphere_points=64, radii=None, offset=0.0, nbrcut=2.5, solute_selection=None, radii_mode="gb", atom_area=false, volume=false, residue_area=false))]
     fn new(
         selection: &PySelection,
         algorithm: &str,
         probe_radius: f64,
         n_sphere_points: usize,
         radii: Option<Vec<f64>>,
+        offset: f64,
+        nbrcut: f64,
+        solute_selection: Option<&PySelection>,
+        radii_mode: &str,
+        atom_area: bool,
+        volume: bool,
+        residue_area: bool,
     ) -> PyResult<Self> {
         let algorithm = match algorithm {
             "bbox" => SurfAlgorithm::Bbox,
+            "lcpo" => SurfAlgorithm::Lcpo,
             "sasa" => SurfAlgorithm::Sasa,
             _ => {
                 return Err(PyRuntimeError::new_err(
-                    "algorithm must be 'bbox' or 'sasa'",
+                    "algorithm must be 'bbox', 'lcpo', or 'sasa'",
                 ))
             }
         };
+        let radii_mode = parse_surface_radii_mode(radii_mode)?;
         let radii = radii.map(|values| values.into_iter().map(|v| v as f32).collect());
         let plan = SurfPlan::new(selection.selection.clone())
             .with_algorithm(algorithm)
             .with_probe_radius(probe_radius as f32)
+            .with_radius_offset(offset as f32)
+            .with_neighbor_cutoff(nbrcut as f32)
             .with_n_sphere_points(n_sphere_points)
-            .with_radii(radii);
+            .with_radii(radii)
+            .with_radii_mode(radii_mode)
+            .with_solute_selection(solute_selection.map(|sel| sel.selection.clone()))
+            .with_atom_area(atom_area)
+            .with_volume(volume)
+            .with_residue_area(residue_area);
         Ok(Self {
             plan: RefCell::new(plan),
         })
@@ -618,7 +679,7 @@ impl PySurfPlan {
         chunk_frames: Option<usize>,
         device: &str,
         frame_indices: Option<Vec<i64>>,
-    ) -> PyResult<&'py PyArray1<f32>> {
+    ) -> PyResult<PyObject> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
         let output = run_plan_with_frame_subset(
@@ -630,7 +691,8 @@ impl PySurfPlan {
             frame_indices,
         )?;
         match output {
-            PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_py(py)),
+            PlanOutput::Surface(output) => surface_to_py(py, output),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }
@@ -644,13 +706,18 @@ struct PyMolSurfPlan {
 #[pymethods]
 impl PyMolSurfPlan {
     #[new]
-    #[pyo3(signature = (selection, algorithm="sasa", probe_radius=0.0, n_sphere_points=64, radii=None))]
+    #[pyo3(signature = (selection, algorithm="sasa", probe_radius=1.4, n_sphere_points=64, radii=None, offset=0.0, radii_mode="gb", atom_area=false, volume=false, residue_area=false))]
     fn new(
         selection: &PySelection,
         algorithm: &str,
         probe_radius: f64,
         n_sphere_points: usize,
         radii: Option<Vec<f64>>,
+        offset: f64,
+        radii_mode: &str,
+        atom_area: bool,
+        volume: bool,
+        residue_area: bool,
     ) -> PyResult<Self> {
         let algorithm = match algorithm {
             "bbox" => SurfAlgorithm::Bbox,
@@ -661,12 +728,18 @@ impl PyMolSurfPlan {
                 ))
             }
         };
+        let radii_mode = parse_surface_radii_mode(radii_mode)?;
         let radii = radii.map(|values| values.into_iter().map(|v| v as f32).collect());
         let plan = MolSurfPlan::new(selection.selection.clone())
             .with_algorithm(algorithm)
             .with_probe_radius(probe_radius as f32)
+            .with_radius_offset(offset as f32)
             .with_n_sphere_points(n_sphere_points)
-            .with_radii(radii);
+            .with_radii(radii)
+            .with_radii_mode(radii_mode)
+            .with_atom_area(atom_area)
+            .with_volume(volume)
+            .with_residue_area(residue_area);
         Ok(Self {
             plan: RefCell::new(plan),
         })
@@ -681,7 +754,7 @@ impl PyMolSurfPlan {
         chunk_frames: Option<usize>,
         device: &str,
         frame_indices: Option<Vec<i64>>,
-    ) -> PyResult<&'py PyArray1<f32>> {
+    ) -> PyResult<PyObject> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
         let output = run_plan_with_frame_subset(
@@ -693,7 +766,8 @@ impl PyMolSurfPlan {
             frame_indices,
         )?;
         match output {
-            PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_py(py)),
+            PlanOutput::Surface(output) => surface_to_py(py, output),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }
@@ -2782,7 +2856,7 @@ impl PyDsspPlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None, simplified=false))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -2790,15 +2864,18 @@ impl PyDsspPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
+        simplified: bool,
     ) -> PyResult<PyObject> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         let (data, rows, cols) = match output {
             PlanOutput::Matrix { data, rows, cols } => (data, rows, cols),
@@ -2809,14 +2886,34 @@ impl PyDsspPlan {
         }
         let labels = plan.labels().to_vec();
         drop(plan);
-        let mut codes = Vec::with_capacity(data.len());
+        let mut output_codes = Vec::with_capacity(data.len());
+        let mut symbols = Vec::with_capacity(data.len());
         for value in data.into_iter() {
-            let code = (value.round() as i32).clamp(0, 7) as u8;
-            codes.push(code);
+            let internal_code = (value.round() as i32).clamp(0, 7) as u8;
+            let output_code = dssp_internal_to_output_code(internal_code);
+            output_codes.push(output_code);
+            symbols.push(dssp_output_code_to_symbol(output_code, simplified).to_string());
         }
-        let arr = Array2::from_shape_vec((rows, cols), codes)
+        let avg_values = dssp_output_average_fractions(&output_codes, rows, cols);
+        let avg = PyDict::new_bound(py);
+        for (idx, key) in DSSP_OUTPUT_AVG_KEYS.iter().enumerate() {
+            let start = idx * cols;
+            avg.set_item(
+                *key,
+                PyArray1::from_vec_bound(py, avg_values[start..start + cols].to_vec()),
+            )?;
+        }
+        let arr = Array2::from_shape_vec((rows, cols), output_codes)
             .map_err(|_| PyRuntimeError::new_err("invalid dssp matrix shape"))?;
-        Ok((labels, arr.into_pyarray_bound(py).into_py(py)).into_py(py))
+        Ok((
+            labels,
+            arr.into_pyarray_bound(py).into_py(py),
+            symbols,
+            rows,
+            cols,
+            avg,
+        )
+            .into_py(py))
     }
 }
 

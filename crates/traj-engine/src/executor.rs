@@ -579,7 +579,9 @@ pub enum PlanOutput {
         centers: Vec<f32>,
         counts: Vec<u64>,
     },
+    PairDistribution(PairDistributionOutput),
     Rdf(RdfOutput),
+    Surface(SurfaceOutput),
     Persistence(PersistenceOutput),
     TimeSeries {
         time: Vec<f32>,
@@ -602,6 +604,7 @@ pub enum PlanOutput {
     Mdmat(MdmatOutput),
     DensityMap(DensityMapOutput),
     Grid(GridOutput),
+    HydrophobicDefect(HydrophobicDefectOutput),
     LipidMatrix(LipidMatrixOutput),
     LipidFlipFlop(LipidFlipFlopOutput),
     Pca(PcaOutput),
@@ -612,6 +615,26 @@ pub struct RdfOutput {
     pub r: Vec<f32>,
     pub g_r: Vec<f32>,
     pub counts: Vec<u64>,
+    pub integral: Vec<f32>,
+}
+
+pub struct PairDistributionOutput {
+    pub centers: Vec<f32>,
+    pub probability: Vec<f32>,
+    pub std: Vec<f32>,
+    pub counts: Vec<u64>,
+    pub frames: usize,
+}
+
+pub struct SurfaceOutput {
+    pub total: Vec<f32>,
+    pub atom_area: Vec<f32>,
+    pub volume: Vec<f32>,
+    pub residue_area: Vec<f32>,
+    pub residue_ids: Vec<i32>,
+    pub frames: usize,
+    pub atoms: usize,
+    pub residues: usize,
 }
 
 pub struct PersistenceOutput {
@@ -914,6 +937,23 @@ pub struct GridOutput {
     pub last: Vec<u32>,
     pub min: Vec<u32>,
     pub max: Vec<u32>,
+}
+
+pub struct HydrophobicDefectOutput {
+    pub dims: [usize; 3],
+    pub voxel_size: f32,
+    pub z_bounds: [f32; 2],
+    pub mean: Vec<f32>,
+    pub first: Vec<u32>,
+    pub last: Vec<u32>,
+    pub min: Vec<u32>,
+    pub max: Vec<u32>,
+    pub frame_counts: Vec<u32>,
+    pub frame_area: Vec<f32>,
+    pub frame_volume: Vec<f32>,
+    pub frame_cluster_count: Vec<u32>,
+    pub frame_largest_cluster: Vec<u32>,
+    pub max_lifetime: Vec<u32>,
 }
 
 pub struct PcaOutput {

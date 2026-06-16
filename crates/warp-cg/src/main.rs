@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use warp_cg::{agent, build_contract, simulate_contract};
+use warp_cg::{agent, build_contract, forcefield, simulate_contract};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -46,6 +46,11 @@ enum Command {
     Simulate {
         #[command(subcommand)]
         command: SimulateCommand,
+    },
+    /// Inspect or install bundled CG force-field snapshots.
+    Forcefield {
+        #[command(subcommand)]
+        command: ForcefieldCommand,
     },
 }
 
@@ -111,6 +116,24 @@ enum SimulateCommand {
     Status { run_dir: String },
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum ForcefieldCommand {
+    /// Print the bundled forcefield manifest.
+    Inspect {
+        #[arg(long, default_value = "martini3")]
+        kind: String,
+    },
+    /// Copy a bundled forcefield snapshot into a project-local directory.
+    Install {
+        #[arg(long, default_value = "martini3")]
+        kind: String,
+        #[arg(long)]
+        dest: String,
+        #[arg(long)]
+        overwrite: bool,
+    },
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if let Some(command) = args.command {
@@ -153,6 +176,29 @@ fn run_agent_command(command: Command) -> Result<()> {
         }
         Command::Build { command } => return run_build_command(command),
         Command::Simulate { command } => return run_simulate_command(command),
+        Command::Forcefield { command } => return run_forcefield_command(command),
+    }
+    Ok(())
+}
+
+fn run_forcefield_command(command: ForcefieldCommand) -> Result<()> {
+    match command {
+        ForcefieldCommand::Inspect { kind } => {
+            let manifest = forcefield::bundled_manifest_json(&kind)?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+        }
+        ForcefieldCommand::Install {
+            kind,
+            dest,
+            overwrite,
+        } => {
+            let manifest = forcefield::install_bundled_forcefield(
+                &kind,
+                std::path::Path::new(&dest),
+                overwrite,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+        }
     }
     Ok(())
 }

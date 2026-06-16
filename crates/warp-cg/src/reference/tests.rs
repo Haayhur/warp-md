@@ -52,9 +52,14 @@ fn trajectory_provider_maps_reference_and_records_artifact() {
     assert_eq!(data.metrics["rg_samples"], 2.0);
     assert!((data.metrics["rg_mean_nm"] - 0.75).abs() < 1.0e-12);
     assert!((data.metrics["rg_std_nm"] - 0.25).abs() < 1.0e-12);
+    assert_eq!(data.metrics["sasa_samples"], 2.0);
     assert_eq!(data.metrics["sasa_approx_samples"], 2.0);
-    assert!(data.metrics["sasa_approx_mean_nm2"].is_finite());
-    assert!(data.metrics["sasa_approx_mean_nm2"] > 0.0);
+    assert!(data.metrics["sasa_mean_nm2"].is_finite());
+    assert!(data.metrics["sasa_mean_nm2"] > 0.0);
+    assert_eq!(
+        data.metrics["sasa_approx_mean_nm2"],
+        data.metrics["sasa_mean_nm2"]
+    );
     assert_eq!(data.first_cg_coords.unwrap().len(), 2);
     assert!(data.mapped_trajectory.as_ref().unwrap().is_file());
     let target_set = data.target_set.as_ref().unwrap();

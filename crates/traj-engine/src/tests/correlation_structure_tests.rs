@@ -1715,6 +1715,642 @@ fn rdf_plan_counts() {
 }
 
 #[test]
+fn rdf_plan_density_normalization_uses_common_count() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = RdfPlan::new(sel.clone(), sel, 5, 5.0, PbcMode::None)
+        .with_output_options(1.0, false, false, true);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            let shell = (4.0f32 / 3.0) * std::f32::consts::PI * (2.0f32.powi(3) - 1.0);
+            assert_eq!(rdf.counts[1], 2);
+            assert!((rdf.g_r[1] - (2.0 / shell)).abs() < 1e-6);
+            assert!((rdf.integral[1] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn rdf_plan_raw_output_returns_counts_from_rust() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = RdfPlan::new(sel.clone(), sel, 5, 5.0, PbcMode::None)
+        .with_output_options(1.0, false, true, false);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            assert_eq!(rdf.counts[1], 2);
+            assert_eq!(rdf.g_r[1], 2.0);
+            assert!(rdf.integral.is_empty());
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn rdf_plan_xy_dimension_ignores_z_distance_in_rust_loop() {
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let mol = interner.intern_upper("MOL");
+    let carbon = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![a, a],
+        resname_id: vec![mol, mol],
+        resid: vec![1, 2],
+        chain_id: vec![0, 0],
+        element_id: vec![carbon, carbon],
+        mass: vec![12.0, 12.0],
+    };
+    let positions0 = Some(vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 5.0, 1.0]]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("name A").unwrap();
+    let mut plan = RdfPlan::new(sel.clone(), sel, 2, 2.0, PbcMode::None)
+        .with_output_options(1.0, false, true, false)
+        .with_dimension(RdfDimension::PlanarXY);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            assert_eq!(rdf.counts, vec![2, 0]);
+            assert_eq!(rdf.g_r, vec![2.0, 0.0]);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn rdf_plan_direct_atom_mode_uses_selected_chunks() {
+    struct RdfSelectedOnlyTraj {
+        n_atoms: usize,
+        frames: Vec<Vec<[f32; 4]>>,
+        cursor: usize,
+        selection: Vec<u32>,
+        selected_reads: usize,
+    }
+
+    impl RdfSelectedOnlyTraj {
+        fn new(n_atoms: usize, frames: Vec<Vec<[f32; 4]>>, selection: Vec<u32>) -> Self {
+            Self {
+                n_atoms,
+                frames,
+                cursor: 0,
+                selection,
+                selected_reads: 0,
+            }
+        }
+    }
+
+    impl TrajReader for RdfSelectedOnlyTraj {
+        fn n_atoms(&self) -> usize {
+            self.n_atoms
+        }
+
+        fn n_frames_hint(&self) -> Option<usize> {
+            Some(self.frames.len())
+        }
+
+        fn read_chunk(
+            &mut self,
+            _max_frames: usize,
+            _out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            panic!("rdf direct atom mode should use selected chunk reads")
+        }
+
+        fn read_chunk_selected(
+            &mut self,
+            max_frames: usize,
+            selection: &[u32],
+            out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            assert_eq!(selection, self.selection.as_slice());
+            out.reset(selection.len(), max_frames);
+            let mut count = 0usize;
+            while self.cursor < self.frames.len() && count < max_frames {
+                let dst = out.start_frame(Box3::None, None);
+                for (local, &global) in selection.iter().enumerate() {
+                    dst[local] = self.frames[self.cursor][global as usize];
+                }
+                self.cursor += 1;
+                self.selected_reads += 1;
+                count += 1;
+            }
+            Ok(count)
+        }
+    }
+
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let b = interner.intern_upper("B");
+    let mol = interner.intern_upper("MOL");
+    let carbon = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![a, b, a],
+        resname_id: vec![mol, mol, mol],
+        resid: vec![1, 2, 3],
+        chain_id: vec![0, 0, 0],
+        element_id: vec![carbon, carbon, carbon],
+        mass: vec![12.0, 12.0, 12.0],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1000.0, 1000.0, 1000.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("name A").unwrap();
+    let frames = vec![
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1000.0, 1000.0, 1000.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+        ],
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1000.0, 1000.0, 1000.0, 1.0],
+            [2.0, 0.0, 0.0, 1.0],
+        ],
+    ];
+    let mut plan = RdfPlan::new(sel.clone(), sel, 4, 4.0, PbcMode::None)
+        .with_output_options(1.0, false, true, false);
+    let mut traj = RdfSelectedOnlyTraj::new(system.n_atoms(), frames, vec![0, 2]);
+    let out = Executor::new(system).run_plan(&mut plan, &mut traj).unwrap();
+    assert_eq!(traj.selected_reads, 2);
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            assert_eq!(rdf.counts, vec![0, 2, 2, 0]);
+            assert_eq!(rdf.g_r, vec![0.0, 2.0, 2.0, 0.0]);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn pairdist_dynamic_plan_grows_histogram_in_rust() {
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let mol = interner.intern_upper("MOL");
+    let carbon = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![a, a, a],
+        resname_id: vec![mol, mol, mol],
+        resid: vec![1, 2, 3],
+        chain_id: vec![0, 0, 0],
+        element_id: vec![carbon, carbon, carbon],
+        mass: vec![12.0, 12.0, 12.0],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [2.4, 0.0, 0.0, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("name A").unwrap();
+    let mut plan = PairDistDynamicPlan::new(sel.clone(), sel, 1.0, PbcMode::None);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Histogram { centers, counts } => {
+            assert_eq!(centers, vec![0.5, 1.5, 2.5]);
+            assert_eq!(counts, vec![0, 4, 2]);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn pairdist_dynamic_plan_outputs_distribution_stats_in_rust() {
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let mol = interner.intern_upper("MOL");
+    let carbon = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![a, a, a],
+        resname_id: vec![mol, mol, mol],
+        resid: vec![1, 2, 3],
+        chain_id: vec![0, 0, 0],
+        element_id: vec![carbon, carbon, carbon],
+        mass: vec![12.0, 12.0, 12.0],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [2.4, 0.0, 0.0, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("name A").unwrap();
+    let mut plan = PairDistDynamicPlan::new(sel.clone(), sel, 1.0, PbcMode::None)
+        .with_output_options(true, true, true);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::PairDistribution(out) => {
+            assert_eq!(out.frames, 1);
+            assert_eq!(out.centers, vec![1.5, 2.5]);
+            assert_eq!(out.counts, vec![2, 1]);
+            assert_eq!(out.probability, vec![2.0, 1.0]);
+            assert_eq!(out.std, vec![0.0, 0.0]);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn pairdist_plan_outputs_per_frame_mean_and_std() {
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let mol = interner.intern_upper("MOL");
+    let carbon = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![a, a],
+        resname_id: vec![mol, mol],
+        resid: vec![1, 2],
+        chain_id: vec![0, 0],
+        element_id: vec![carbon, carbon],
+        mass: vec![12.0, 12.0],
+    };
+    let positions0 = Some(vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("name A").unwrap();
+    let mut plan = PairDistPlan::new(sel.clone(), sel, 4, 4.0, PbcMode::None)
+        .with_output_options(true, true, true);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::PairDistribution(out) => {
+            let expected_std = 0.5f32.sqrt();
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.centers, vec![1.5, 2.5]);
+            assert_eq!(out.counts, vec![1, 1]);
+            assert_eq!(out.probability, vec![0.5, 0.5]);
+            assert!((out.std[0] - expected_std).abs() < 1e-6);
+            assert!((out.std[1] - expected_std).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn pairdist_extrema_plan_outputs_min_and_max_per_frame() {
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let mol = interner.intern_upper("MOL");
+    let carbon = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![a, a, a],
+        resname_id: vec![mol, mol, mol],
+        resid: vec![1, 2, 3],
+        chain_id: vec![0, 0, 0],
+        element_id: vec![carbon, carbon, carbon],
+        mass: vec![12.0, 12.0, 12.0],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [4.0, 0.0, 0.0, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("name A").unwrap();
+    let frames = vec![
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [4.0, 0.0, 0.0, 1.0],
+        ],
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [2.0, 0.0, 0.0, 1.0],
+            [5.0, 0.0, 0.0, 1.0],
+        ],
+    ];
+
+    let mut min_plan = PairDistanceExtremaPlan::new(
+        sel.clone(),
+        sel.clone(),
+        PairDistanceExtremaMode::Min,
+        PbcMode::None,
+    )
+    .with_unique_pairs(true);
+    let mut min_traj = InMemoryTraj::new(frames.clone());
+    let min_out = Executor::new(system.clone())
+        .run_plan(&mut min_plan, &mut min_traj)
+        .unwrap();
+    match min_out {
+        PlanOutput::Series(values) => assert_eq!(values, vec![1.0, 2.0]),
+        _ => panic!("unexpected output"),
+    }
+
+    let mut max_plan =
+        PairDistanceExtremaPlan::new(sel.clone(), sel, PairDistanceExtremaMode::Max, PbcMode::None)
+            .with_unique_pairs(true);
+    let mut max_traj = InMemoryTraj::new(frames);
+    let max_out = Executor::new(system)
+        .run_plan(&mut max_plan, &mut max_traj)
+        .unwrap();
+    match max_out {
+        PlanOutput::Series(values) => assert_eq!(values, vec![4.0, 5.0]),
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn pairdist_plans_use_selected_chunks() {
+    struct PairdistSelectedOnlyTraj {
+        n_atoms: usize,
+        frames: Vec<Vec<[f32; 4]>>,
+        cursor: usize,
+        selection: Vec<u32>,
+        selected_reads: usize,
+    }
+
+    impl PairdistSelectedOnlyTraj {
+        fn new(n_atoms: usize, frames: Vec<Vec<[f32; 4]>>, selection: Vec<u32>) -> Self {
+            Self {
+                n_atoms,
+                frames,
+                cursor: 0,
+                selection,
+                selected_reads: 0,
+            }
+        }
+    }
+
+    impl TrajReader for PairdistSelectedOnlyTraj {
+        fn n_atoms(&self) -> usize {
+            self.n_atoms
+        }
+
+        fn n_frames_hint(&self) -> Option<usize> {
+            Some(self.frames.len())
+        }
+
+        fn read_chunk(
+            &mut self,
+            _max_frames: usize,
+            _out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            panic!("pairdist plans should use selected chunk reads")
+        }
+
+        fn read_chunk_selected(
+            &mut self,
+            max_frames: usize,
+            selection: &[u32],
+            out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            assert_eq!(selection, self.selection.as_slice());
+            out.reset(selection.len(), max_frames);
+            let mut count = 0usize;
+            while self.cursor < self.frames.len() && count < max_frames {
+                let dst = out.start_frame(Box3::None, None);
+                for (local, &global) in selection.iter().enumerate() {
+                    dst[local] = self.frames[self.cursor][global as usize];
+                }
+                self.cursor += 1;
+                self.selected_reads += 1;
+                count += 1;
+            }
+            Ok(count)
+        }
+    }
+
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let b = interner.intern_upper("B");
+    let mol = interner.intern_upper("MOL");
+    let carbon = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![a, b, a],
+        resname_id: vec![mol, mol, mol],
+        resid: vec![1, 2, 3],
+        chain_id: vec![0, 0, 0],
+        element_id: vec![carbon, carbon, carbon],
+        mass: vec![12.0, 12.0, 12.0],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1000.0, 1000.0, 1000.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("name A").unwrap();
+    let selected = vec![0, 2];
+    let frames = vec![
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1000.0, 1000.0, 1000.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+        ],
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1000.0, 1000.0, 1000.0, 1.0],
+            [2.0, 0.0, 0.0, 1.0],
+        ],
+    ];
+
+    let mut fixed = PairDistPlan::new(sel.clone(), sel.clone(), 4, 4.0, PbcMode::None)
+        .with_output_options(true, true, true);
+    let mut traj =
+        PairdistSelectedOnlyTraj::new(system.n_atoms(), frames.clone(), selected.clone());
+    let fixed_out = Executor::new(system.clone())
+        .run_plan(&mut fixed, &mut traj)
+        .unwrap();
+    assert_eq!(traj.selected_reads, 2);
+    match fixed_out {
+        PlanOutput::PairDistribution(out) => {
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.centers, vec![1.5, 2.5]);
+            assert_eq!(out.counts, vec![1, 1]);
+        }
+        _ => panic!("unexpected output"),
+    }
+
+    let mut dynamic = PairDistDynamicPlan::new(sel.clone(), sel.clone(), 1.0, PbcMode::None)
+        .with_output_options(true, true, true);
+    let mut traj =
+        PairdistSelectedOnlyTraj::new(system.n_atoms(), frames.clone(), selected.clone());
+    let dynamic_out = Executor::new(system.clone())
+        .run_plan(&mut dynamic, &mut traj)
+        .unwrap();
+    assert_eq!(traj.selected_reads, 2);
+    match dynamic_out {
+        PlanOutput::PairDistribution(out) => {
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.centers, vec![1.5, 2.5]);
+            assert_eq!(out.counts, vec![1, 1]);
+        }
+        _ => panic!("unexpected output"),
+    }
+
+    let mut extrema =
+        PairDistanceExtremaPlan::new(sel.clone(), sel, PairDistanceExtremaMode::Max, PbcMode::None)
+            .with_unique_pairs(true);
+    let mut traj = PairdistSelectedOnlyTraj::new(system.n_atoms(), frames, selected);
+    let extrema_out = Executor::new(system)
+        .run_plan(&mut extrema, &mut traj)
+        .unwrap();
+    assert_eq!(traj.selected_reads, 2);
+    match extrema_out {
+        PlanOutput::Series(values) => assert_eq!(values, vec![1.0, 2.0]),
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn rdf_plan_center1_counts_center_to_atoms() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan =
+        RdfPlan::new(sel.clone(), sel, 5, 5.0, PbcMode::None).with_center_modes(true, false, true);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            let total: u64 = rdf.counts.iter().sum();
+            assert_eq!(total, 2);
+            assert_eq!(rdf.counts[0], 2);
+            assert_eq!(rdf.counts[1], 0);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn rdf_plan_byres1_counts_residue_center_to_atoms() {
+    let mut system = build_plane_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = RdfPlan::new(sel.clone(), sel, 5, 5.0, PbcMode::None)
+        .with_radial_options(false, false, true, false, false, false, false, true);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            let total: u64 = rdf.counts.iter().sum();
+            assert_eq!(total, 3);
+            assert_eq!(rdf.counts[0], 3);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn rdf_plan_nointramol_skips_same_residue_pairs() {
+    let mut system = build_plane_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = RdfPlan::new(sel.clone(), sel, 5, 5.0, PbcMode::None)
+        .with_radial_options(false, false, false, false, false, false, true, true);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            let total: u64 = rdf.counts.iter().sum();
+            assert_eq!(total, 0);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn rdf_plan_bymol_groups_atoms_by_molecule_id() {
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let mol = interner.intern_upper("MOL");
+    let carbon = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![a, a, a, a],
+        resname_id: vec![mol, mol, mol, mol],
+        resid: vec![1, 1, 2, 2],
+        chain_id: vec![0, 0, 0, 0],
+        element_id: vec![carbon, carbon, carbon, carbon],
+        mass: vec![12.0, 12.0, 12.0, 12.0],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 2.0, 1.0],
+        [4.0, 0.0, 0.0, 1.0],
+        [4.0, 0.0, 2.0, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0)
+        .with_topology_metadata(Vec::new(), vec![1, 1, 2, 2])
+        .unwrap();
+    let sel = system.select("name A").unwrap();
+    let mut plan = RdfPlan::new(sel.clone(), sel, 8, 8.0, PbcMode::None)
+        .with_radial_options(false, false, false, false, true, true, false, true);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            let total: u64 = rdf.counts.iter().sum();
+            assert_eq!(total, 2);
+            assert_eq!(rdf.counts[4], 2);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn rdf_plan_nointramol_uses_molecule_ids_before_residue_keys() {
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let mol = interner.intern_upper("MOL");
+    let carbon = interner.intern_upper("C");
+    let atoms = AtomTable {
+        name_id: vec![a, a],
+        resname_id: vec![mol, mol],
+        resid: vec![1, 1],
+        chain_id: vec![0, 0],
+        element_id: vec![carbon, carbon],
+        mass: vec![12.0, 12.0],
+    };
+    let positions0 = Some(vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]]);
+    let mut system = System::with_atoms(atoms, interner, positions0)
+        .with_topology_metadata(Vec::new(), vec![1, 2])
+        .unwrap();
+    let sel = system.select("name A").unwrap();
+    let mut plan = RdfPlan::new(sel.clone(), sel, 5, 5.0, PbcMode::None)
+        .with_radial_options(false, false, false, false, false, false, true, true);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            let total: u64 = rdf.counts.iter().sum();
+            assert_eq!(total, 2);
+            assert_eq!(rdf.counts[2], 2);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn polymer_end_to_end_basic() {
     let mut system = build_polymer_system(2, 3);
     let sel = system.select("name C").unwrap();

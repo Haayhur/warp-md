@@ -1,0 +1,97 @@
+{
+  "schema_version": "warp-cg.agent.v1",
+  "name": "benzene_simulation_fit",
+  "smiles": "c1ccccc1",
+  "reference_source": {
+    "kind": "precomputed",
+    "precomputed": {
+      "source_kind": "gromacs_reference",
+      "target_set": "results/reference/benzene_reference_targets.json"
+    },
+    "metrics": [
+      {
+        "kind": "json",
+        "path": "results/reference/benzene_reference_metrics.json"
+      }
+    ]
+  },
+  "output": {
+    "out_dir": "results/cg/benzene_simulation_fit",
+    "write_mapping_json": true,
+    "write_cg_pdb": true,
+    "write_topology_itp": true,
+    "write_topology_top": true,
+    "write_bonded_parameter_map": true
+  },
+  "forcefield": {
+    "kind": "martini3",
+    "source": "bundled",
+    "materialize": "copy"
+  },
+  "optimization": {
+    "enabled": true,
+    "source": "external_trajectory",
+    "method": "bo",
+    "fitting_mode": "simulation_fit",
+    "target_terms": ["bonds", "angles"],
+    "max_evaluations": 64,
+    "seed": 42,
+    "objective": "bonded_parameter_parity",
+    "bo": {
+      "n_startup_trials": 8,
+      "n_candidates": 1024,
+      "checkpoint_path": "results/cg/benzene_simulation_fit/bo_checkpoint.json",
+      "checkpoint_interval_evaluations": 1,
+      "evaluator_signature": "benzene-openmm-v1"
+    },
+    "metric_scoring": {
+      "rg_weight": 1.0,
+      "sasa_weight": 0.25,
+      "missing_metric_penalty": 1000000.0
+    },
+    "runner": {
+      "kind": "martini_openmm",
+      "work_dir": "candidate_evaluations",
+      "template_dir": "results/cg/benzene_simulation_fit/candidate_template",
+      "gro": "system.gro",
+      "top": "system.top",
+      "replacements": [
+        {
+          "path": "benzene_martini.itp",
+          "parameter": "bond.group_1_length_nm",
+          "placeholder": "{{bond.group_1_length_nm}}",
+          "format": ".5f"
+        },
+        {
+          "path": "benzene_martini.itp",
+          "parameter": "bond.group_1_force",
+          "placeholder": "{{bond.group_1_force}}",
+          "format": ".3f"
+        }
+      ],
+      "protocol": {
+        "eq_ns": 50.0,
+        "prod_ns": 1000.0,
+        "production_ensemble": "npt",
+        "platform": "CUDA",
+        "precision": "mixed",
+        "device": "0",
+        "trajectory_format": "xtc",
+        "report_interval_steps": 1000,
+        "trajectory_interval_steps": 10000,
+        "checkpoint_interval_steps": 50000
+      },
+      "candidate_extraction": {
+        "mapping": {
+          "bead_names": ["TC5", "TC5", "TC5"],
+          "atom_indices": [[0], [1], [2]]
+        },
+        "connections": [[0, 1], [0, 2], [1, 2]],
+        "format": "xtc",
+        "length_scale": 10.0,
+        "make_whole": true,
+        "mapped_trajectory_name": "candidate_cg.xtc"
+      }
+    }
+  }
+}

@@ -113,6 +113,9 @@ impl TargetExtractor for TrajectoryTargetExtractor {
             metrics.insert("rg_samples".to_string(), rg.samples as f64);
         }
         if let Some(sasa) = &report.sasa_stats {
+            metrics.insert("sasa_mean_nm2".to_string(), sasa.mean);
+            metrics.insert("sasa_std_nm2".to_string(), sasa.std);
+            metrics.insert("sasa_samples".to_string(), sasa.samples as f64);
             metrics.insert("sasa_approx_mean_nm2".to_string(), sasa.mean);
             metrics.insert("sasa_approx_std_nm2".to_string(), sasa.std);
             metrics.insert("sasa_approx_samples".to_string(), sasa.samples as f64);

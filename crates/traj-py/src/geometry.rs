@@ -206,7 +206,7 @@ impl PyAtomicFluctPlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -214,15 +214,17 @@ impl PyAtomicFluctPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -278,6 +280,21 @@ struct PyDistancePlan {
     plan: RefCell<DistancePlan>,
 }
 
+#[pyclass]
+struct PyMultiDistancePlan {
+    plan: RefCell<MultiDistancePlan>,
+}
+
+#[pyclass]
+struct PyDistanceCenterToPointPlan {
+    plan: RefCell<DistanceCenterToPointPlan>,
+}
+
+#[pyclass]
+struct PyDistanceCenterToReferencePlan {
+    plan: RefCell<DistanceCenterToReferencePlan>,
+}
+
 #[pymethods]
 impl PyDistancePlan {
     #[new]
@@ -300,7 +317,7 @@ impl PyDistancePlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -308,15 +325,180 @@ impl PyDistancePlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyMultiDistancePlan {
+    #[new]
+    #[pyo3(signature = (sel_a, sel_b, mass_weighted=true, pbc="none"))]
+    fn new(
+        sel_a: Vec<Vec<u32>>,
+        sel_b: Vec<Vec<u32>>,
+        mass_weighted: bool,
+        pbc: &str,
+    ) -> PyResult<Self> {
+        if sel_a.len() != sel_b.len() {
+            return Err(PyValueError::new_err(
+                "multi-distance selections must have matching lengths",
+            ));
+        }
+        let pbc = parse_pbc(pbc)?;
+        let pairs = sel_a
+            .into_iter()
+            .zip(sel_b)
+            .map(|(left, right)| {
+                (
+                    Selection {
+                        expr: "__indices__".to_string(),
+                        indices: Arc::new(left),
+                    },
+                    Selection {
+                        expr: "__indices__".to_string(),
+                        indices: Arc::new(right),
+                    },
+                )
+            })
+            .collect();
+        Ok(Self {
+            plan: RefCell::new(MultiDistancePlan::new(pairs, mass_weighted, pbc)),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<&'py PyArray2<f32>> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyDistanceCenterToPointPlan {
+    #[new]
+    #[pyo3(signature = (selection, point, mass_weighted=true, pbc="none"))]
+    fn new(
+        selection: &PySelection,
+        point: (f64, f64, f64),
+        mass_weighted: bool,
+        pbc: &str,
+    ) -> PyResult<Self> {
+        let pbc = parse_pbc(pbc)?;
+        let plan = DistanceCenterToPointPlan::new(
+            selection.selection.clone(),
+            [point.0, point.1, point.2],
+            mass_weighted,
+            pbc,
+        );
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<&'py PyArray1<f32>> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyDistanceCenterToReferencePlan {
+    #[new]
+    #[pyo3(signature = (selection, reference="frame0", mass_weighted=true, pbc="none"))]
+    fn new(
+        selection: &PySelection,
+        reference: &str,
+        mass_weighted: bool,
+        pbc: &str,
+    ) -> PyResult<Self> {
+        let reference_mode = parse_reference(reference)?;
+        let pbc = parse_pbc(pbc)?;
+        let plan = DistanceCenterToReferencePlan::new(
+            selection.selection.clone(),
+            reference_mode,
+            mass_weighted,
+            pbc,
+        );
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<&'py PyArray1<f32>> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -515,6 +697,11 @@ struct PyPairwiseDistancePlan {
     plan: RefCell<PairwiseDistancePlan>,
 }
 
+#[pyclass]
+struct PyPairListDistancePlan {
+    plan: RefCell<PairListDistancePlan>,
+}
+
 #[pymethods]
 impl PyPairwiseDistancePlan {
     #[new]
@@ -544,6 +731,62 @@ impl PyPairwiseDistancePlan {
             &system.system.borrow(),
             chunk_frames,
             device,
+        )?;
+        match output {
+            PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyPairListDistancePlan {
+    #[new]
+    #[pyo3(signature = (pairs, pbc="none"))]
+    fn new(pairs: PyReadonlyArray2<'_, i64>, pbc: &str) -> PyResult<Self> {
+        let arr = pairs.as_array();
+        let shape = arr.shape();
+        if shape.len() != 2 || shape[1] != 2 {
+            return Err(PyValueError::new_err(
+                "pair-list distance pairs must have shape (n_pairs, 2)",
+            ));
+        }
+        let mut parsed = Vec::with_capacity(shape[0]);
+        for row in arr.outer_iter() {
+            let left = row[0];
+            let right = row[1];
+            if left < 0 || right < 0 {
+                return Err(PyValueError::new_err(
+                    "pair-list distance atom indices must be >= 0",
+                ));
+            }
+            parsed.push((left as u32, right as u32));
+        }
+        let pbc = parse_pbc(pbc)?;
+        Ok(Self {
+            plan: RefCell::new(PairListDistancePlan::new(parsed, pbc)),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<&'py PyArray2<f32>> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
@@ -1288,11 +1531,15 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAtomicFluctPlan>()?;
     m.add_class::<PyAtomicAdpPlan>()?;
     m.add_class::<PyDistancePlan>()?;
+    m.add_class::<PyMultiDistancePlan>()?;
+    m.add_class::<PyDistanceCenterToPointPlan>()?;
+    m.add_class::<PyDistanceCenterToReferencePlan>()?;
     m.add_class::<PyLowestCurvePlan>()?;
     m.add_class::<PyVectorPlan>()?;
     m.add_class::<PyGetVelocityPlan>()?;
     m.add_class::<PySetVelocityPlan>()?;
     m.add_class::<PyPairwiseDistancePlan>()?;
+    m.add_class::<PyPairListDistancePlan>()?;
     m.add_class::<PyAnglePlan>()?;
     m.add_class::<PyDihedralPlan>()?;
     m.add_class::<PyMultiDihedralPlan>()?;

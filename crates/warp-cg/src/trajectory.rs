@@ -33,8 +33,9 @@ mod trajectory_virtual_sites;
 #[path = "trajectory_whole.rs"]
 mod trajectory_whole;
 use trajectory_metrics::{
-    radius_of_gyration, sasa_approx, MetricStats, RunningMetricStats, DEFAULT_SASA_BEAD_RADIUS_NM,
-    DEFAULT_SASA_PROBE_RADIUS_NM, DEFAULT_SASA_SPHERE_POINTS,
+    radius_of_gyration, sasa_sphere_points, shrake_rupley_sasa_with_points, MetricStats,
+    RunningMetricStats, DEFAULT_SASA_FALLBACK_RADIUS_NM, DEFAULT_SASA_PROBE_RADIUS_NM,
+    DEFAULT_SASA_SPHERE_POINTS,
 };
 use trajectory_virtual_sites::{apply_virtual_sites, coordinate_count_with_virtual_sites};
 use trajectory_whole::{
@@ -62,6 +63,26 @@ pub struct NativeTrajectoryOptions {
     pub mass_weighted: bool,
     pub make_whole: bool,
     pub chunk_frames: Option<usize>,
+    pub sasa: NativeSasaOptions,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeSasaOptions {
+    pub probe_radius_nm: f64,
+    pub n_sphere_points: usize,
+    pub radii_nm: Option<Vec<f64>>,
+    pub fallback_radius_nm: f64,
+}
+
+impl Default for NativeSasaOptions {
+    fn default() -> Self {
+        Self {
+            probe_radius_nm: DEFAULT_SASA_PROBE_RADIUS_NM,
+            n_sphere_points: DEFAULT_SASA_SPHERE_POINTS,
+            radii_nm: None,
+            fallback_radius_nm: DEFAULT_SASA_FALLBACK_RADIUS_NM,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +139,16 @@ pub fn map_native_trajectory_with_terms(
     let source_atom_count = reader.n_atoms();
     let source_indices = resolve_source_indices(source_atom_count, options)?;
     let translated_mapping = translate_mapping(mapping, &source_indices)?;
+    let physical_bead_count = mapping.bead_names.len();
+    let coordinate_count = coordinate_count_with_virtual_sites(mapping.bead_names.len(), terms);
+    let sasa_radii = resolve_sasa_radii(
+        options,
+        source_atom_count,
+        &translated_mapping,
+        &mapping.bead_names,
+        coordinate_count,
+    )?;
+    let sasa_sphere_points = sasa_sphere_points(options.sasa.n_sphere_points);
     let bead_weights = if options.mass_weighted {
         Some(resolve_bead_weights(
             options,
@@ -138,10 +169,7 @@ pub fn map_native_trajectory_with_terms(
     builder.set_requirements(true, true);
 
     let mut writer = match output_path {
-        Some(path) => Some(open_writer(
-            path,
-            coordinate_count_with_virtual_sites(mapping.bead_names.len(), terms),
-        )?),
+        Some(path) => Some(open_writer(path, coordinate_count)?),
         None => None,
     };
     let mut constraint_values = empty_bond_group_values(&terms.constraints);
@@ -206,13 +234,18 @@ pub fn map_native_trajectory_with_terms(
             if let Some(rg) = radius_of_gyration(&cg_coords, bead_masses.as_deref()) {
                 rg_values.push(rg);
             }
-            if let Some(sasa) = sasa_approx(
-                &cg_coords,
-                DEFAULT_SASA_BEAD_RADIUS_NM,
-                DEFAULT_SASA_PROBE_RADIUS_NM,
-                DEFAULT_SASA_SPHERE_POINTS,
-            ) {
-                sasa_values.push(sasa);
+            if let Some(sphere_points) = sasa_sphere_points.as_deref() {
+                let sasa_coord_count = physical_bead_count
+                    .min(cg_coords.len())
+                    .min(sasa_radii.len());
+                if let Some(sasa) = shrake_rupley_sasa_with_points(
+                    &cg_coords[..sasa_coord_count],
+                    &sasa_radii[..sasa_coord_count],
+                    options.sasa.probe_radius_nm,
+                    sphere_points,
+                ) {
+                    sasa_values.push(sasa);
+                }
             }
             accumulate_bond_group_values(&mut constraint_values, &terms.constraints, &cg_coords);
             accumulate_bond_group_values(&mut bond_group_values, &terms.bonds, &cg_coords);
@@ -390,6 +423,188 @@ fn bead_masses_from_weights(weights: &[Vec<f32>]) -> Vec<f64> {
         .iter()
         .map(|bead_weights| bead_weights.iter().map(|value| f64::from(*value)).sum())
         .collect()
+}
+
+fn resolve_sasa_radii(
+    options: &NativeTrajectoryOptions,
+    source_atom_count: usize,
+    translated_mapping: &[Vec<usize>],
+    bead_names: &[String],
+    coordinate_count: usize,
+) -> Result<Vec<f64>> {
+    if let Some(radii) = options.sasa.radii_nm.as_ref() {
+        return validate_configured_sasa_radii(
+            radii,
+            coordinate_count,
+            bead_names.len(),
+            options.sasa.fallback_radius_nm,
+        );
+    }
+
+    let fallback_radius = validated_fallback_sasa_radius(options.sasa.fallback_radius_nm);
+    let mut radii: Vec<f64> = if let Some(radii) = topology_sasa_radii(
+        options,
+        source_atom_count,
+        translated_mapping,
+        fallback_radius,
+    ) {
+        radii
+    } else {
+        bead_names
+            .iter()
+            .map(|name| radius_from_exact_element_name_nm(name).unwrap_or(fallback_radius))
+            .collect()
+    };
+
+    radii.resize(coordinate_count, fallback_radius);
+    Ok(radii)
+}
+
+fn topology_sasa_radii(
+    options: &NativeTrajectoryOptions,
+    source_atom_count: usize,
+    translated_mapping: &[Vec<usize>],
+    fallback_radius_nm: f64,
+) -> Option<Vec<f64>> {
+    let topology = options.topology.as_deref()?;
+    let system = read_system_auto(Path::new(topology), options.topology_format.as_deref()).ok()?;
+    if system.n_atoms() != source_atom_count {
+        return None;
+    }
+    Some(
+        translated_mapping
+            .iter()
+            .map(|group| bead_radius_from_atom_group(&system, group, fallback_radius_nm))
+            .collect(),
+    )
+}
+
+fn validate_configured_sasa_radii(
+    radii: &[f64],
+    coordinate_count: usize,
+    physical_bead_count: usize,
+    fallback_radius_nm: f64,
+) -> Result<Vec<f64>> {
+    if radii.len() != coordinate_count && radii.len() != physical_bead_count {
+        return Err(anyhow!(
+            "trajectory_source.sasa.radii_nm length must match mapped coordinate count {} or physical bead count {}",
+            coordinate_count,
+            physical_bead_count
+        ));
+    }
+    let mut out = radii.to_vec();
+    for (idx, radius) in out.iter().enumerate() {
+        if !radius.is_finite() || *radius <= 0.0 {
+            return Err(anyhow!(
+                "trajectory_source.sasa.radii_nm[{idx}] must be finite and greater than zero"
+            ));
+        }
+    }
+    out.resize(
+        coordinate_count,
+        validated_fallback_sasa_radius(fallback_radius_nm),
+    );
+    Ok(out)
+}
+
+fn validated_fallback_sasa_radius(radius_nm: f64) -> f64 {
+    if radius_nm.is_finite() && radius_nm > 0.0 {
+        radius_nm
+    } else {
+        DEFAULT_SASA_FALLBACK_RADIUS_NM
+    }
+}
+
+fn bead_radius_from_atom_group(
+    system: &traj_core::system::System,
+    atom_indices: &[usize],
+    fallback_radius_nm: f64,
+) -> f64 {
+    let sum_r3 = atom_indices
+        .iter()
+        .map(|&atom_idx| system_atom_vdw_radius_nm(system, atom_idx).unwrap_or(fallback_radius_nm))
+        .filter(|radius| radius.is_finite() && *radius > 0.0)
+        .map(|radius| radius.powi(3))
+        .sum::<f64>();
+    if sum_r3 > 0.0 {
+        sum_r3.cbrt()
+    } else {
+        fallback_radius_nm
+    }
+}
+
+fn system_atom_vdw_radius_nm(system: &traj_core::system::System, atom_idx: usize) -> Option<f64> {
+    let atoms = &system.atoms;
+    if atom_idx >= atoms.len() {
+        return None;
+    }
+    atoms
+        .element_id
+        .get(atom_idx)
+        .and_then(|id| system.interner.resolve(*id))
+        .and_then(radius_from_symbol_nm)
+        .or_else(|| {
+            atoms
+                .name_id
+                .get(atom_idx)
+                .and_then(|id| system.interner.resolve(*id))
+                .and_then(radius_from_atom_name_nm)
+        })
+}
+
+fn radius_from_exact_element_name_nm(name: &str) -> Option<f64> {
+    let trimmed = name.trim();
+    let symbol: String = trimmed
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .collect();
+    if symbol.eq_ignore_ascii_case(trimmed) {
+        radius_from_symbol_nm(&symbol)
+    } else {
+        None
+    }
+}
+
+fn radius_from_atom_name_nm(name: &str) -> Option<f64> {
+    let upper: String = name
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .map(|ch| ch.to_ascii_uppercase())
+        .collect();
+    if upper.is_empty() {
+        return None;
+    }
+    let two = upper.chars().take(2).collect::<String>();
+    radius_from_symbol_nm(&two).or_else(|| {
+        upper
+            .chars()
+            .next()
+            .map(|ch| ch.to_string())
+            .and_then(|symbol| radius_from_symbol_nm(&symbol))
+    })
+}
+
+fn radius_from_symbol_nm(symbol: &str) -> Option<f64> {
+    match symbol.trim().to_ascii_uppercase().as_str() {
+        "H" => Some(0.120),
+        "C" => Some(0.170),
+        "N" => Some(0.155),
+        "O" => Some(0.152),
+        "F" => Some(0.147),
+        "P" => Some(0.180),
+        "S" => Some(0.180),
+        "CL" => Some(0.175),
+        "BR" => Some(0.185),
+        "I" => Some(0.198),
+        "NA" => Some(0.227),
+        "K" => Some(0.275),
+        "MG" => Some(0.173),
+        "CA" => Some(0.231),
+        "ZN" => Some(0.139),
+        "FE" => Some(0.194),
+        _ => None,
+    }
 }
 
 fn validate_indices(indices: &[usize], atom_count: usize) -> Result<()> {

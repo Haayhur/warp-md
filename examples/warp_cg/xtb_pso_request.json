@@ -27,6 +27,7 @@
     "enabled": true,
     "source": "xtb",
     "method": "pso",
+    "fitting_mode": "distribution_fit",
     "swarm_size": 12,
     "max_evaluations": 48,
     "seed": 7,

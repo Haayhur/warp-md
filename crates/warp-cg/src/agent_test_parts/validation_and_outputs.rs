@@ -93,6 +93,65 @@ fn topology_top_requires_itp_output() {
 }
 
 #[test]
+fn forcefield_path_source_reports_missing_bundle() {
+    let request = json!({
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "name": "benzene",
+        "smiles": "c1ccccc1",
+        "forcefield": {
+            "kind": "martini3",
+            "source": "path",
+            "path": "missing_forcefield"
+        }
+    });
+    let (exit_code, value) = validate_request_json(&request.to_string());
+
+    assert_eq!(exit_code, 2, "{value}");
+    assert_eq!(value["valid"], false);
+    assert_eq!(value["errors"][0]["code"], "warp_cg.forcefield_missing");
+}
+
+#[test]
+fn bundled_martini3_forcefield_is_materialized_into_topology_bundle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let request = json!({
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "name": "benzene_ff",
+        "smiles": "c1ccccc1",
+        "forcefield": {
+            "kind": "martini3",
+            "source": "bundled"
+        },
+        "output": {
+            "out_dir": tmp.path().to_string_lossy().to_string(),
+            "write_mapping_json": false,
+            "write_cg_pdb": false,
+            "write_topology_itp": true,
+            "write_topology_top": true,
+            "write_bonded_parameter_map": false
+        }
+    });
+
+    let (exit_code, result) = run_request_json(&request.to_string(), false);
+
+    assert_eq!(exit_code, 0, "{result}");
+    let artifact_kinds = result["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|artifact| artifact["kind"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(artifact_kinds.contains(&"forcefield_manifest_json"));
+    assert!(artifact_kinds.contains(&"forcefield_directory"));
+    let top = std::fs::read_to_string(tmp.path().join("benzene_ff_martini.top")).unwrap();
+    assert!(top.contains("#include \"forcefields/martini3/martini_v3.0.0.itp\""));
+    assert!(tmp
+        .path()
+        .join("forcefields/martini3/warp_cg_forcefield_manifest.json")
+        .exists());
+}
+
+#[test]
 fn disabling_itp_without_top_field_remains_valid() {
     let request = json!({
         "schema_version": AGENT_SCHEMA_VERSION,
@@ -413,6 +472,131 @@ fn json_file_objective_evaluator_fields_are_validated() {
 }
 
 #[test]
+fn martini_openmm_runner_fields_are_validated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target_path = tmp.path().join("targets.json");
+    std::fs::write(
+        &target_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "bin_config": {
+                "bond_bin_width_nm": 0.01,
+                "angle_bin_width_deg": 1.0,
+                "dihedral_bin_width_deg": 1.0,
+                "bonded_max_range_nm": 3.0
+            },
+            "constraints": [],
+            "bonds": [],
+            "angles": [],
+            "dihedrals": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let base = json!({
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "name": "martini_runner_reference",
+        "smiles": "CC",
+        "reference_source": {
+            "kind": "precomputed",
+            "precomputed": {
+                "target_set": target_path.to_string_lossy()
+            }
+        },
+        "optimization": {
+            "enabled": true,
+            "source": "external_trajectory",
+            "method": "bo",
+            "fitting_mode": "external_evaluator",
+            "runner": {
+                "kind": "martini_openmm",
+                "work_dir": "martini_evaluations",
+                "gro": "system.gro",
+                "top": "system.top",
+                "template_dir": "candidate_template",
+                "replacements": [
+                    {
+                        "path": "molecule.itp",
+                        "parameter": "bond.group_1_length_nm",
+                        "format": ".5f"
+                    }
+                ],
+                "protocol": {
+                    "dry_run": true,
+                    "eq_ns": 0.0,
+                    "prod_ns": 0.0,
+                    "precision": "mixed",
+                    "report_interval_steps": 1000,
+                    "trajectory_format": "xtc"
+                }
+            }
+        }
+    });
+
+    let (exit_code, value) = validate_request_json(&base.to_string());
+    assert_eq!(exit_code, 0, "{value}");
+    assert_eq!(value["valid"], true);
+
+    for (pointer, value) in [
+        ("/kind", json!("gromacs")),
+        ("/gro", json!("")),
+        ("/work_dir", json!(" ")),
+        ("/protocol/trajectory_format", json!("trr")),
+        ("/protocol/precision", json!("quad")),
+        ("/protocol/report_interval_steps", json!(0)),
+        ("/replacements/0/parameter", json!("")),
+    ] {
+        let mut request = base.clone();
+        *request["optimization"]["runner"]
+            .pointer_mut(pointer)
+            .unwrap() = value;
+        let (exit_code, result) = validate_request_json(&request.to_string());
+
+        assert_eq!(exit_code, 2, "{result}");
+        assert!(result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("optimization.runner"));
+    }
+
+    let mut ambiguous = base.clone();
+    ambiguous["optimization"]["evaluator"] = json!({
+        "kind": "json_file",
+        "json_file": {
+            "work_dir": "runner_evaluations",
+            "command": {"program": "/bin/true"}
+        }
+    });
+    let (exit_code, result) = validate_request_json(&ambiguous.to_string());
+    assert_eq!(exit_code, 2);
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("either evaluator or runner"));
+
+    let mut simulation_without_extraction = base.clone();
+    simulation_without_extraction["optimization"]["fitting_mode"] = json!("simulation_fit");
+    let (exit_code, result) = validate_request_json(&simulation_without_extraction.to_string());
+    assert_eq!(exit_code, 2);
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("runner.candidate_extraction"));
+
+    let mut simulation_with_extraction = simulation_without_extraction;
+    simulation_with_extraction["optimization"]["runner"]["candidate_extraction"] = json!({
+        "mapping": {
+            "bead_names": ["B0", "B1"],
+            "atom_indices": [[0], [1]]
+        },
+        "connections": [[0, 1]],
+        "format": "xtc"
+    });
+    let (exit_code, result) = validate_request_json(&simulation_with_extraction.to_string());
+    assert_eq!(exit_code, 0, "{result}");
+}
+
+#[test]
 fn target_selection_and_atom_indices_are_mutually_exclusive() {
     let request = json!({
         "schema_version": AGENT_SCHEMA_VERSION,
@@ -539,6 +723,100 @@ fn pso_advanced_options_validate_method_and_positive_thresholds() {
 }
 
 #[test]
+fn bo_alias_and_options_validate_method_and_positive_thresholds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target_path = tmp.path().join("targets.json");
+    std::fs::write(
+        &target_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "bin_config": {
+                "bond_bin_width_nm": 0.01,
+                "angle_bin_width_deg": 1.0,
+                "dihedral_bin_width_deg": 1.0,
+                "bonded_max_range_nm": 3.0
+            },
+            "constraints": [],
+            "bonds": [],
+            "angles": [],
+            "dihedrals": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let base = json!({
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "name": "benzene",
+        "smiles": "c1ccccc1",
+        "reference_source": {
+            "kind": "precomputed",
+            "precomputed": {
+                "target_set": target_path.to_string_lossy()
+            }
+        }
+    });
+    let mut valid = base.clone();
+    valid["optimization"] = json!({
+        "enabled": true,
+        "source": "external_trajectory",
+        "method": "bo",
+        "evaluator": {
+            "kind": "json_file",
+            "json_file": {
+                "work_dir": "bo_evaluations",
+                "command": {
+                    "program": "/bin/true",
+                    "args": []
+                }
+            }
+        },
+        "bo": {
+            "n_startup_trials": 2,
+            "n_candidates": 16,
+            "noise_variance": 1.0e-6,
+            "checkpoint_path": "bo_checkpoint.json",
+            "checkpoint_interval_evaluations": 1
+        }
+    });
+    let (exit_code, value) = validate_request_json(&valid.to_string());
+    assert_eq!(exit_code, 0, "{value}");
+
+    for tuning in [
+        json!({
+            "enabled": true,
+            "source": "external_trajectory",
+            "method": "pso",
+            "bo": {"n_startup_trials": 2}
+        }),
+        json!({
+            "enabled": true,
+            "source": "external_trajectory",
+            "method": "bayesian_optimization",
+            "bo": {"n_startup_trials": 0}
+        }),
+        json!({
+            "enabled": true,
+            "source": "external_trajectory",
+            "method": "bo",
+            "bo": {"checkpoint_interval_evaluations": 0}
+        }),
+        json!({
+            "enabled": true,
+            "source": "external_trajectory",
+            "method": "bo",
+            "bo": {"resume_from_checkpoint": true}
+        }),
+    ] {
+        let mut request = base.clone();
+        request["optimization"] = tuning;
+        let (exit_code, value) = validate_request_json(&request.to_string());
+
+        assert_eq!(exit_code, 2, "{value}");
+        assert_eq!(value["valid"], false);
+    }
+}
+
+#[test]
 fn trajectory_source_kind_must_be_external() {
     let request = json!({
         "schema_version": AGENT_SCHEMA_VERSION,
@@ -571,6 +849,32 @@ fn trajectory_source_string_fields_must_not_be_empty() {
             }
         });
         request["trajectory_source"][field] = json!("  ");
+        let (exit_code, value) = validate_request_json(&request.to_string());
+
+        assert_eq!(exit_code, 2);
+        assert!(value["error"]["message"].as_str().unwrap().contains(field));
+    }
+}
+
+#[test]
+fn trajectory_source_sasa_fields_are_validated() {
+    for (field, value) in [
+        ("probe_radius_nm", json!(-0.1)),
+        ("n_sphere_points", json!(7)),
+        ("fallback_radius_nm", json!(0.0)),
+        ("radii_nm", json!([0.2, -0.1])),
+    ] {
+        let mut request = json!({
+            "schema_version": AGENT_SCHEMA_VERSION,
+            "name": "benzene",
+            "smiles": "c1ccccc1",
+            "trajectory_source": {
+                "kind": "external",
+                "path": "traj.xtc",
+                "sasa": {}
+            }
+        });
+        request["trajectory_source"]["sasa"][field] = value;
         let (exit_code, value) = validate_request_json(&request.to_string());
 
         assert_eq!(exit_code, 2);
@@ -624,6 +928,37 @@ fn martini_itp_contains_atoms_and_bonds() {
     assert!(itp.contains("[ atoms ]"));
     assert!(itp.contains("[ bonds ]"));
     assert!(itp.contains("BENZENE"));
+}
+
+#[test]
+fn martini_itp_uses_mapping_formal_charges() {
+    let mapping = MappingResult {
+        bead_names: vec!["Qd".to_string(), "Qa".to_string()],
+        atom_groups: vec![vec![0], vec![1]],
+        connections: vec![(0, 1)],
+        bead_features: vec![vec!["charged".to_string()], vec!["charged".to_string()]],
+        bead_formal_charges: vec![1, -1],
+    };
+    let itp = render_martini_itp("salt", &mapping, &[], &[], &[], None, None);
+    let atom_rows = itp
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|col| col.parse::<usize>().is_ok())
+        })
+        .take(2)
+        .map(|line| {
+            line.split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(atom_rows[0][1], "Qd");
+    assert_eq!(atom_rows[0][6], "1.000");
+    assert_eq!(atom_rows[1][1], "Qa");
+    assert_eq!(atom_rows[1][6], "-1.000");
 }
 
 #[test]
@@ -794,7 +1129,7 @@ fn martini_itp_preserves_grouped_reference_target_nm_lengths() {
 
 #[test]
 fn martini_top_includes_generated_itp_and_molecule_count() {
-    let top = render_martini_top("benzene", "benzene_martini.itp");
+    let top = render_martini_top("benzene", "benzene_martini.itp", &[]);
 
     assert!(top.contains("#include \"benzene_martini.itp\""));
     assert!(top.contains("[ system ]"));

@@ -267,6 +267,30 @@ def setup_free_volume_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--length-scale", type=float, help="Length scale")
 
 
+def setup_hydrophobic_defects_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--lipid-selection", required=True, help="Membrane/lipid atoms that occupy space")
+    parser.add_argument("--reference-selection", required=True, help="Reference atoms defining defect columns")
+    parser.add_argument("--midplane-selection", help="Selection used to define the leaflet midplane")
+    parser.add_argument(
+        "--leaflet",
+        choices=["both", "upper", "lower"],
+        default="both",
+        help="Automatically filter lipid/reference atoms to one leaflet",
+    )
+    parser.add_argument("--leaflet-bins", type=int, default=1, help="XY bins per dimension for local leaflet midplanes")
+    parser.add_argument("--voxel-size", type=float, default=1.0, help="Voxel size in coordinate units")
+    parser.add_argument("--z-bounds", help="Lower,upper z bounds for the defect slab")
+    parser.add_argument("--probe-radius", type=float, help="Water probe radius in coordinate units")
+    parser.add_argument("--defect-radius", type=float, help="XY search radius around reference atoms")
+    parser.add_argument(
+        "--grid-mode",
+        choices=["voxel_centers", "lattice_nodes"],
+        default="voxel_centers",
+        help="Voxel-center grid or reference-compatible lattice-node grid",
+    )
+    parser.add_argument("--length-scale", type=float, help="Length scale applied before analysis")
+
+
 def setup_bondi_ffv_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--selection", required=True, help="Selection used for Bondi van der Waals volume")
     parser.add_argument("--bondi-scale", type=float, help="Homogeneity scale factor applied to Bondi vdW volume (default 1.3)")

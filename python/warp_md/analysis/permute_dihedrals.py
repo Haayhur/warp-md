@@ -22,7 +22,7 @@ def permute_dihedrals(
 ):
     """Compute multidihedral and save to a file (npz).
 
-    This is a simplified stand-in for cpptraj permutedihedrals.
+    This is a simplified torsion permutation writer.
     """
     if not filename:
         raise ValueError("filename is required")

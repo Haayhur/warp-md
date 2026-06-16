@@ -4,6 +4,8 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use warp_structure::io::{read_molecule, read_prmtop_topology, read_system_auto};
 
+use crate::forcefield::forcefield_path_exists;
+
 use super::{active_tuning_request, input_mode, mapping_mode, CgRequest, CgSource, SourceHandoff};
 
 pub(super) fn validation_report(request: &CgRequest) -> Value {
@@ -67,6 +69,27 @@ pub(super) fn validation_report(request: &CgRequest) -> Value {
             &mut checks,
             &mut errors,
         );
+    }
+    if let Some(forcefield) = &request.forcefield {
+        let exists = forcefield_path_exists(forcefield);
+        checks.push(json!({
+            "name": "forcefield_available",
+            "field": "forcefield",
+            "kind": forcefield.kind,
+            "source": forcefield.source,
+            "path": forcefield.path,
+            "status": if exists { "ok" } else { "error" }
+        }));
+        if !exists {
+            errors.push(json!({
+                "code": "warp_cg.forcefield_missing",
+                "field": "forcefield",
+                "kind": forcefield.kind,
+                "source": forcefield.source,
+                "path": forcefield.path,
+                "message": "forcefield files are not available"
+            }));
+        }
     }
     validate_xtb_available(request, &mut checks, &mut warnings);
     validate_optimization_cost(request, &mut checks);

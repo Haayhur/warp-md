@@ -48,6 +48,7 @@ fn source_request_accepts_gromacs_ndx_mapping() {
         topology: None,
         trajectory_source: None,
         reference_source: None,
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -249,6 +250,7 @@ fn trajectory_ndx_reference_runs_without_smiles_or_source() {
             atom_indices: None,
             mass_weighted: None,
             make_whole: None,
+            sasa: None,
         }),
         reference_source: Some(ReferenceSource {
             kind: "external".to_string(),
@@ -272,6 +274,7 @@ fn trajectory_ndx_reference_runs_without_smiles_or_source() {
                 rg_offset_nm: None,
             }),
         }),
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),

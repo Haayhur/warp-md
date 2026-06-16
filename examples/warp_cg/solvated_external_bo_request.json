@@ -26,8 +26,13 @@
     "enabled": true,
     "source": "external_trajectory",
     "method": "bayesian_optimization",
+    "fitting_mode": "distribution_fit",
     "max_evaluations": 64,
     "seed": 42,
+    "bo": {
+      "n_startup_trials": 8,
+      "n_candidates": 1024
+    },
     "objective": "bonded_parameter_parity"
   }
 }

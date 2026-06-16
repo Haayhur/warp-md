@@ -281,7 +281,7 @@ fn json_file_evaluator_adds_rg_sasa_metric_objective() {
             "    json.dump({\n",
             "        'schema_version': 'warp-cg.objective-result.v1',\n",
             "        'status': 'completed',\n",
-            "        'metrics': {'rg_mean_nm': 1.2, 'sasa_approx_mean_nm2': 11.0},\n",
+            "        'metrics': {'rg_mean_nm': 1.2, 'sasa_mean_nm2': 11.0},\n",
             "        'candidate_targets': req['reference_targets']\n",
             "    }, fp)\n",
             "PY\n",
@@ -301,8 +301,8 @@ fn json_file_evaluator_adds_rg_sasa_metric_objective() {
         reference_metrics: std::collections::BTreeMap::from([
             ("rg_mean_nm".to_string(), 1.0),
             ("rg_std_nm".to_string(), 0.1),
-            ("sasa_approx_mean_nm2".to_string(), 10.0),
-            ("sasa_approx_std_nm2".to_string(), 2.0),
+            ("sasa_mean_nm2".to_string(), 10.0),
+            ("sasa_std_nm2".to_string(), 2.0),
         ]),
         metric_scoring: StructuralMetricScoringConfig {
             rg_weight: 2.0,
@@ -365,10 +365,7 @@ fn json_file_evaluator_penalizes_missing_sasa_metric() {
             args: Vec::new(),
         }),
         reference_targets: Some(single_bond_target_set()),
-        reference_metrics: std::collections::BTreeMap::from([(
-            "sasa_approx_mean_nm2".to_string(),
-            10.0,
-        )]),
+        reference_metrics: std::collections::BTreeMap::from([("sasa_mean_nm2".to_string(), 10.0)]),
         metric_scoring: Default::default(),
         force_reference_scoring: false,
         require_candidate_trajectory: false,

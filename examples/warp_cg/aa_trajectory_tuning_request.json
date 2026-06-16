@@ -13,6 +13,7 @@
     "enabled": true,
     "source": "aa_trajectory",
     "method": "bayesian_optimization",
+    "fitting_mode": "distribution_fit",
     "target_terms": ["bonds", "angles", "dihedrals"],
     "max_evaluations": 64
   },

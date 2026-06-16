@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "warp-md"
-version = "0.4.23"
+version = "0.4.24"
 description = "warp-md Python bindings"
 requires-python = ">=3.9"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 cli = ["PyYAML"]
 gist = ["openmm"]
+martini = ["openmm", "martini-openmm"]
 
 [project.scripts]
 warp-md-python = "warp_md.cli:main"

@@ -22,7 +22,9 @@ pub use closest::ClosestPlan;
 pub use contacts::{NativeContactsPlan, WatershellPlan};
 pub use dihedral::{DihedralRmsPlan, MultiDihedralPlan, PermuteDihedralsPlan};
 pub use distance::{
-    CenterOfGeometryPlan, CenterOfMassPlan, DistancePlan, LowestCurvePlan, PairwiseDistancePlan,
+    CenterOfGeometryPlan, CenterOfMassPlan, DistanceCenterToPointPlan,
+    DistanceCenterToReferencePlan, DistancePlan, LowestCurvePlan, MultiDistancePlan,
+    PairListDistancePlan, PairwiseDistancePlan,
 };
 pub use neighbors::{ClosestAtomPlan, HausdorffPlan, MindistPlan, SearchNeighborsPlan};
 pub use pbc::{FixImageBondsPlan, RandomizeIonsPlan, ReplicateCellPlan, VolumePlan, XtalSymmPlan};

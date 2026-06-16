@@ -46,9 +46,9 @@ __global__ void rdf_hist(const Float4* coords,
     if (idx >= total) return;
     int ia = idx / n_b;
     int ib = idx - ia * n_b;
-    if (same_sel && ia == ib) return;
     unsigned int atom_a = sel_a[ia];
     unsigned int atom_b = sel_b[ib];
+    if (atom_a == atom_b) return;
     Float4 pa = coords[frame * n_atoms + atom_a];
     Float4 pb = coords[frame * n_atoms + atom_b];
     float dx = pb.x - pa.x;

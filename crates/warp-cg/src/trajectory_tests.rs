@@ -323,7 +323,7 @@ fn native_mapping_reports_mapped_radius_of_gyration_stats() {
 }
 
 #[test]
-fn native_mapping_reports_mapped_sasa_approx_stats() {
+fn native_mapping_reports_mapped_sasa_stats() {
     let dir = tempfile::tempdir().unwrap();
     let traj = dir.path().join("sasa.xtc");
     let mut writer = XtcWriter::create(&traj, 1).unwrap();
@@ -350,12 +350,90 @@ fn native_mapping_reports_mapped_sasa_approx_stats() {
     )
     .unwrap();
     let sasa = report.sasa_stats.unwrap();
-    let radius = DEFAULT_SASA_BEAD_RADIUS_NM + DEFAULT_SASA_PROBE_RADIUS_NM;
+    let radius = DEFAULT_SASA_FALLBACK_RADIUS_NM + DEFAULT_SASA_PROBE_RADIUS_NM;
     let expected = 4.0 * std::f64::consts::PI * radius * radius;
 
     assert_eq!(sasa.samples, 2);
     assert!((sasa.mean - expected).abs() < 1.0e-12);
     assert!(sasa.std < 1.0e-12);
+}
+
+#[test]
+fn native_mapping_uses_configured_sasa_radii() {
+    let dir = tempfile::tempdir().unwrap();
+    let traj = dir.path().join("custom_sasa.xtc");
+    let mut writer = XtcWriter::create(&traj, 1).unwrap();
+    writer
+        .write_frame(&[[0.0, 0.0, 0.0]], Box3::None, 0, Some(0.0))
+        .unwrap();
+    writer.flush().unwrap();
+
+    let radius = 0.10;
+    let report = map_native_trajectory(
+        &traj,
+        None,
+        &BeadMapping {
+            bead_names: vec!["B0".to_string()],
+            atom_indices: vec![vec![0]],
+        },
+        &[],
+        &NativeTrajectoryOptions {
+            format: Some("xtc".to_string()),
+            sasa: NativeSasaOptions {
+                probe_radius_nm: 0.0,
+                radii_nm: Some(vec![radius]),
+                ..NativeSasaOptions::default()
+            },
+            ..NativeTrajectoryOptions::default()
+        },
+    )
+    .unwrap();
+    let expected = 4.0 * std::f64::consts::PI * radius * radius;
+
+    assert!((report.sasa_stats.unwrap().mean - expected).abs() < 1.0e-12);
+}
+
+#[test]
+fn native_mapping_derives_sasa_radii_from_topology_elements() {
+    let dir = tempfile::tempdir().unwrap();
+    let top = dir.path().join("carbon.gro");
+    fs::write(
+        &top,
+        concat!(
+            "single carbon\n",
+            "1\n",
+            "    1MOL     C1    1   0.000   0.000   0.000\n",
+            "   1.00000 1.00000 1.00000\n",
+        ),
+    )
+    .unwrap();
+    let traj = dir.path().join("carbon.xtc");
+    let mut writer = XtcWriter::create(&traj, 1).unwrap();
+    writer
+        .write_frame(&[[0.0, 0.0, 0.0]], Box3::None, 0, Some(0.0))
+        .unwrap();
+    writer.flush().unwrap();
+
+    let report = map_native_trajectory(
+        &traj,
+        None,
+        &BeadMapping {
+            bead_names: vec!["B0".to_string()],
+            atom_indices: vec![vec![0]],
+        },
+        &[],
+        &NativeTrajectoryOptions {
+            topology: Some(top.to_string_lossy().to_string()),
+            topology_format: Some("gro".to_string()),
+            format: Some("xtc".to_string()),
+            ..NativeTrajectoryOptions::default()
+        },
+    )
+    .unwrap();
+    let radius = 0.170 + DEFAULT_SASA_PROBE_RADIUS_NM;
+    let expected = 4.0 * std::f64::consts::PI * radius * radius;
+
+    assert!((report.sasa_stats.unwrap().mean - expected).abs() < 1.0e-12);
 }
 
 #[test]
@@ -407,6 +485,9 @@ fn native_mapping_computes_virtual_site_coordinates_before_reference_stats() {
     assert!((coords[2][0] - 0.5).abs() < 1.0e-6);
     assert!((report.bond_stats[0].mean - 0.5).abs() < 1.0e-6);
     assert_eq!(report.bonded_values.bonds[0].members, vec![[0, 2]]);
+    let radius = DEFAULT_SASA_FALLBACK_RADIUS_NM + DEFAULT_SASA_PROBE_RADIUS_NM;
+    let expected_sasa = 2.0 * 4.0 * std::f64::consts::PI * radius * radius;
+    assert!((report.sasa_stats.unwrap().mean - expected_sasa).abs() < 1.0e-12);
 
     let out = dir.path().join("mapped_vs.xtc");
     let written = map_native_trajectory_with_terms(

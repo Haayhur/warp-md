@@ -15,6 +15,7 @@
     "enabled": true,
     "source": "xtb",
     "method": "bayesian_optimization",
+    "fitting_mode": "distribution_fit",
     "target_terms": ["bonds", "angles"],
     "max_evaluations": 64
   },

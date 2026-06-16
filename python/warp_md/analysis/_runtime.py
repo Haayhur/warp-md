@@ -56,7 +56,9 @@ def _infer_atom_count(atom_table, positions0) -> int:
                 return int(arr.shape[0])
         except Exception:
             pass
-    for values in atom_table.values():
+    for key, values in atom_table.items():
+        if key in {"bonds"}:
+            continue
         if values is not None:
             try:
                 return int(len(values))
@@ -463,7 +465,8 @@ def load_native_symbol(name: str):
     except Exception:
         return None
     symbol = getattr(warp_md, name, None)
-    if symbol is None or getattr(symbol, "__name__", "") == "_Missing":
+    symbol_name = getattr(symbol, "__name__", "")
+    if symbol is None or symbol_name == "_Missing" or symbol_name.startswith("Missing"):
         return None
     return symbol
 

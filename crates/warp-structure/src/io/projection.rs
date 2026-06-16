@@ -40,8 +40,8 @@ fn resolved_system_format(path: &Path, format: Option<&str>) -> StructureResult<
 
 pub fn read_pdb_system(path: &Path, strict: bool) -> StructureResult<System> {
     let options = PdbParseOptions {
-        include_conect: false,
-        include_ter: false,
+        include_conect: true,
+        include_ter: true,
         non_standard_conect: false,
         strict,
         only_first_model: true,
@@ -114,7 +114,12 @@ pub fn system_from_prmtop(topo: &super::amber::AmberTopology) -> StructureResult
         atoms.mass.push(mass);
     }
 
-    let system = System::with_atoms(atoms, interner, None);
+    let molecule_id = molecule_ids_from_prmtop(topo);
+    let mut system = System::with_atoms(atoms, interner, None)
+        .with_topology_metadata(topo.bonds.clone(), molecule_id)?;
+    system.set_gb_radii(topo.radii.clone())?;
+    system.set_parse_radii(super::amber::parse_radii_for_topology(topo))?;
+    system.set_vdw_radii(super::amber::vdw_radii_for_topology(topo))?;
     Ok(system)
 }
 
@@ -153,9 +158,61 @@ pub fn system_from_molecule(molecule: &MoleculeData) -> StructureResult<System> 
         positions.push([atom.position.x, atom.position.y, atom.position.z, 1.0]);
     }
 
-    let system = System::with_atoms(atoms, interner, Some(positions));
+    let molecule_id = molecule_ids_from_molecule(molecule);
+    let system = System::with_atoms(atoms, interner, Some(positions))
+        .with_topology_metadata(molecule.bonds.clone(), molecule_id)?;
     system.validate_positions0().map_err(StructureError::from)?;
     Ok(system)
+}
+
+fn molecule_ids_from_prmtop(topo: &super::amber::AmberTopology) -> Vec<i32> {
+    let n_atoms = topo.atom_names.len();
+    if topo.atoms_per_molecule.is_empty() {
+        return Vec::new();
+    }
+    let mut ids = Vec::with_capacity(n_atoms);
+    let mut atom_count = 0usize;
+    for (mol_idx, &count) in topo.atoms_per_molecule.iter().enumerate() {
+        for _ in 0..count {
+            if atom_count >= n_atoms {
+                break;
+            }
+            ids.push((mol_idx + 1) as i32);
+            atom_count += 1;
+        }
+    }
+    if ids.len() == n_atoms {
+        ids
+    } else {
+        Vec::new()
+    }
+}
+
+fn molecule_ids_from_molecule(molecule: &MoleculeData) -> Vec<i32> {
+    if molecule.atoms.is_empty() {
+        return Vec::new();
+    }
+    let atom_ids: Vec<i32> = molecule.atoms.iter().map(|atom| atom.mol_id).collect();
+    if atom_ids.iter().any(|&id| id != atom_ids[0]) {
+        return atom_ids;
+    }
+    if !molecule.bonds.is_empty() {
+        return Vec::new();
+    }
+    if molecule.ter_after.is_empty() {
+        return Vec::new();
+    }
+    let mut ids = vec![0; molecule.atoms.len()];
+    let mut mol_id = 1i32;
+    let mut ter_iter = molecule.ter_after.iter().copied().peekable();
+    for (idx, id) in ids.iter_mut().enumerate() {
+        *id = mol_id;
+        if matches!(ter_iter.peek(), Some(next) if *next == idx) {
+            mol_id += 1;
+            ter_iter.next();
+        }
+    }
+    ids
 }
 
 #[cfg(test)]
@@ -308,7 +365,10 @@ ENDMDL\n",
                      1       1\n\
               %FLAG ATOM_TYPE_INDEX\n\
               %FORMAT(10I8)\n\
-                     1       1\n",
+                     1       1\n\
+              %FLAG RADII\n\
+              %FORMAT(5E16.8)\n\
+                1.20000000E+00  1.40000000E+00\n",
         )
         .expect("write prmtop");
 
@@ -321,5 +381,8 @@ ENDMDL\n",
         );
         assert_eq!(system.atoms.resid[0], 1);
         assert_eq!(system.atoms.mass[0], 1.008);
+        assert_eq!(system.gb_radius, vec![1.2, 1.4]);
+        assert_eq!(system.parse_radius, vec![1.0, 1.0]);
+        assert!(system.vdw_radius.is_empty());
     }
 }

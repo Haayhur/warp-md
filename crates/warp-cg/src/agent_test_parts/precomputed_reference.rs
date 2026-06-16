@@ -70,6 +70,7 @@ fn precomputed_reference_targets_run_without_trajectory_source() {
             }],
             transform: None,
         }),
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -154,6 +155,7 @@ fn optimization_rejects_single_sample_reference_when_strict() {
             metrics: Vec::new(),
             transform: None,
         }),
+        forcefield: None,
         optimization: Some(ParameterTuningRequest {
             enabled: true,
             source: "external_trajectory".to_string(),
@@ -173,6 +175,7 @@ fn optimization_rejects_single_sample_reference_when_strict() {
             xtb: None,
             metric_scoring: None,
             evaluator: None,
+            runner: None,
         }),
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -274,6 +277,7 @@ fn precomputed_reference_targets_can_use_json_file_runner_evaluator() {
             metrics: Vec::new(),
             transform: None,
         }),
+        forcefield: None,
         optimization: Some(ParameterTuningRequest {
             enabled: true,
             source: "external_trajectory".to_string(),
@@ -305,6 +309,7 @@ fn precomputed_reference_targets_can_use_json_file_runner_evaluator() {
                     candidate_extraction: None,
                 }),
             }),
+            runner: None,
         }),
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -425,6 +430,7 @@ fn json_file_runner_can_return_candidate_trajectory_for_agent_extraction() {
             metrics: Vec::new(),
             transform: None,
         }),
+        forcefield: None,
         optimization: Some(ParameterTuningRequest {
             enabled: true,
             source: "external_trajectory".to_string(),
@@ -473,9 +479,11 @@ fn json_file_runner_can_return_candidate_trajectory_for_agent_extraction() {
                         mass_weighted: None,
                         make_whole: None,
                         chunk_frames: None,
+                        sasa: None,
                     }),
                 }),
             }),
+            runner: None,
         }),
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -607,6 +615,7 @@ fn candidate_trajectory_extraction_uses_gromacs_bonded_term_groups() {
             metrics: Vec::new(),
             transform: None,
         }),
+        forcefield: None,
         optimization: Some(ParameterTuningRequest {
             enabled: true,
             source: "external_trajectory".to_string(),
@@ -664,9 +673,11 @@ fn candidate_trajectory_extraction_uses_gromacs_bonded_term_groups() {
                         mass_weighted: None,
                         make_whole: None,
                         chunk_frames: None,
+                        sasa: None,
                     }),
                 }),
             }),
+            runner: None,
         }),
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),

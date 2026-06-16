@@ -235,6 +235,28 @@ def _spec_free_volume(args, system: System) -> Dict[str, Any]:
     return spec
 
 
+def _spec_hydrophobic_defects(args, system: System) -> Dict[str, Any]:
+    spec: Dict[str, Any] = {
+        "lipid_selection": args.lipid_selection,
+        "reference_selection": args.reference_selection,
+        "leaflet": args.leaflet,
+        "leaflet_bins": args.leaflet_bins,
+        "voxel_size": args.voxel_size,
+        "grid_mode": args.grid_mode,
+    }
+    if args.midplane_selection:
+        spec["midplane_selection"] = args.midplane_selection
+    if args.z_bounds:
+        spec["z_bounds"] = _parse_float_tuple(args.z_bounds, 2, "z_bounds")
+    if args.probe_radius is not None:
+        spec["probe_radius"] = args.probe_radius
+    if args.defect_radius is not None:
+        spec["defect_radius"] = args.defect_radius
+    if args.length_scale is not None:
+        spec["length_scale"] = args.length_scale
+    return spec
+
+
 def _spec_bondi_ffv(args, system: System) -> Dict[str, Any]:
     spec: Dict[str, Any] = {
         "selection": args.selection,

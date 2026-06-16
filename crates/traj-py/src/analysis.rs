@@ -27,6 +27,142 @@ fn lipid_flipflop_to_py<'py>(
     Ok(dict.into_py(py))
 }
 
+fn hydrophobic_defect_to_py<'py>(
+    py: Python<'py>,
+    output: traj_engine::HydrophobicDefectOutput,
+) -> PyResult<PyObject> {
+    let dict = PyDict::new_bound(py);
+    dict.set_item("dims", vec![output.dims[0], output.dims[1], output.dims[2]])?;
+    dict.set_item("voxel_size", output.voxel_size)?;
+    dict.set_item("z_bounds", output.z_bounds.to_vec())?;
+    dict.set_item("mean", PyArray1::from_vec_bound(py, output.mean))?;
+    dict.set_item("first", PyArray1::from_vec_bound(py, output.first))?;
+    dict.set_item("last", PyArray1::from_vec_bound(py, output.last))?;
+    dict.set_item("min", PyArray1::from_vec_bound(py, output.min))?;
+    dict.set_item("max", PyArray1::from_vec_bound(py, output.max))?;
+    dict.set_item(
+        "frame_counts",
+        PyArray1::from_vec_bound(py, output.frame_counts),
+    )?;
+    dict.set_item(
+        "frame_area",
+        PyArray1::from_vec_bound(py, output.frame_area),
+    )?;
+    dict.set_item(
+        "frame_volume",
+        PyArray1::from_vec_bound(py, output.frame_volume),
+    )?;
+    dict.set_item(
+        "frame_cluster_count",
+        PyArray1::from_vec_bound(py, output.frame_cluster_count),
+    )?;
+    dict.set_item(
+        "frame_largest_cluster",
+        PyArray1::from_vec_bound(py, output.frame_largest_cluster),
+    )?;
+    dict.set_item(
+        "max_lifetime",
+        PyArray1::from_vec_bound(py, output.max_lifetime),
+    )?;
+    Ok(dict.into_py(py))
+}
+
+#[pyclass]
+struct PyHydrophobicDefectPlan {
+    plan: RefCell<HydrophobicDefectPlan>,
+}
+
+#[pymethods]
+impl PyHydrophobicDefectPlan {
+    #[new]
+    #[pyo3(signature = (lipid_selection, reference_selection, voxel_size=1.0, z_bounds=None, probe_radius=None, defect_radius=None, length_scale=None, grid_mode="voxel_centers", leaflet="both", midplane_selection=None, leaflet_bins=1))]
+    fn new(
+        lipid_selection: &PySelection,
+        reference_selection: &PySelection,
+        voxel_size: f64,
+        z_bounds: Option<(f64, f64)>,
+        probe_radius: Option<f64>,
+        defect_radius: Option<f64>,
+        length_scale: Option<f64>,
+        grid_mode: &str,
+        leaflet: &str,
+        midplane_selection: Option<&PySelection>,
+        leaflet_bins: usize,
+    ) -> PyResult<Self> {
+        let mut plan = HydrophobicDefectPlan::new(
+            lipid_selection.selection.clone(),
+            reference_selection.selection.clone(),
+            voxel_size,
+            z_bounds.map(|bounds| [bounds.0, bounds.1]),
+        );
+        let grid_mode = match grid_mode {
+            "voxel_centers" | "voxel-centers" | "centers" => {
+                HydrophobicDefectGridMode::VoxelCenters
+            }
+            "lattice_nodes" | "lattice-nodes" | "nodes" => HydrophobicDefectGridMode::LatticeNodes,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown hydrophobic_defects grid_mode '{other}'"
+                )))
+            }
+        };
+        plan = plan.with_grid_mode(grid_mode);
+        let leaflet = match leaflet {
+            "both" | "all" => HydrophobicDefectLeaflet::Both,
+            "upper" => HydrophobicDefectLeaflet::Upper,
+            "lower" => HydrophobicDefectLeaflet::Lower,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown hydrophobic_defects leaflet '{other}'"
+                )))
+            }
+        };
+        plan = plan.with_leaflet(leaflet);
+        if let Some(selection) = midplane_selection {
+            plan = plan.with_midplane_selection(selection.selection.clone());
+        }
+        plan = plan.with_leaflet_bins(leaflet_bins);
+        if let Some(radius) = probe_radius {
+            plan = plan.with_probe_radius(radius);
+        }
+        if let Some(radius) = defect_radius {
+            plan = plan.with_defect_radius(radius);
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::HydrophobicDefect(output) => hydrophobic_defect_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
 #[pyclass]
 struct PyLipidLeafletPlan {
     plan: RefCell<LipidLeafletPlan>,
@@ -1366,25 +1502,59 @@ struct PyRdfPlan {
     plan: RefCell<RdfPlan>,
 }
 
+fn parse_rdf_dimension(value: &str) -> PyResult<RdfDimension> {
+    match value.to_ascii_lowercase().as_str() {
+        "3d" | "xyz" => Ok(RdfDimension::ThreeD),
+        "xy" => Ok(RdfDimension::PlanarXY),
+        _ => Err(PyValueError::new_err("rdf dimension must be '3d' or 'xy'")),
+    }
+}
+
 #[pymethods]
 impl PyRdfPlan {
     #[new]
-    #[pyo3(signature = (sel_a, sel_b, bins, r_max, pbc="orthorhombic"))]
+    #[pyo3(signature = (sel_a, sel_b, bins, r_max, pbc="orthorhombic", center1=false, center2=false, byres1=false, byres2=false, bymol1=false, bymol2=false, no_intramol=false, mass_weighted=true, density=0.033456, volume=false, raw_rdf=false, intrdf=false, dimension="3d"))]
     fn new(
         sel_a: &PySelection,
         sel_b: &PySelection,
         bins: usize,
         r_max: f32,
         pbc: &str,
+        center1: bool,
+        center2: bool,
+        byres1: bool,
+        byres2: bool,
+        bymol1: bool,
+        bymol2: bool,
+        no_intramol: bool,
+        mass_weighted: bool,
+        density: f64,
+        volume: bool,
+        raw_rdf: bool,
+        intrdf: bool,
+        dimension: &str,
     ) -> PyResult<Self> {
         let pbc = parse_pbc(pbc)?;
+        let dimension = parse_rdf_dimension(dimension)?;
         let plan = RdfPlan::new(
             sel_a.selection.clone(),
             sel_b.selection.clone(),
             bins,
             r_max,
             pbc,
-        );
+        )
+        .with_radial_options(
+            center1,
+            center2,
+            byres1,
+            byres2,
+            bymol1,
+            bymol2,
+            no_intramol,
+            mass_weighted,
+        )
+        .with_output_options(density, volume, raw_rdf, intrdf)
+        .with_dimension(dimension);
         Ok(Self {
             plan: RefCell::new(plan),
         })
@@ -1415,7 +1585,13 @@ impl PyRdfPlan {
                 let r = PyArray1::from_vec_bound(py, rdf.r);
                 let g = PyArray1::from_vec_bound(py, rdf.g_r);
                 let counts = PyArray1::from_vec_bound(py, rdf.counts);
-                Ok((r, g, counts).into_py(py))
+                let has_integral = !rdf.integral.is_empty();
+                let integral = PyArray1::from_vec_bound(py, rdf.integral);
+                if has_integral {
+                    Ok((r, g, counts, integral).into_py(py))
+                } else {
+                    Ok((r, g, counts).into_py(py))
+                }
             }
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
@@ -1427,16 +1603,39 @@ struct PyPairDistPlan {
     plan: RefCell<PairDistPlan>,
 }
 
+#[pyclass]
+struct PyPairDistDynamicPlan {
+    plan: RefCell<PairDistDynamicPlan>,
+}
+
+#[pyclass]
+struct PyPairDistanceExtremaPlan {
+    plan: RefCell<PairDistanceExtremaPlan>,
+}
+
+fn parse_pair_distance_extrema_mode(mode: &str) -> PyResult<PairDistanceExtremaMode> {
+    match mode.to_ascii_lowercase().as_str() {
+        "min" | "minimum" => Ok(PairDistanceExtremaMode::Min),
+        "max" | "maximum" => Ok(PairDistanceExtremaMode::Max),
+        _ => Err(PyValueError::new_err(
+            "pairdist mode must be 'min' or 'max'",
+        )),
+    }
+}
+
 #[pymethods]
 impl PyPairDistPlan {
     #[new]
-    #[pyo3(signature = (sel_a, sel_b, bins, r_max, pbc="orthorhombic"))]
+    #[pyo3(signature = (sel_a, sel_b, bins, r_max, pbc="orthorhombic", output_distribution=false, unique_pairs=false, compact_output=false))]
     fn new(
         sel_a: &PySelection,
         sel_b: &PySelection,
         bins: usize,
         r_max: f32,
         pbc: &str,
+        output_distribution: bool,
+        unique_pairs: bool,
+        compact_output: bool,
     ) -> PyResult<Self> {
         let pbc = parse_pbc(pbc)?;
         let plan = PairDistPlan::new(
@@ -1445,7 +1644,8 @@ impl PyPairDistPlan {
             bins,
             r_max,
             pbc,
-        );
+        )
+        .with_output_options(output_distribution, unique_pairs, compact_output);
         Ok(Self {
             plan: RefCell::new(plan),
         })
@@ -1473,6 +1673,128 @@ impl PyPairDistPlan {
         )?;
         match output {
             PlanOutput::Histogram { centers, counts } => Ok(hist_to_py(py, centers, counts)),
+            PlanOutput::PairDistribution(pairdist) => Ok((
+                PyArray1::from_vec_bound(py, pairdist.centers),
+                PyArray1::from_vec_bound(py, pairdist.probability),
+                PyArray1::from_vec_bound(py, pairdist.std),
+                PyArray1::from_vec_bound(py, pairdist.counts),
+                pairdist.frames,
+            )
+                .into_py(py)),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyPairDistanceExtremaPlan {
+    #[new]
+    #[pyo3(signature = (sel_a, sel_b, mode="min", pbc="none", unique_pairs=false))]
+    fn new(
+        sel_a: &PySelection,
+        sel_b: &PySelection,
+        mode: &str,
+        pbc: &str,
+        unique_pairs: bool,
+    ) -> PyResult<Self> {
+        let mode = parse_pair_distance_extrema_mode(mode)?;
+        let pbc = parse_pbc(pbc)?;
+        let plan = PairDistanceExtremaPlan::new(
+            sel_a.selection.clone(),
+            sel_b.selection.clone(),
+            mode,
+            pbc,
+        )
+        .with_unique_pairs(unique_pairs);
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<&'py PyArray1<f32>> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyPairDistDynamicPlan {
+    #[new]
+    #[pyo3(signature = (sel_a, sel_b, delta, pbc="orthorhombic", output_distribution=false, unique_pairs=false, compact_output=false))]
+    fn new(
+        sel_a: &PySelection,
+        sel_b: &PySelection,
+        delta: f32,
+        pbc: &str,
+        output_distribution: bool,
+        unique_pairs: bool,
+        compact_output: bool,
+    ) -> PyResult<Self> {
+        if !delta.is_finite() || delta <= 0.0 {
+            return Err(PyValueError::new_err(
+                "pairdist delta must be finite and positive",
+            ));
+        }
+        let pbc = parse_pbc(pbc)?;
+        let plan =
+            PairDistDynamicPlan::new(sel_a.selection.clone(), sel_b.selection.clone(), delta, pbc)
+                .with_output_options(output_distribution, unique_pairs, compact_output);
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Histogram { centers, counts } => Ok(hist_to_py(py, centers, counts)),
+            PlanOutput::PairDistribution(pairdist) => Ok((
+                PyArray1::from_vec_bound(py, pairdist.centers),
+                PyArray1::from_vec_bound(py, pairdist.probability),
+                PyArray1::from_vec_bound(py, pairdist.std),
+                PyArray1::from_vec_bound(py, pairdist.counts),
+                pairdist.frames,
+            )
+                .into_py(py)),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }
@@ -1680,6 +2002,7 @@ impl PyBondAngleDistributionPlan {
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyHydrophobicDefectPlan>()?;
     m.add_class::<PyLipidLeafletPlan>()?;
     m.add_class::<PyLipidCurvedLeafletPlan>()?;
     m.add_class::<PyLipidZPositionPlan>()?;
@@ -1705,6 +2028,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHbondPlan>()?;
     m.add_class::<PyRdfPlan>()?;
     m.add_class::<PyPairDistPlan>()?;
+    m.add_class::<PyPairDistDynamicPlan>()?;
+    m.add_class::<PyPairDistanceExtremaPlan>()?;
     m.add_class::<PyEndToEndPlan>()?;
     m.add_class::<PyContourLengthPlan>()?;
     m.add_class::<PyChainRgPlan>()?;

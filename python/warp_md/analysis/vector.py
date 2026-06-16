@@ -125,7 +125,7 @@ def vector(
     dtype: str = "ndarray",
     chunk_frames: Optional[int] = None,
 ):
-    """Compute vectors for cpptraj-like commands."""
+    """Compute vectors for analysis commands."""
     commands = [command] if isinstance(command, str) else list(command)
     coords = None
     box = None

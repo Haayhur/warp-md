@@ -508,6 +508,31 @@ fn cg_agent_run<'py>(
 }
 
 #[pyfunction]
+#[pyo3(signature = (kind="martini3"))]
+fn cg_forcefield_inspect<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
+    let value = warp_cg::forcefield::bundled_manifest_json(kind)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
+#[pyo3(signature = (dest, kind="martini3", overwrite=false))]
+fn cg_forcefield_install<'py>(
+    py: Python<'py>,
+    dest: &str,
+    kind: &str,
+    overwrite: bool,
+) -> PyResult<PyObject> {
+    let value = warp_cg::forcefield::install_bundled_forcefield(
+        kind,
+        std::path::Path::new(dest),
+        overwrite,
+    )
+    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_value_to_py(py, &value)
+}
+
+#[pyfunction]
 #[pyo3(signature = (kind="request"))]
 fn cg_build_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
     let text = warp_cg::build_contract::schema_json(kind)
@@ -1109,6 +1134,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cg_agent_capabilities, m)?)?;
     m.add_function(wrap_pyfunction!(cg_agent_validate, m)?)?;
     m.add_function(wrap_pyfunction!(cg_agent_run, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_forcefield_inspect, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_forcefield_install, m)?)?;
     m.add_function(wrap_pyfunction!(cg_build_schema, m)?)?;
     m.add_function(wrap_pyfunction!(cg_build_example, m)?)?;
     m.add_function(wrap_pyfunction!(cg_build_capabilities, m)?)?;

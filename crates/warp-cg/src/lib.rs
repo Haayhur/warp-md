@@ -8,6 +8,7 @@ mod build_lipids_diacyl;
 mod build_lipids_tail_tables;
 pub mod build_solutes;
 mod build_solutes_templates;
+pub mod forcefield;
 pub mod gromacs_ndx;
 pub mod mapping;
 pub mod molecule;

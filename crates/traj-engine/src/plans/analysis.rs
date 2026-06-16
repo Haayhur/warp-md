@@ -22,6 +22,7 @@ pub mod hbond;
 pub mod helix;
 pub mod helix_orientation;
 pub mod hydration_order;
+pub mod hydrophobic_defect;
 pub mod ion_pair;
 pub mod legacy;
 pub mod lipid;
@@ -57,7 +58,10 @@ pub use dielectric::DielectricPlan;
 pub use dipole::DipoleAlignmentPlan;
 pub use distance_matrix::MdmatPlan;
 pub use docking::DockingPlan;
-pub use dssp::DsspPlan;
+pub use dssp::{
+    dssp_internal_to_output_code, dssp_output_average_fractions, dssp_output_code_to_symbol,
+    DsspPlan, DSSP_OUTPUT_AVG_KEYS,
+};
 pub use equipartition::EquipartitionPlan;
 pub use free_volume::FreeVolumePlan;
 pub use gist::{GistDirectPlan, GistGridPlan};
@@ -66,6 +70,9 @@ pub use hbond::HbondPlan;
 pub use helix::HelixPlan;
 pub use helix_orientation::HelixOrientationPlan;
 pub use hydration_order::HydrationOrderPlan;
+pub use hydrophobic_defect::{
+    HydrophobicDefectGridMode, HydrophobicDefectLeaflet, HydrophobicDefectPlan,
+};
 pub use ion_pair::IonPairCorrelationPlan;
 pub use lipid::{
     LipidAreaPlan, LipidCurvedLeafletPlan, LipidFlipFlopPlan, LipidLargestClusterPlan,
@@ -82,7 +89,7 @@ pub use salt_bridge::SaltBridgePlan;
 pub use solvent_orientation::SolventOrientationPlan;
 pub use solvent_polarization::SolventPolarizationPlan;
 pub use structure_factor::StructureFactorPlan;
-pub use surf::{MolSurfPlan, SurfAlgorithm, SurfPlan};
+pub use surf::{MolSurfPlan, SurfAlgorithm, SurfPlan, SurfaceRadiiMode};
 pub use torsion::{
     MultiPuckerMode, MultiPuckerPlan, ToroidalDiffusionPlan, TorsionDiffusionPlan, TorsionStat,
 };

@@ -684,6 +684,30 @@ fn molsurf_plan_basic() {
 }
 
 #[test]
+fn multi_distance_plan_outputs_frame_by_command_matrix() {
+    let mut system = build_two_resid_system();
+    let sel_a = system.select("resid 1").unwrap();
+    let sel_b = system.select("resid 2").unwrap();
+    let pairs = vec![(sel_a.clone(), sel_b.clone()), (sel_a.clone(), sel_a)];
+    let mut plan = MultiDistancePlan::new(pairs, false, PbcMode::None);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0]],
+        vec![[1.0, 0.0, 0.0, 1.0], [5.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 2);
+            assert_eq!(data, vec![3.0, 0.0, 4.0, 0.0]);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn xtalsymm_plan_basic() {
     let mut system = build_two_resid_system();
     let sel = system.select("resid 1:2").unwrap();
@@ -944,6 +968,231 @@ fn pairwise_distance_plan_basic() {
 }
 
 #[test]
+fn pair_list_distance_plan_basic() {
+    let system = build_two_resid_system();
+    let mut plan = PairListDistancePlan::new(vec![(0, 1), (1, 0)], PbcMode::None);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 2);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!((data[1] - 1.0).abs() < 1e-6);
+            assert!((data[2] - 2.0).abs() < 1e-6);
+            assert!((data[3] - 2.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn distance_center_to_point_plan_basic() {
+    let mut system = build_two_resid_system();
+    let sel = system.select("resid 1:2").unwrap();
+    let mut plan =
+        DistanceCenterToPointPlan::new(sel, [0.5, 0.0, 0.0], false, PbcMode::None);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[1.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Series(data) => {
+            assert_eq!(data.len(), 2);
+            assert!(data[0].abs() < 1e-6);
+            assert!((data[1] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn distance_center_to_reference_plan_uses_frame0_center() {
+    let mut system = build_two_resid_system();
+    let sel = system.select("resid 1:2").unwrap();
+    let mut plan =
+        DistanceCenterToReferencePlan::new(sel, ReferenceMode::Frame0, false, PbcMode::None);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[2.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Series(data) => {
+            assert_eq!(data.len(), 2);
+            assert!(data[0].abs() < 1e-6);
+            assert!((data[1] - 2.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn distance_center_plans_use_selected_chunks() {
+    struct DistanceSelectedOnlyTraj {
+        n_atoms: usize,
+        frames: Vec<Vec<[f32; 4]>>,
+        cursor: usize,
+        selection: Vec<u32>,
+        selected_reads: usize,
+    }
+
+    impl DistanceSelectedOnlyTraj {
+        fn new(n_atoms: usize, frames: Vec<Vec<[f32; 4]>>, selection: Vec<u32>) -> Self {
+            Self {
+                n_atoms,
+                frames,
+                cursor: 0,
+                selection,
+                selected_reads: 0,
+            }
+        }
+    }
+
+    impl TrajReader for DistanceSelectedOnlyTraj {
+        fn n_atoms(&self) -> usize {
+            self.n_atoms
+        }
+
+        fn n_frames_hint(&self) -> Option<usize> {
+            Some(self.frames.len())
+        }
+
+        fn read_chunk(
+            &mut self,
+            _max_frames: usize,
+            _out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            panic!("distance plans should use selected chunk reads")
+        }
+
+        fn read_chunk_selected(
+            &mut self,
+            max_frames: usize,
+            selection: &[u32],
+            out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            assert_eq!(selection, self.selection.as_slice());
+            out.reset(selection.len(), max_frames);
+            let mut count = 0usize;
+            while self.cursor < self.frames.len() && count < max_frames {
+                let dst = out.start_frame(Box3::None, None);
+                for (local, &global) in selection.iter().enumerate() {
+                    dst[local] = self.frames[self.cursor][global as usize];
+                }
+                self.cursor += 1;
+                self.selected_reads += 1;
+                count += 1;
+            }
+            Ok(count)
+        }
+    }
+
+    let mut interner = StringInterner::new();
+    let a = interner.intern_upper("A");
+    let b = interner.intern_upper("B");
+    let c = interner.intern_upper("C");
+    let res = interner.intern_upper("MOL");
+    let atoms = AtomTable {
+        name_id: vec![a, b, c],
+        resname_id: vec![res, res, res],
+        resid: vec![1, 2, 3],
+        chain_id: vec![0, 0, 0],
+        element_id: vec![0, 0, 0],
+        mass: vec![1.0, 1.0, 1.0],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1000.0, 1000.0, 1000.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel_a = system.select("name A").unwrap();
+    let sel_c = system.select("name C").unwrap();
+    let sel_ac = traj_core::selection::Selection {
+        expr: "name A C".into(),
+        indices: std::sync::Arc::new(vec![0, 2]),
+    };
+    let selected = vec![0, 2];
+    let frames = vec![
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1000.0, 1000.0, 1000.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+        ],
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1000.0, 1000.0, 1000.0, 1.0],
+            [2.0, 0.0, 0.0, 1.0],
+        ],
+    ];
+
+    let mut plan = DistancePlan::new(sel_a.clone(), sel_c.clone(), false, PbcMode::None);
+    let mut traj =
+        DistanceSelectedOnlyTraj::new(system.n_atoms(), frames.clone(), selected.clone());
+    let out = Executor::new(system.clone())
+        .run_plan(&mut plan, &mut traj)
+        .unwrap();
+    assert_eq!(traj.selected_reads, 2);
+    match out {
+        PlanOutput::Series(values) => assert_eq!(values, vec![1.0, 2.0]),
+        _ => panic!("unexpected output"),
+    }
+
+    let pairs = vec![(sel_a.clone(), sel_c.clone()), (sel_a.clone(), sel_a)];
+    let mut plan = MultiDistancePlan::new(pairs, false, PbcMode::None);
+    let mut traj =
+        DistanceSelectedOnlyTraj::new(system.n_atoms(), frames.clone(), selected.clone());
+    let out = Executor::new(system.clone())
+        .run_plan(&mut plan, &mut traj)
+        .unwrap();
+    assert_eq!(traj.selected_reads, 2);
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 2);
+            assert_eq!(data, vec![1.0, 0.0, 2.0, 0.0]);
+        }
+        _ => panic!("unexpected output"),
+    }
+
+    let mut plan =
+        DistanceCenterToPointPlan::new(sel_ac.clone(), [0.0, 0.0, 0.0], false, PbcMode::None);
+    let mut traj =
+        DistanceSelectedOnlyTraj::new(system.n_atoms(), frames.clone(), selected.clone());
+    let out = Executor::new(system.clone())
+        .run_plan(&mut plan, &mut traj)
+        .unwrap();
+    assert_eq!(traj.selected_reads, 2);
+    match out {
+        PlanOutput::Series(values) => assert_eq!(values, vec![0.5, 1.0]),
+        _ => panic!("unexpected output"),
+    }
+
+    let mut plan =
+        DistanceCenterToReferencePlan::new(sel_ac, ReferenceMode::Frame0, false, PbcMode::None);
+    let mut traj = DistanceSelectedOnlyTraj::new(system.n_atoms(), frames, selected);
+    let out = Executor::new(system)
+        .run_plan(&mut plan, &mut traj)
+        .unwrap();
+    assert_eq!(traj.selected_reads, 2);
+    match out {
+        PlanOutput::Series(values) => assert_eq!(values, vec![0.0, 0.5]),
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn pairwise_distance_selected_io_path() {
     struct SelectedOnlyTraj {
         n_atoms: usize,
@@ -1169,6 +1418,130 @@ fn radgyr_tensor_plan_basic() {
             assert!((data[1] - 1.0).abs() < 1e-6);
             assert!(data[2].abs() < 1e-6);
             assert!(data[3].abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn radgyr_plan_reports_max_and_tensor() {
+    let mut system = build_system();
+    let sel = system.select("resid 1").unwrap();
+    let mut plan = RadgyrPlan::new(sel, false, true, true);
+    let frames = vec![vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]]];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 8);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!((data[1] - 1.0).abs() < 1e-6);
+            assert!((data[2] - 1.0).abs() < 1e-6);
+            assert!(data[3].abs() < 1e-6);
+            assert!(data[4].abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+struct SelectedOnlyTraj {
+    n_atoms: usize,
+    frames: Vec<Vec<[f32; 4]>>,
+    cursor: usize,
+    selection: Vec<u32>,
+    selected_reads: usize,
+}
+
+impl SelectedOnlyTraj {
+    fn new(n_atoms: usize, frames: Vec<Vec<[f32; 4]>>, selection: Vec<u32>) -> Self {
+        Self {
+            n_atoms,
+            frames,
+            cursor: 0,
+            selection,
+            selected_reads: 0,
+        }
+    }
+}
+
+impl TrajReader for SelectedOnlyTraj {
+    fn n_atoms(&self) -> usize {
+        self.n_atoms
+    }
+
+    fn n_frames_hint(&self) -> Option<usize> {
+        Some(self.frames.len())
+    }
+
+    fn read_chunk(&mut self, _max_frames: usize, _out: &mut FrameChunkBuilder) -> TrajResult<usize> {
+        panic!("Radgyr plans should use selected chunk reads")
+    }
+
+    fn read_chunk_selected(
+        &mut self,
+        max_frames: usize,
+        selection: &[u32],
+        out: &mut FrameChunkBuilder,
+    ) -> TrajResult<usize> {
+        assert_eq!(selection, self.selection.as_slice());
+        out.reset(selection.len(), max_frames);
+        let mut count = 0usize;
+        while self.cursor < self.frames.len() && count < max_frames {
+            let dst = out.start_frame(Box3::None, None);
+            for (local, &global) in selection.iter().enumerate() {
+                dst[local] = self.frames[self.cursor][global as usize];
+            }
+            self.cursor += 1;
+            self.selected_reads += 1;
+            count += 1;
+        }
+        Ok(count)
+    }
+}
+
+#[test]
+fn radgyr_plans_use_selected_chunks() {
+    let system = build_plane_system();
+    let selection = vec![0, 2];
+    let sel = traj_core::selection::Selection {
+        expr: "manual".into(),
+        indices: std::sync::Arc::new(selection.clone()),
+    };
+    let frames = vec![vec![
+        [-1.0, 0.0, 0.0, 1.0],
+        [1000.0, 1000.0, 1000.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+    ]];
+
+    let mut plan = RadgyrPlan::new(sel.clone(), true, true, true);
+    let mut traj = SelectedOnlyTraj::new(system.n_atoms(), frames.clone(), selection.clone());
+    let mut exec = Executor::new(system.clone());
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    assert_eq!(traj.selected_reads, 1);
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 8);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!((data[1] - 1.0).abs() < 1e-6);
+            assert!((data[2] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+
+    let mut plan = RadgyrTensorPlan::new(sel, true);
+    let mut traj = SelectedOnlyTraj::new(system.n_atoms(), frames, selection);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    assert_eq!(traj.selected_reads, 1);
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 7);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!((data[1] - 1.0).abs() < 1e-6);
         }
         _ => panic!("unexpected output"),
     }

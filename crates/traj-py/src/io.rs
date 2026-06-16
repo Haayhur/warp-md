@@ -121,6 +121,34 @@ impl PySystem {
             Some(value) => value.extract()?,
             None => vec![1.0; n_atoms],
         };
+        let gb_radii: Vec<f32> = if let Some(value) = get_attr_or_item_opt(atom_table, "gb_radius")?
+        {
+            value.extract()?
+        } else if let Some(value) = get_attr_or_item_opt(atom_table, "gb_radii")? {
+            value.extract()?
+        } else if let Some(value) = get_attr_or_item_opt(atom_table, "radius")? {
+            value.extract()?
+        } else if let Some(value) = get_attr_or_item_opt(atom_table, "radii")? {
+            value.extract()?
+        } else {
+            Vec::new()
+        };
+        let parse_radii: Vec<f32> =
+            if let Some(value) = get_attr_or_item_opt(atom_table, "parse_radius")? {
+                value.extract()?
+            } else if let Some(value) = get_attr_or_item_opt(atom_table, "parse_radii")? {
+                value.extract()?
+            } else {
+                Vec::new()
+            };
+        let vdw_radii: Vec<f32> =
+            if let Some(value) = get_attr_or_item_opt(atom_table, "vdw_radius")? {
+                value.extract()?
+            } else if let Some(value) = get_attr_or_item_opt(atom_table, "vdw_radii")? {
+                value.extract()?
+            } else {
+                Vec::new()
+            };
         let elements: Vec<String> = match get_attr_or_item_opt(atom_table, "element")? {
             Some(value) => value.extract()?,
             None => vec![String::new(); n_atoms],
@@ -142,6 +170,18 @@ impl PySystem {
         } else {
             vec![String::new(); n_atoms]
         };
+        let molecule_ids: Vec<i32> =
+            if let Some(value) = get_attr_or_item_opt(atom_table, "molecule_id")? {
+                value.extract()?
+            } else if let Some(value) = get_attr_or_item_opt(atom_table, "mol_id")? {
+                value.extract()?
+            } else {
+                Vec::new()
+            };
+        let bonds = match get_attr_or_item_opt(atom_table, "bonds")? {
+            Some(value) => extract_bonds(value)?,
+            None => Vec::new(),
+        };
 
         if resnames.len() != n_atoms
             || resid.len() != n_atoms
@@ -151,6 +191,26 @@ impl PySystem {
         {
             return Err(PyRuntimeError::new_err(
                 "atom_table fields must all have the same length",
+            ));
+        }
+        if !molecule_ids.is_empty() && molecule_ids.len() != n_atoms {
+            return Err(PyRuntimeError::new_err(
+                "atom_table.molecule_id must match atom count",
+            ));
+        }
+        if !gb_radii.is_empty() && gb_radii.len() != n_atoms {
+            return Err(PyRuntimeError::new_err(
+                "atom_table.gb_radius must match atom count",
+            ));
+        }
+        if !parse_radii.is_empty() && parse_radii.len() != n_atoms {
+            return Err(PyRuntimeError::new_err(
+                "atom_table.parse_radius must match atom count",
+            ));
+        }
+        if !vdw_radii.is_empty() && vdw_radii.len() != n_atoms {
+            return Err(PyRuntimeError::new_err(
+                "atom_table.vdw_radius must match atom count",
             ));
         }
 
@@ -179,7 +239,13 @@ impl PySystem {
             Some(value) if !value.is_none() => Some(extract_positions0_rows(value, n_atoms)?),
             _ => None,
         };
-        let system = System::with_atoms(atoms, interner, positions0);
+        let mut system = System::with_atoms(atoms, interner, positions0);
+        system
+            .set_topology_metadata(bonds, molecule_ids)
+            .map_err(to_py_err)?;
+        system.set_gb_radii(gb_radii).map_err(to_py_err)?;
+        system.set_parse_radii(parse_radii).map_err(to_py_err)?;
+        system.set_vdw_radii(vdw_radii).map_err(to_py_err)?;
         system.validate_positions0().map_err(to_py_err)?;
         Ok(Self {
             system: RefCell::new(system),
@@ -231,6 +297,17 @@ impl PySystem {
         dict.set_item("chain_id", atoms.chain_id.clone())?;
         dict.set_item("element", elements)?;
         dict.set_item("mass", atoms.mass.clone())?;
+        dict.set_item("gb_radius", sys.gb_radius.clone())?;
+        dict.set_item("gb_radii", sys.gb_radius.clone())?;
+        dict.set_item("radius", sys.gb_radius.clone())?;
+        dict.set_item("radii", sys.gb_radius.clone())?;
+        dict.set_item("parse_radius", sys.parse_radius.clone())?;
+        dict.set_item("parse_radii", sys.parse_radius.clone())?;
+        dict.set_item("vdw_radius", sys.vdw_radius.clone())?;
+        dict.set_item("vdw_radii", sys.vdw_radius.clone())?;
+        dict.set_item("molecule_id", sys.molecule_id.clone())?;
+        dict.set_item("mol_id", sys.molecule_id.clone())?;
+        dict.set_item("bonds", sys.bonds.clone())?;
         Ok(dict.into_py(py))
     }
 
@@ -1782,6 +1859,30 @@ impl PyTrajectory {
     }
 }
 
+fn extract_bonds(any: Bound<'_, PyAny>) -> PyResult<Vec<(usize, usize)>> {
+    if let Ok(values) = any.extract::<Vec<(usize, usize)>>() {
+        return Ok(values);
+    }
+    if let Ok(values) = any.extract::<Vec<[usize; 2]>>() {
+        return Ok(values.into_iter().map(|pair| (pair[0], pair[1])).collect());
+    }
+    if let Ok(values) = any.extract::<Vec<Vec<usize>>>() {
+        let mut out = Vec::with_capacity(values.len());
+        for pair in values {
+            if pair.len() != 2 {
+                return Err(PyRuntimeError::new_err(
+                    "atom_table.bonds entries must contain exactly two atom indices",
+                ));
+            }
+            out.push((pair[0], pair[1]));
+        }
+        return Ok(out);
+    }
+    Err(PyRuntimeError::new_err(
+        "atom_table.bonds must be a sequence of index pairs",
+    ))
+}
+
 fn extract_positions0_rows(any: &Bound<'_, PyAny>, n_atoms: usize) -> PyResult<Vec<[f32; 4]>> {
     if let Ok(array) = any.extract::<PyReadonlyArrayDyn<f32>>() {
         let view = array.as_array();
@@ -2335,6 +2436,11 @@ struct PyRgPlan {
     plan: RefCell<RgPlan>,
 }
 
+#[pyclass]
+struct PyRadgyrPlan {
+    plan: RefCell<RadgyrPlan>,
+}
+
 #[pymethods]
 impl PyRgPlan {
     #[new]
@@ -2367,6 +2473,54 @@ impl PyRgPlan {
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyRadgyrPlan {
+    #[new]
+    #[pyo3(signature = (selection, mass_weighted=true, include_max=false, include_tensor=false))]
+    fn new(
+        selection: &PySelection,
+        mass_weighted: bool,
+        include_max: bool,
+        include_tensor: bool,
+    ) -> Self {
+        let plan = RadgyrPlan::new(
+            selection.selection.clone(),
+            mass_weighted,
+            include_max,
+            include_tensor,
+        );
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<&'py PyArray2<f32>> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }
@@ -2801,6 +2955,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(open_trajectory_auto, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_trajectory_format, m)?)?;
     m.add_class::<PyRgPlan>()?;
+    m.add_class::<PyRadgyrPlan>()?;
     m.add_class::<PyRadgyrTensorPlan>()?;
     m.add_class::<PyRmsdPlan>()?;
     m.add_class::<PySymmRmsdPlan>()?;

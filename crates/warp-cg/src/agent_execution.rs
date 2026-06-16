@@ -7,7 +7,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 
 use crate::bonded_terms::BondedTermSet;
-use crate::mapping::map_molecule;
+use crate::mapping::{map_molecule_with_options, MappingOptions};
 use crate::molecule::Molecule;
 use crate::optimize::OptimizationReport;
 use crate::parameters::{AngleStats, BondStats, BondedStats, DihedralStats};
@@ -53,7 +53,7 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
             )
         })?;
     let mol = Molecule::from_smiles(molecule_identity)?;
-    let mapping = map_molecule(&mol);
+    let mapping = map_molecule_with_options(&mol, &small_molecule_mapping_options(request));
     let out_dir = PathBuf::from(&request.output.out_dir);
     std::fs::create_dir_all(&out_dir)?;
 
@@ -115,6 +115,7 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
                 Some(&reference_metrics),
                 &out_dir,
                 &request.name,
+                request.forcefield.as_ref(),
                 &mut artifacts,
             )
         })
@@ -169,6 +170,16 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
         optimization: optimization_result,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+fn small_molecule_mapping_options(request: &CgRequest) -> MappingOptions {
+    MappingOptions {
+        target_bead_size: request
+            .mapping
+            .as_ref()
+            .and_then(|mapping| mapping.target_bead_size)
+            .unwrap_or_else(|| MappingOptions::default().target_bead_size),
+    }
 }
 
 fn write_small_molecule_artifacts(
@@ -554,6 +565,7 @@ fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult>
                 Some(&reference_metrics),
                 &out_dir,
                 &request.name,
+                request.forcefield.as_ref(),
                 &mut artifacts,
             )
         })

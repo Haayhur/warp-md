@@ -36,6 +36,18 @@ pub(super) fn default_reference_kind() -> String {
     "external".to_string()
 }
 
+pub(super) fn default_forcefield_kind() -> String {
+    "martini3".to_string()
+}
+
+pub(super) fn default_forcefield_source() -> String {
+    "bundled".to_string()
+}
+
+pub(super) fn default_forcefield_materialize() -> String {
+    "copy".to_string()
+}
+
 pub(super) fn default_bonded_term_source_kind() -> String {
     "gromacs_topology".to_string()
 }
@@ -66,6 +78,10 @@ pub(super) fn default_tuning_objective() -> String {
 
 pub(super) fn default_objective_evaluator_kind() -> String {
     "json_file".to_string()
+}
+
+pub(super) fn default_simulation_runner_kind() -> String {
+    "martini_openmm".to_string()
 }
 
 pub(super) fn default_output() -> CgOutputRequest {

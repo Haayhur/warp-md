@@ -3,14 +3,17 @@ use anyhow::{anyhow, Result};
 #[path = "agent_validation_candidate_extraction.rs"]
 mod candidate_extraction;
 
-use candidate_extraction::validate_candidate_trajectory_extraction;
+use candidate_extraction::{validate_candidate_trajectory_extraction, validate_sasa_request};
+
+use crate::forcefield::validate_request_forcefield;
 
 use super::{
-    validate_positive, BondedTermSource, BondingPolicyRequest, CgRequest, CgSource,
-    ChemistryHintRequest, ChemistryPolicyRequest, JsonFileEvaluatorRequest, MetricScoringRequest,
-    ObjectiveEvaluatorRequest, ParameterTuningRequest, PolymerPolicyRequest,
-    PrecomputedReferenceRequest, ReferenceMetricSourceRequest, ReferenceTransformRequest,
-    XtbRequest, AGENT_SCHEMA_VERSION,
+    validate_positive, BoTrainingSetPolicyRequest, BoTuningRequest, BondedTermSource,
+    BondingPolicyRequest, CgRequest, CgSource, ChemistryHintRequest, ChemistryPolicyRequest,
+    JsonFileEvaluatorRequest, MetricScoringRequest, ObjectiveEvaluatorRequest,
+    ParameterTuningRequest, PolymerPolicyRequest, PrecomputedReferenceRequest,
+    ReferenceMetricSourceRequest, ReferenceTransformRequest, SimulationRunnerRequest, XtbRequest,
+    AGENT_SCHEMA_VERSION,
 };
 
 pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
@@ -173,6 +176,9 @@ pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
             "output.write_topology_top requires output.write_topology_itp because the .top includes the generated .itp"
         ));
     }
+    if let Some(forcefield) = &request.forcefield {
+        validate_request_forcefield(forcefield)?;
+    }
     if request.output.mapped_trajectory.is_some() {
         let has_xtb_reference = request
             .reference_source
@@ -248,6 +254,9 @@ pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
             return Err(anyhow!(
                 "trajectory_source.mass_weighted requires trajectory_source.topology or top-level topology"
             ));
+        }
+        if let Some(sasa) = &source.sasa {
+            validate_sasa_request(sasa, "trajectory_source.sasa")?;
         }
     }
     if let Some(reference) = &request.reference_source {
@@ -530,9 +539,9 @@ fn validate_tuning_request(
     field: &str,
     request: &CgRequest,
 ) -> Result<()> {
-    if tuning.method != "bayesian_optimization" && tuning.method != "pso" {
+    if !is_bo_method(&tuning.method) && tuning.method != "pso" {
         return Err(anyhow!(
-            "{field}.method must be bayesian_optimization or pso"
+            "{field}.method must be bayesian_optimization, bo, or pso"
         ));
     }
     if let Some(mode) = tuning.fitting_mode.as_deref() {
@@ -581,6 +590,11 @@ fn validate_tuning_request(
     if tuning.pso.is_some() && tuning.method != "pso" {
         return Err(anyhow!("{field}.pso requires method pso"));
     }
+    if tuning.bo.is_some() && !is_bo_method(&tuning.method) {
+        return Err(anyhow!(
+            "{field}.bo requires method bayesian_optimization or bo"
+        ));
+    }
     if let Some(pso) = &tuning.pso {
         if pso.reboot_after_local_stall_iterations == Some(0) {
             return Err(anyhow!(
@@ -623,6 +637,9 @@ fn validate_tuning_request(
             &format!("{field}.pso.discrete_probability_dilation_alpha"),
         )?;
     }
+    if let Some(bo) = &tuning.bo {
+        validate_bo_options(bo, &format!("{field}.bo"))?;
+    }
     if tuning.source != "external_trajectory"
         && tuning.source != "aa_trajectory"
         && tuning.source != "xtb"
@@ -652,22 +669,36 @@ fn validate_tuning_request(
     if let Some(evaluator) = &tuning.evaluator {
         validate_objective_evaluator(evaluator, field)?;
     }
+    if let Some(runner) = &tuning.runner {
+        validate_simulation_runner(runner, &format!("{field}.runner"))?;
+    }
+    if tuning.evaluator.is_some() && tuning.runner.is_some() {
+        return Err(anyhow!(
+            "{field} accepts either evaluator or runner, not both"
+        ));
+    }
     if tuning.fitting_mode.as_deref() == Some("simulation_fit") {
-        let has_candidate_extraction = tuning
+        let evaluator_has_candidate_extraction = tuning
             .evaluator
             .as_ref()
             .and_then(|evaluator| evaluator.json_file.as_ref())
             .and_then(|json_file| json_file.candidate_extraction.as_ref())
             .is_some();
-        if !has_candidate_extraction {
+        let runner_has_candidate_extraction = tuning
+            .runner
+            .as_ref()
+            .and_then(|runner| runner.candidate_extraction.as_ref())
+            .is_some();
+        if !evaluator_has_candidate_extraction && !runner_has_candidate_extraction {
             return Err(anyhow!(
-                "{field}.fitting_mode=simulation_fit requires optimization.evaluator.json_file.candidate_extraction"
+                "{field}.fitting_mode=simulation_fit requires evaluator.json_file.candidate_extraction or runner.candidate_extraction"
             ));
         }
     }
     if tuning.enabled
         && (tuning.source == "external_trajectory" || tuning.source == "aa_trajectory")
         && tuning.evaluator.is_none()
+        && tuning.runner.is_none()
         && request.trajectory_source.is_none()
         && request
             .source
@@ -688,6 +719,77 @@ fn validate_tuning_request(
     {
         return Err(anyhow!(
             "{field} xtb parameter tuning requires reference_source.kind=xtb"
+        ));
+    }
+    Ok(())
+}
+
+fn is_bo_method(method: &str) -> bool {
+    matches!(method, "bayesian_optimization" | "bo")
+}
+
+fn validate_bo_options(bo: &BoTuningRequest, field: &str) -> Result<()> {
+    if bo.n_startup_trials == Some(0) {
+        return Err(anyhow!(
+            "{field}.n_startup_trials must be greater than zero"
+        ));
+    }
+    if bo.n_candidates == Some(0) {
+        return Err(anyhow!("{field}.n_candidates must be greater than zero"));
+    }
+    validate_positive(bo.noise_variance, &format!("{field}.noise_variance"))?;
+    if let Some(policy) = &bo.training_set_policy {
+        validate_bo_training_set_policy(policy, &format!("{field}.training_set_policy"))?;
+    }
+    if let Some(policy) = bo.failure_handling.as_deref() {
+        if !matches!(
+            policy,
+            "penalize"
+                | "exclude_from_gp_but_keep_in_history"
+                | "exclude"
+                | "model_as_constraint_later"
+                | "constraint"
+        ) {
+            return Err(anyhow!(
+                "{field}.failure_handling must be penalize, exclude_from_gp_but_keep_in_history, exclude, model_as_constraint_later, or constraint"
+            ));
+        }
+    }
+    validate_positive(bo.failure_penalty, &format!("{field}.failure_penalty"))?;
+    if bo.checkpoint_interval_evaluations == Some(0) {
+        return Err(anyhow!(
+            "{field}.checkpoint_interval_evaluations must be greater than zero"
+        ));
+    }
+    if bo
+        .checkpoint_path
+        .as_ref()
+        .is_some_and(|path| path.trim().is_empty())
+    {
+        return Err(anyhow!("{field}.checkpoint_path must not be empty"));
+    }
+    if bo.resume_from_checkpoint == Some(true) && bo.checkpoint_path.is_none() {
+        return Err(anyhow!(
+            "{field}.resume_from_checkpoint requires checkpoint_path"
+        ));
+    }
+    if bo
+        .evaluator_signature
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(anyhow!("{field}.evaluator_signature must not be empty"));
+    }
+    Ok(())
+}
+
+fn validate_bo_training_set_policy(policy: &BoTrainingSetPolicyRequest, field: &str) -> Result<()> {
+    if policy.max_points == 0 {
+        return Err(anyhow!("{field}.max_points must be greater than zero"));
+    }
+    if policy.keep_best == 0 && policy.keep_recent == 0 && policy.keep_diverse == 0 {
+        return Err(anyhow!(
+            "{field} must retain at least one of keep_best, keep_recent, or keep_diverse"
         ));
     }
     Ok(())
@@ -755,6 +857,149 @@ fn validate_json_file_evaluator(source: &JsonFileEvaluatorRequest, field: &str) 
         validate_candidate_trajectory_extraction(
             extraction,
             &format!("{field}.evaluator.json_file.candidate_extraction"),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_simulation_runner(source: &SimulationRunnerRequest, field: &str) -> Result<()> {
+    if source.kind != "martini_openmm" {
+        return Err(anyhow!("{field}.kind must be martini_openmm"));
+    }
+    if source
+        .work_dir
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(anyhow!("{field}.work_dir must not be empty"));
+    }
+    if source
+        .python
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(anyhow!("{field}.python must not be empty"));
+    }
+    if source.gro.trim().is_empty() {
+        return Err(anyhow!("{field}.gro is required"));
+    }
+    if source.top.trim().is_empty() {
+        return Err(anyhow!("{field}.top is required"));
+    }
+    if source
+        .template_dir
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(anyhow!("{field}.template_dir must not be empty"));
+    }
+    for (idx, replacement) in source.replacements.iter().enumerate() {
+        let replacement_field = format!("{field}.replacements[{idx}]");
+        if replacement.path.trim().is_empty() {
+            return Err(anyhow!("{replacement_field}.path is required"));
+        }
+        if replacement.parameter.trim().is_empty() {
+            return Err(anyhow!("{replacement_field}.parameter is required"));
+        }
+        if replacement
+            .placeholder
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(anyhow!("{replacement_field}.placeholder must not be empty"));
+        }
+        if replacement
+            .format
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(anyhow!("{replacement_field}.format must not be empty"));
+        }
+    }
+    if let Some(protocol) = &source.protocol {
+        validate_positive(
+            protocol.temperature,
+            &format!("{field}.protocol.temperature"),
+        )?;
+        validate_positive(protocol.pressure, &format!("{field}.protocol.pressure"))?;
+        if protocol.friction.is_some_and(|value| value < 0.0) {
+            return Err(anyhow!("{field}.protocol.friction must be non-negative"));
+        }
+        validate_positive(
+            protocol.eq_timestep_fs,
+            &format!("{field}.protocol.eq_timestep_fs"),
+        )?;
+        validate_positive(
+            protocol.prod_timestep_fs,
+            &format!("{field}.protocol.prod_timestep_fs"),
+        )?;
+        validate_positive(protocol.cutoff_nm, &format!("{field}.protocol.cutoff_nm"))?;
+        if protocol.eq_ns.is_some_and(|value| value < 0.0) {
+            return Err(anyhow!("{field}.protocol.eq_ns must be non-negative"));
+        }
+        if protocol.prod_ns.is_some_and(|value| value < 0.0) {
+            return Err(anyhow!("{field}.protocol.prod_ns must be non-negative"));
+        }
+        if let Some(ensemble) = protocol.production_ensemble.as_deref() {
+            if !matches!(ensemble, "npt" | "nvt") {
+                return Err(anyhow!(
+                    "{field}.protocol.production_ensemble must be npt or nvt"
+                ));
+            }
+        }
+        if let Some(precision) = protocol.precision.as_deref() {
+            if !matches!(precision, "single" | "mixed" | "double") {
+                return Err(anyhow!(
+                    "{field}.protocol.precision must be single, mixed, or double"
+                ));
+            }
+        }
+        if let Some(format) = protocol.trajectory_format.as_deref() {
+            if !matches!(format, "xtc" | "dcd" | "none") {
+                return Err(anyhow!(
+                    "{field}.protocol.trajectory_format must be xtc, dcd, or none"
+                ));
+            }
+        }
+        for (name, value) in [
+            ("cpu_threads", protocol.cpu_threads),
+            ("minimize_iterations", protocol.minimize_iterations),
+            ("barostat_frequency", protocol.barostat_frequency),
+            ("report_interval_steps", protocol.report_interval_steps),
+            (
+                "trajectory_interval_steps",
+                protocol.trajectory_interval_steps,
+            ),
+            (
+                "checkpoint_interval_steps",
+                protocol.checkpoint_interval_steps,
+            ),
+            ("energy_interval_steps", protocol.energy_interval_steps),
+            ("status_interval_steps", protocol.status_interval_steps),
+        ] {
+            if value == Some(0) {
+                return Err(anyhow!("{field}.protocol.{name} must be greater than zero"));
+            }
+        }
+        for define in &protocol.defines {
+            if define.trim().is_empty() {
+                return Err(anyhow!(
+                    "{field}.protocol.defines entries must not be empty"
+                ));
+            }
+        }
+        if protocol
+            .defines_file
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(anyhow!("{field}.protocol.defines_file must not be empty"));
+        }
+    }
+    if let Some(extraction) = &source.candidate_extraction {
+        validate_candidate_trajectory_extraction(
+            extraction,
+            &format!("{field}.candidate_extraction"),
         )?;
     }
     Ok(())

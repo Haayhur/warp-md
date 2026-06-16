@@ -9,6 +9,8 @@ from typing import Optional, Sequence, Union
 import numpy as np
 
 from ._runtime import (
+    coerce_native_system,
+    is_native_traj,
     load_native_symbol,
     native_inputs,
     native_selection,
@@ -22,6 +24,10 @@ from .trajectory import ArrayTrajectory
 
 
 MaskLike = Union[str, Sequence[int], None]
+
+
+def _frame_indices_arg(frame_indices: Optional[Sequence[int]]):
+    return None if frame_indices is None else [int(value) for value in frame_indices]
 
 
 def _prepare_source(
@@ -78,6 +84,37 @@ def _run_native_structure_plan(
         raise RuntimeError(f"native {plan_name} execution failed") from exc
 
 
+def _run_native_plan_on_live_traj(
+    plan_name: str,
+    traj,
+    system,
+    mask: MaskLike,
+    chunk_frames: Optional[int],
+    frame_indices: Optional[Sequence[int]],
+    **plan_kwargs,
+):
+    plan_cls = load_native_symbol(plan_name)
+    if plan_cls is None:
+        raise RuntimeError(f"{plan_name} binding unavailable")
+    native_system = coerce_native_system(system)
+    if native_system is None:
+        raise RuntimeError(f"failed to prepare native inputs for {plan_name}")
+    try:
+        plan = plan_cls(native_selection(system, native_system, mask), **plan_kwargs)
+        return np.asarray(
+            plan.run(
+                traj,
+                native_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=_frame_indices_arg(frame_indices),
+            ),
+            dtype=np.float32,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"native {plan_name} execution failed") from exc
+
+
 def radgyr_tensor(
     traj,
     system,
@@ -89,6 +126,24 @@ def radgyr_tensor(
     dtype: str = "ndarray",
 ):
     """Compute radius of gyration tensor (rg + tensor components)."""
+    if is_native_traj(traj) and float(length_scale) == 1.0:
+        values = _run_native_plan_on_live_traj(
+            "RadgyrTensorPlan",
+            traj,
+            system,
+            mask,
+            chunk_frames,
+            frame_indices,
+            mass_weighted=mass,
+        )
+        if values.ndim != 2 or values.shape[1] != 7:
+            raise RuntimeError("native RadgyrTensorPlan returned unexpected output")
+        rg_vals = values[:, 0].astype(np.float32, copy=False)
+        tensor = values[:, 1:7].astype(np.float32, copy=False)
+        if dtype == "dict":
+            return {"rg": rg_vals, "tensor": tensor}
+        return rg_vals, tensor
+
     coords, _box, _time = _prepare_source(
         traj,
         chunk_frames,
@@ -124,6 +179,107 @@ def radgyr_tensor(
     if dtype == "dict":
         return {"rg": rg_vals, "tensor": tensor}
     return rg_vals, tensor
+
+
+def radgyr(
+    traj,
+    system,
+    mask: MaskLike = "",
+    top=None,
+    nomax: bool = True,
+    mass: bool = True,
+    tensor: bool = False,
+    frame_indices: Optional[Sequence[int]] = None,
+    chunk_frames: Optional[int] = None,
+    length_scale: float = 1.0,
+    dtype: str = "ndarray",
+):
+    """Compute radius of gyration.
+
+    Default behavior returns one Rg value per frame. ``nomax=False`` also
+    computes the maximum atom radius from the selected center. ``tensor=True``
+    includes the six tensor components returned by ``radgyr_tensor``.
+    """
+    del top
+    if is_native_traj(traj) and float(length_scale) == 1.0:
+        values = _run_native_plan_on_live_traj(
+            "RadgyrPlan",
+            traj,
+            system,
+            mask,
+            chunk_frames,
+            frame_indices,
+            mass_weighted=mass,
+            include_max=not nomax,
+            include_tensor=tensor,
+        )
+        if values.ndim != 2 or values.shape[1] != (1 + int(not nomax) + (6 if tensor else 0)):
+            raise RuntimeError("native RadgyrPlan returned unexpected output")
+        out = {"rg": values[:, 0].astype(np.float32, copy=False)}
+        offset = 1
+        if not nomax:
+            out["max"] = values[:, offset].astype(np.float32, copy=False)
+            offset += 1
+        if tensor:
+            out["tensor"] = values[:, offset : offset + 6].astype(np.float32, copy=False)
+
+        key = str(dtype).lower()
+        if key == "dict":
+            return out
+        if tensor and not nomax:
+            return out["rg"], out["max"], out["tensor"]
+        if tensor:
+            return out["rg"], out["tensor"]
+        if not nomax:
+            return np.column_stack([out["rg"], out["max"]]).astype(np.float32)
+        return out["rg"]
+
+    coords, _box, _time = _prepare_source(
+        traj,
+        chunk_frames,
+        frame_indices=frame_indices,
+        length_scale=length_scale,
+    )
+    plan_cls = load_native_symbol("RadgyrPlan")
+    if plan_cls is None:
+        raise RuntimeError("RadgyrPlan binding unavailable")
+    source = ArrayTrajectory(coords)
+    native_traj, native_system = native_inputs(source, system, chunk_frames)
+    if native_traj is None or native_system is None:
+        raise RuntimeError("failed to prepare native inputs for RadgyrPlan")
+    try:
+        plan = plan_cls(
+            native_selection(system, native_system, mask),
+            mass_weighted=mass,
+            include_max=not nomax,
+            include_tensor=tensor,
+        )
+        values = np.asarray(
+            plan.run(native_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            dtype=np.float32,
+        )
+    except Exception as exc:
+        raise RuntimeError("native RadgyrPlan execution failed") from exc
+    if values.ndim != 2 or values.shape[1] != (1 + int(not nomax) + (6 if tensor else 0)):
+        raise RuntimeError("native RadgyrPlan returned unexpected output")
+    out = {"rg": values[:, 0].astype(np.float32, copy=False)}
+    offset = 1
+    if not nomax:
+        out["max"] = values[:, offset].astype(np.float32, copy=False)
+        offset += 1
+    if tensor:
+        out["tensor"] = values[:, offset : offset + 6].astype(np.float32, copy=False)
+
+    key = str(dtype).lower()
+    if key == "dict":
+        return out
+    if tensor and not nomax:
+        return out["rg"], out["max"], out["tensor"]
+    if tensor:
+        return out["rg"], out["tensor"]
+    if not nomax:
+        return np.column_stack([out["rg"], out["max"]]).astype(np.float32)
+    return out["rg"]
 
 
 def _mean_structure_impl(
@@ -239,7 +395,7 @@ def make_structure(
     chunk_frames: Optional[int] = None,
     length_scale: float = 1.0,
 ):
-    """Alias for mean_structure (cpptraj-style)."""
+    """Alias for mean_structure."""
     return _mean_structure_impl(
         "MakeStructurePlan",
         traj,
@@ -254,4 +410,11 @@ def make_structure(
     )
 
 
-__all__ = ["mean_structure", "get_average_frame", "make_structure", "strip", "radgyr_tensor"]
+__all__ = [
+    "mean_structure",
+    "get_average_frame",
+    "make_structure",
+    "strip",
+    "radgyr",
+    "radgyr_tensor",
+]

@@ -92,6 +92,8 @@ pub struct CgRequest {
     #[serde(default)]
     pub reference_source: Option<ReferenceSource>,
     #[serde(default)]
+    pub forcefield: Option<ForcefieldRequest>,
+    #[serde(default)]
     pub optimization: Option<ParameterTuningRequest>,
     #[serde(default = "default_output")]
     #[schemars(default = "default_output")]
@@ -226,6 +228,8 @@ pub struct TrajectorySource {
     pub mass_weighted: Option<bool>,
     #[serde(default)]
     pub make_whole: Option<bool>,
+    #[serde(default)]
+    pub sasa: Option<SasaRequest>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -252,6 +256,30 @@ pub struct PrecomputedReferenceRequest {
     #[serde(default)]
     pub source_kind: Option<String>,
     pub target_set: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForcefieldRequest {
+    #[serde(default = "default_forcefield_kind")]
+    #[schemars(default = "default_forcefield_kind")]
+    pub kind: String,
+    #[serde(default = "default_forcefield_source")]
+    #[schemars(default = "default_forcefield_source")]
+    pub source: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub dest: Option<String>,
+    #[serde(default)]
+    pub include_files: Vec<String>,
+    #[serde(default = "default_forcefield_materialize")]
+    #[schemars(default = "default_forcefield_materialize")]
+    pub materialize: String,
+    #[serde(default)]
+    pub overwrite: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -288,6 +316,19 @@ pub struct ReferenceTransformRequest {
     pub specific_bond_lengths_nm: BTreeMap<String, f64>,
     #[serde(default)]
     pub rg_offset_nm: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SasaRequest {
+    #[serde(default)]
+    pub probe_radius_nm: Option<f64>,
+    #[serde(default)]
+    pub n_sphere_points: Option<usize>,
+    #[serde(default)]
+    pub radii_nm: Option<Vec<f64>>,
+    #[serde(default)]
+    pub fallback_radius_nm: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -354,6 +395,8 @@ pub struct ParameterTuningRequest {
     pub metric_scoring: Option<MetricScoringRequest>,
     #[serde(default)]
     pub evaluator: Option<ObjectiveEvaluatorRequest>,
+    #[serde(default)]
+    pub runner: Option<SimulationRunnerRequest>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -405,6 +448,100 @@ pub struct JsonFileEvaluatorCommandRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct SimulationRunnerRequest {
+    #[serde(default = "default_simulation_runner_kind")]
+    #[schemars(default = "default_simulation_runner_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub work_dir: Option<String>,
+    #[serde(default)]
+    pub python: Option<String>,
+    pub gro: String,
+    pub top: String,
+    #[serde(default)]
+    pub template_dir: Option<String>,
+    #[serde(default)]
+    pub replacements: Vec<RunnerTemplateReplacementRequest>,
+    #[serde(default)]
+    pub protocol: Option<MartiniOpenMmProtocolRequest>,
+    #[serde(default)]
+    pub candidate_extraction: Option<CandidateTrajectoryExtractionRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunnerTemplateReplacementRequest {
+    pub path: String,
+    pub parameter: String,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MartiniOpenMmProtocolRequest {
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub pressure: Option<f64>,
+    #[serde(default)]
+    pub friction: Option<f64>,
+    #[serde(default)]
+    pub eq_timestep_fs: Option<f64>,
+    #[serde(default)]
+    pub prod_timestep_fs: Option<f64>,
+    #[serde(default)]
+    pub cutoff_nm: Option<f64>,
+    #[serde(default)]
+    pub eq_ns: Option<f64>,
+    #[serde(default)]
+    pub prod_ns: Option<f64>,
+    #[serde(default)]
+    pub production_ensemble: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub precision: Option<String>,
+    #[serde(default)]
+    pub device: Option<String>,
+    #[serde(default)]
+    pub cpu_threads: Option<usize>,
+    #[serde(default)]
+    pub seed: Option<i64>,
+    #[serde(default)]
+    pub minimize_iterations: Option<usize>,
+    #[serde(default)]
+    pub barostat_frequency: Option<usize>,
+    #[serde(default)]
+    pub report_interval_steps: Option<usize>,
+    #[serde(default)]
+    pub trajectory_interval_steps: Option<usize>,
+    #[serde(default)]
+    pub checkpoint_interval_steps: Option<usize>,
+    #[serde(default)]
+    pub energy_interval_steps: Option<usize>,
+    #[serde(default)]
+    pub status_interval_steps: Option<usize>,
+    #[serde(default)]
+    pub trajectory_format: Option<String>,
+    #[serde(default)]
+    pub energy_log: Option<bool>,
+    #[serde(default)]
+    pub epsilon_r: Option<f64>,
+    #[serde(default)]
+    pub defines_file: Option<String>,
+    #[serde(default)]
+    pub defines: Vec<String>,
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateTrajectoryExtractionRequest {
     pub mapping: CandidateTrajectoryMappingRequest,
     #[serde(default)]
@@ -437,6 +574,8 @@ pub struct CandidateTrajectoryExtractionRequest {
     pub make_whole: Option<bool>,
     #[serde(default)]
     pub chunk_frames: Option<usize>,
+    #[serde(default)]
+    pub sasa: Option<SasaRequest>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

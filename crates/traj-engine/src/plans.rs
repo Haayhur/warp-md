@@ -14,22 +14,26 @@ pub use geometry::{
     AlignPlan, AlignPrincipalAxisPlan, AnglePlan, AtomMapPlan, AtomicAdpPlan, AtomicFluctPlan,
     AutoImagePlan, AverageFramePlan, BfactorsPlan, CenterMode, CenterOfGeometryPlan,
     CenterOfMassPlan, CenterTrajectoryPlan, CheckChiralityPlan, CheckStructurePlan,
-    ClosestAtomPlan, ClosestPlan, DihedralPlan, DihedralRmsPlan, DistancePlan, DistanceToPointPlan,
-    DistanceToReferencePlan, FixImageBondsPlan, GetVelocityPlan, HausdorffPlan, ImagePlan,
-    LowestCurvePlan, MakeStructurePlan, MeanStructurePlan, MindistPlan, MultiDihedralPlan,
-    NativeContactsPlan, PairwiseDistancePlan, PermuteDihedralsPlan, PrincipalAxesPlan,
-    PuckerMetric, PuckerPlan, RandomizeIonsPlan, ReplicateCellPlan, RmsdPerResPlan, RmsfPlan,
-    RotateDihedralPlan, RotatePlan, RotationMatrixPlan, ScalePlan, SearchNeighborsPlan,
-    SetDihedralPlan, SetVelocityPlan, StripPlan, SuperposePlan, TransformPlan, TranslatePlan,
-    VectorPlan, VolumePlan, WatershellPlan, XtalSymmPlan,
+    ClosestAtomPlan, ClosestPlan, DihedralPlan, DihedralRmsPlan, DistanceCenterToPointPlan,
+    DistanceCenterToReferencePlan, DistancePlan, DistanceToPointPlan, DistanceToReferencePlan,
+    FixImageBondsPlan, GetVelocityPlan, HausdorffPlan, ImagePlan, LowestCurvePlan,
+    MakeStructurePlan, MeanStructurePlan, MindistPlan, MultiDihedralPlan, MultiDistancePlan,
+    NativeContactsPlan, PairListDistancePlan, PairwiseDistancePlan, PermuteDihedralsPlan,
+    PrincipalAxesPlan, PuckerMetric, PuckerPlan, RandomizeIonsPlan, ReplicateCellPlan,
+    RmsdPerResPlan, RmsfPlan, RotateDihedralPlan, RotatePlan, RotationMatrixPlan, ScalePlan,
+    SearchNeighborsPlan, SetDihedralPlan, SetVelocityPlan, StripPlan, SuperposePlan, TransformPlan,
+    TranslatePlan, VectorPlan, VolumePlan, WatershellPlan, XtalSymmPlan,
 };
 pub use matrix::{AnalyzeModesPlan, MatrixMode, MatrixPlan, PcaPlan, ProjectionPlan};
 pub use polymer::{
     BondAngleDistributionPlan, BondLengthDistributionPlan, ChainRgPlan, ContourLengthPlan,
     EndToEndPlan, PersistenceLengthPlan,
 };
-pub use rdf::{PairDistPlan, RdfPlan};
-pub use rg::{RadgyrTensorPlan, RgPlan};
+pub use rdf::{
+    PairDistDynamicPlan, PairDistPlan, PairDistanceExtremaMode, PairDistanceExtremaPlan,
+    RdfDimension, RdfPlan,
+};
+pub use rg::{RadgyrPlan, RadgyrTensorPlan, RgPlan};
 pub use rmsd::{DistanceRmsdPlan, PairwiseMetric, PairwiseRmsdPlan, RmsdPlan, SymmRmsdPlan};
 
 #[derive(Debug, Clone, Copy)]

@@ -1636,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "traj-core"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "fxhash",
  "nalgebra",
@@ -1646,7 +1646,7 @@ dependencies = [
 
 [[package]]
 name = "traj-engine"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "bytemuck",
  "geo",
@@ -1663,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "traj-gpu"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "cudarc",
  "traj-core",
@@ -1672,7 +1672,7 @@ dependencies = [
 
 [[package]]
 name = "traj-io"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "bytemuck",
  "cc",
@@ -1686,11 +1686,11 @@ dependencies = [
 
 [[package]]
 name = "traj-kernels"
-version = "0.4.23"
+version = "0.4.24"
 
 [[package]]
 name = "traj-py"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "clap",
  "numpy",
@@ -1767,7 +1767,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "warp-build"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "clap",
  "rand 0.8.5",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "warp-cg"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "anyhow",
  "clap",
@@ -1800,6 +1800,7 @@ dependencies = [
  "sci-form",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "traj-core",
  "traj-io",
@@ -1810,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "warp-common"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "schemars",
  "serde",
@@ -1819,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "warp-pack"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "clap",
  "rand 0.8.5",
@@ -1841,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "warp-pep"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "clap",
  "serde",
@@ -1852,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "warp-qm"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "clap",
  "schemars",
@@ -1865,7 +1866,7 @@ dependencies = [
 
 [[package]]
 name = "warp-structure"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "serde",
  "serde_json",
@@ -1876,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "warp-topology-graph"
-version = "0.4.23"
+version = "0.4.24"
 dependencies = [
  "schemars",
  "serde",

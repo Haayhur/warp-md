@@ -10,6 +10,8 @@ from .cg_contract import (
     build_example_request,
     cg_capabilities,
     cg_build_capabilities,
+    cg_forcefield_inspect,
+    cg_forcefield_install,
     cg_simulate_capabilities,
     example_request,
     plan_cg_simulate_request,
@@ -162,11 +164,48 @@ def build_parser() -> argparse.ArgumentParser:
     simulate_caps_cmd = simulate_sub.add_parser("capabilities", help="print simulate capabilities")
     simulate_caps_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
 
+    forcefield_cmd = sub.add_parser("forcefield", help="inspect or install bundled forcefields")
+    forcefield_sub = forcefield_cmd.add_subparsers(dest="forcefield_cmd", required=True)
+
+    forcefield_inspect_cmd = forcefield_sub.add_parser("inspect", help="print bundled forcefield manifest")
+    forcefield_inspect_cmd.add_argument("--kind", default="martini3")
+    forcefield_inspect_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+
+    forcefield_install_cmd = forcefield_sub.add_parser(
+        "install", help="copy bundled forcefield into a project directory"
+    )
+    forcefield_install_cmd.add_argument("--kind", default="martini3")
+    forcefield_install_cmd.add_argument("--dest", required=True)
+    forcefield_install_cmd.add_argument("--overwrite", action="store_true")
+    forcefield_install_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+
+    runner_cmd = sub.add_parser("runner", help="run managed CG simulation helpers")
+    runner_sub = runner_cmd.add_subparsers(dest="runner_cmd", required=True)
+
+    martini_cmd = runner_sub.add_parser(
+        "martini-openmm",
+        help="run Martini/OpenMM minimization, equilibration, and optional production",
+    )
+    martini_cmd.add_argument("runner_args", nargs=argparse.REMAINDER)
+
     return parser
 
 
 def run_cli(argv: Optional[list[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+    if (
+        len(effective_argv) >= 2
+        and effective_argv[0] == "runner"
+        and effective_argv[1] == "martini-openmm"
+    ):
+        from .cg_martini_openmm import run_cli as run_martini_openmm_cli
+
+        runner_args = effective_argv[2:]
+        if runner_args and runner_args[0] == "--":
+            runner_args = runner_args[1:]
+        return run_martini_openmm_cli(runner_args)
+
+    args = build_parser().parse_args(effective_argv)
 
     if args.cmd == "run":
         exit_code, result = run_cg_request(_load_request(args), stream=args.stream)
@@ -237,6 +276,30 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
         if args.simulate_cmd == "capabilities":
             print(_dump_payload(cg_simulate_capabilities(), args.format))
             return 0
+    if args.cmd == "forcefield":
+        if args.forcefield_cmd == "inspect":
+            print(_dump_payload(cg_forcefield_inspect(args.kind), args.format))
+            return 0
+        if args.forcefield_cmd == "install":
+            print(
+                _dump_payload(
+                    cg_forcefield_install(
+                        args.dest,
+                        kind=args.kind,
+                        overwrite=args.overwrite,
+                    ),
+                    args.format,
+                )
+            )
+            return 0
+    if args.cmd == "runner":
+        if args.runner_cmd == "martini-openmm":
+            from .cg_martini_openmm import run_cli as run_martini_openmm_cli
+
+            runner_args = args.runner_args
+            if runner_args and runner_args[0] == "--":
+                runner_args = runner_args[1:]
+            return run_martini_openmm_cli(runner_args)
     raise RuntimeError(f"unknown command: {args.cmd}")
 
 

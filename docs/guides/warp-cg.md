@@ -34,8 +34,12 @@ Core inputs:
 | `trajectory_source.atom_indices` | Explicit target atom indices when selection is not enough |
 | `trajectory_source.environment_selection` | Forward-compatible solvent/environment metadata; mapping currently uses target selection or atom indices |
 | `trajectory_source.mass_weighted` | Use topology masses for bead centers |
+| `trajectory_source.sasa` | Optional Shrake-Rupley SASA settings: `probe_radius_nm`, `n_sphere_points`, `radii_nm`, `fallback_radius_nm` |
 | `reference_source.kind=xtb` | Initiate xTB optimization/MD as the reference source |
+| `forcefield` | Optional Martini3 forcefield resolver for generated `.top` files; supports bundled or project-local path sources |
 | `optimization` | Preferred explicit optimization object; supports `source=aa_trajectory` and `source=xtb` |
+| `optimization.method` | Search algorithm: `bayesian_optimization`/`bo` or `pso` |
+| `optimization.fitting_mode` | Objective/evaluator mode: `direct_statistics`, `distribution_fit`, `external_evaluator`, or `simulation_fit` |
 | `optimization.target_terms` | Bonded terms to optimize: `bonds`, `angles`, and/or `dihedrals` |
 | `optimization.max_evaluations` | Positive evaluation budget for BO/PSO |
 | `optimization.swarm_size` | Positive PSO swarm size when provided |
@@ -48,6 +52,132 @@ Core inputs:
 
 If no bonded reference statistics are available, parameter tuning returns a
 structured `skipped` report rather than inventing fitted parameters.
+
+`optimization.method` only selects the search algorithm. `distribution_fit`
+uses mapped reference distributions inside warp-cg. `simulation_fit` is the
+production refinement loop for candidate force fields: warp-cg writes candidate
+parameters to a JSON-file evaluator or managed runner, the runner executes the
+CG simulation, and warp-cg scores the returned candidate trajectory or targets
+against the reference. Without `optimization.evaluator` or
+`optimization.runner`, BO/PSO does not run candidate CG MD; it tunes against
+extracted statistics or grouped reference targets.
+
+## Martini3 forcefield files
+
+`warp-cg` ships a pinned Martini3 forcefield snapshot for deterministic agent
+runs. Runtime never fetches forcefield files from the network. Use the bundled
+snapshot directly in a request:
+
+```json
+"forcefield": {
+  "kind": "martini3",
+  "source": "bundled",
+  "materialize": "copy"
+}
+```
+
+When `output.write_topology_top=true`, this copies the snapshot under
+`output.out_dir/forcefields/martini3`, writes
+`warp_cg_forcefield_manifest.json` with SHA-256 hashes, and inserts the
+requested Martini include before the generated molecule include.
+
+For a project-local snapshot, install once:
+
+```bash
+warp-cg forcefield install --kind martini3 --dest forcefields/martini3
+```
+
+Then point requests at it:
+
+```json
+"forcefield": {
+  "kind": "martini3",
+  "source": "path",
+  "path": "forcefields/martini3",
+  "materialize": "copy"
+}
+```
+
+Use `materialize="none"` only when the generated `.top` should include files
+from a stable user-managed path. Inspect the bundled manifest with:
+
+```bash
+warp-cg forcefield inspect --kind martini3
+```
+
+## Managed Martini/OpenMM refinement
+
+`optimization.runner.kind="martini_openmm"` is the managed path for real
+candidate-simulation refinement. It is a shortcut over the existing JSON-file
+evaluator contract: warp-cg writes each BO/PSO candidate to
+`candidate.json`, creates `martini_openmm_runner_spec.json`, runs
+`python -m warp_md.cg_martini_openmm_evaluator`, then scores the returned
+candidate trajectory against the AA/reference target set.
+
+Install the optional runner dependencies in the execution environment:
+
+```bash
+pip install "warp-md[martini]"
+```
+
+The runner expects a candidate template directory that already contains the
+solvated CG `.gro/.top` scaffold and any molecule `.itp` files. The evaluator
+copies that template into each `evaluation_000000/` directory, replaces
+candidate parameter placeholders such as `{{bond.group_1_length_nm}}`, copies
+the materialized Martini forcefield to `evaluation_000000/forcefields/martini3`
+when a root `forcefield` request is present, and runs OpenMM under
+`evaluation_000000/run/`.
+
+Minimal managed-runner shape:
+
+```json
+"optimization": {
+  "enabled": true,
+  "method": "bo",
+  "fitting_mode": "simulation_fit",
+  "runner": {
+    "kind": "martini_openmm",
+    "work_dir": "candidate_evaluations",
+    "template_dir": "candidate_template",
+    "gro": "system.gro",
+    "top": "system.top",
+    "replacements": [
+      {"path": "molecule.itp", "parameter": "bond.group_1_length_nm", "format": ".5f"}
+    ],
+    "protocol": {
+      "eq_ns": 50.0,
+      "prod_ns": 1000.0,
+      "platform": "CUDA",
+      "device": "0",
+      "trajectory_format": "xtc"
+    },
+    "candidate_extraction": {
+      "mapping": {"bead_names": ["B0", "B1"], "atom_indices": [[0], [1]]},
+      "connections": [[0, 1]],
+      "format": "xtc"
+    }
+  }
+}
+```
+
+Use `method="pso"` plus `swarm_size` for PSO; use `method="bo"` or
+`method="bayesian_optimization"` plus `bo` options for Bayesian optimization.
+The simulation protocol is independent of the optimizer. For smoke tests set
+`protocol.dry_run=true`; production runs should leave it false.
+
+The direct runner CLI is available for checking a single prepared Martini
+system:
+
+```bash
+warp-cg runner martini-openmm \
+  --gro system.gro \
+  --top system.top \
+  --outdir run01 \
+  --eq-ns 50 \
+  --prod-ns 1000 \
+  --platform CUDA \
+  --device 0
+```
 
 Requests must provide at least one identity/handoff field: `smiles`,
 `repeat_smiles`, or `source`. Template replay is source-driven: use
@@ -166,7 +296,12 @@ Angstrom-like PDB coordinates.
     "enabled": true,
     "source": "external_trajectory",
     "method": "bayesian_optimization",
+    "fitting_mode": "distribution_fit",
     "max_evaluations": 64,
+    "bo": {
+      "n_startup_trials": 8,
+      "n_candidates": 1024
+    },
     "objective": "bonded_parameter_parity"
   }
 }
@@ -208,6 +343,7 @@ The xTB fields use `temperature_k` in K, `time_ps` in ps, and `timestep_fs` /
     "enabled": true,
     "source": "xtb",
     "method": "pso",
+    "fitting_mode": "distribution_fit",
     "swarm_size": 12,
     "max_evaluations": 48,
     "objective": "bonded_parameter_parity"
@@ -216,6 +352,18 @@ The xTB fields use `temperature_k` in K, `time_ps` in ps, and `timestep_fs` /
 ```
 
 If xTB MD does not produce a usable trajectory, the workflow can fall back to the optimized XYZ structure and still emit mapping/topology artifacts.
+
+## Simulation-backed refinement
+
+Use `optimization.fitting_mode="simulation_fit"` when the objective must come
+from real candidate CG simulations instead of native distribution fitting. The
+request must provide `reference_source.kind="precomputed"` or another reference
+target source plus `optimization.evaluator.json_file.candidate_extraction`.
+The evaluator receives `candidate.json`, writes `result.json`, and returns a
+candidate trajectory path or candidate target distributions. See
+`examples/warp_cg/simulation_fit_bo_request.json` for a BO template; switch
+`optimization.method` to `pso` and set `swarm_size` to use PSO on the same
+evaluator contract.
 
 ## Downstream simulation setup
 

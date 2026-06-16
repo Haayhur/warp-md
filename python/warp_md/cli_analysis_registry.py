@@ -68,6 +68,13 @@ ANALYSIS_REGISTRY: tuple[AnalysisEntry, ...] = (
         "_build_free_volume",
     ),
     AnalysisEntry(
+        "hydrophobic-defects",
+        "hydrophobic_defects",
+        "setup_hydrophobic_defects_args",
+        "_spec_hydrophobic_defects",
+        "_build_hydrophobic_defects",
+    ),
+    AnalysisEntry(
         "bondi-ffv",
         "bondi_ffv",
         "setup_bondi_ffv_args",

@@ -109,6 +109,7 @@ pub(super) fn run_reference_only_request(
                 Some(&reference.metrics),
                 &out_dir,
                 &request.name,
+                request.forcefield.as_ref(),
                 &mut artifacts,
             )
         })

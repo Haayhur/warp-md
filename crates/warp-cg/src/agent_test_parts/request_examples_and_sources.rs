@@ -24,6 +24,7 @@ fn benzene_mapping_has_three_beads() {
         topology: None,
         trajectory_source: None,
         reference_source: None,
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tempfile::tempdir()
@@ -46,6 +47,33 @@ fn benzene_mapping_has_three_beads() {
 }
 
 #[test]
+fn smiles_mapping_honors_target_bead_size() {
+    let tmp = tempfile::tempdir().unwrap();
+    let request = json!({
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "name": "hexane_two_atom_beads",
+        "smiles": "CCCCCC",
+        "mapping": {
+            "mode": "auto",
+            "target_bead_size": 2
+        },
+        "output": {
+            "out_dir": tmp.path().to_string_lossy().to_string(),
+            "write_mapping_json": false,
+            "write_topology_itp": false,
+            "write_topology_top": false,
+            "write_cg_pdb": false,
+            "write_bonded_parameter_map": false
+        }
+    });
+
+    let (exit_code, result) = run_request_json(&request.to_string(), false);
+
+    assert_eq!(exit_code, 0, "{result}");
+    assert_eq!(result["bead_count"], 3);
+}
+
+#[test]
 fn downstream_setup_artifacts_include_pdb_itp_top_and_parameter_map() {
     let tmp = tempfile::tempdir().unwrap();
     let request = CgRequest {
@@ -62,6 +90,7 @@ fn downstream_setup_artifacts_include_pdb_itp_top_and_parameter_map() {
         topology: None,
         trajectory_source: None,
         reference_source: None,
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -168,6 +197,7 @@ fn external_trajectory_reference_uses_gromacs_bonded_terms() {
             atom_indices: None,
             mass_weighted: None,
             make_whole: None,
+            sasa: None,
         }),
         reference_source: Some(ReferenceSource {
             kind: "external".to_string(),
@@ -181,6 +211,7 @@ fn external_trajectory_reference_uses_gromacs_bonded_terms() {
             metrics: Vec::new(),
             transform: None,
         }),
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -298,6 +329,7 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
         topology: None,
         trajectory_source: None,
         reference_source: None,
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -338,6 +370,23 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
     assert!(pdb.contains(" STA A   1"));
     assert!(pdb.contains(" MID A   2"));
     assert!(pdb.contains(" END A   3"));
+
+    let itp = std::fs::read_to_string(tmp.path().join("paa_source_martini.itp")).unwrap();
+    let first_atom = itp
+        .lines()
+        .find(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|col| col.parse::<usize>().is_ok())
+        })
+        .unwrap()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(first_atom[1], "SC2");
+    assert_eq!(first_atom[4], "H1");
+    assert_eq!(first_atom[5], "1");
+    assert_eq!(first_atom[6].parse::<f64>().unwrap(), 0.0);
 
     let mapping: Value = serde_json::from_slice(
         &std::fs::read(tmp.path().join("paa_source_martini_mapping.json")).unwrap(),
@@ -440,6 +489,7 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
         topology: None,
         trajectory_source: None,
         reference_source: None,
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: replay_tmp.path().to_string_lossy().to_string(),
@@ -553,6 +603,7 @@ fn template_replay_reference_uses_grouped_bonded_classes() {
         xtb: None,
         metric_scoring: None,
         evaluator: None,
+        runner: None,
     });
 
     let replay = run_request(&replay_request, Instant::now()).unwrap();
@@ -624,6 +675,7 @@ fn grouped_bonded_fitting_rejects_single_frame_reference_when_strict() {
         xtb: None,
         metric_scoring: None,
         evaluator: None,
+        runner: None,
     });
 
     let err = run_request(&replay_request, Instant::now()).unwrap_err();
@@ -876,6 +928,7 @@ fn structure_source_infers_bonds_and_reports_mapping_summary() {
         topology: None,
         trajectory_source: None,
         reference_source: None,
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -986,6 +1039,7 @@ fn smiles_hint_reports_aromatic_geometry_conflict() {
         topology: None,
         trajectory_source: None,
         reference_source: None,
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),
@@ -1145,6 +1199,7 @@ fn polymer_manifest_source_run_resolves_relative_artifacts() {
         topology: None,
         trajectory_source: None,
         reference_source: None,
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),

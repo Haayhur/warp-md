@@ -115,6 +115,7 @@ pub fn example_requests() -> Value {
                 "enabled": true,
                 "source": "aa_trajectory",
                 "method": "bayesian_optimization",
+                "fitting_mode": "distribution_fit",
                 "target_terms": ["constraints", "bonds", "angles", "dihedrals"],
                 "initial_parameters": {
                     "bond.group_1_length_nm": 0.47,
@@ -141,6 +142,7 @@ pub fn example_requests() -> Value {
                 "enabled": true,
                 "source": "xtb",
                 "method": "bayesian_optimization",
+                "fitting_mode": "distribution_fit",
                 "target_terms": ["bonds", "angles"],
                 "max_evaluations": 64
             },
@@ -342,7 +344,8 @@ pub fn capabilities() -> Value {
                 "formats_tested": ["dcd", "xtc", "gro", "g96", "cpt", "h5md", "tng", "trr", "pdb", "pdbqt"],
                 "target_description": "topology plus warp-md selection expressions or explicit atom indices",
                 "environment_selection": "accepted for future solvent/environment metadata; mapping currently uses target_selection or atom_indices",
-                "make_whole": "optional boolean; when true, mapped CG coordinates are repaired across periodic boundaries using constraint/bond connectivity before reference bonded distributions are accumulated"
+                "make_whole": "optional boolean; when true, mapped CG coordinates are repaired across periodic boundaries using constraint/bond connectivity before reference bonded distributions are accumulated",
+                "sasa": "optional Shrake-Rupley SASA config: probe_radius_nm, n_sphere_points, radii_nm, and fallback_radius_nm. Defaults use the reference-compatible 0.26 nm probe and topology-derived vdW radii when topology is readable and atom-count compatible."
             },
             "reference_targets": {
                 "preferred_field": "reference_source.bonded_terms",
@@ -356,9 +359,20 @@ pub fn capabilities() -> Value {
             "reference_metrics": {
                 "preferred_field": "reference_source.metrics",
                 "accepted_kinds": ["json"],
-                "semantics": "consumer-owned metric sidecars are merged into result.reference.metrics; use this for exact Gromacs/OpenMM/xTB analyses such as gmx sasa without making warp-cg own the simulation routine. External candidate scoring compares rg_mean_nm and sasa*_mean_nm2 when both reference and candidate metrics are available, and applies a large finite penalty when a declared reference metric is missing from candidate results.",
+                "semantics": "consumer-owned metric sidecars are merged into result.reference.metrics; use this for exact Gromacs/OpenMM/xTB analyses when those should be authoritative. Native trajectory extraction emits rg_mean_nm and standard Shrake-Rupley sasa_mean_nm2/sasa_std_nm2 metrics. External candidate scoring compares rg_mean_nm and sasa*_mean_nm2 when both reference and candidate metrics are available, and applies a large finite penalty when a declared reference metric is missing from candidate results.",
                 "json_shape": {"metrics": {"metric_name": "number"}, "artifacts": [{"path": "optional relative/absolute path", "kind": "artifact kind"}]},
                 "namespace": "optional prefix applied as namespace.metric_name"
+            },
+            "forcefield": {
+                "preferred_field": "forcefield",
+                "accepted_kinds": ["martini3"],
+                "accepted_sources": ["bundled", "path"],
+                "bundled": "forcefield.source=bundled uses the pinned Martini3 snapshot shipped under warp-cg assets; no network fetch occurs during validate or run",
+                "path": "forcefield.source=path + forcefield.path uses a user/project-local Martini3 directory with the expected files",
+                "materialize": "copy writes a deterministic forcefields/martini3 bundle plus warp_cg_forcefield_manifest.json under output.out_dir; none is accepted only with source=path",
+                "include_files": "optional list of relative files to include before the generated molecule ITP; defaults to martini_v3.0.0.itp",
+                "cli": "warp-cg forcefield inspect --kind martini3; warp-cg forcefield install --kind martini3 --dest forcefields/martini3",
+                "artifacts": ["forcefield_manifest_json", "forcefield_directory"]
             },
             "topology": "used to validate solvated external trajectories and resolve target_selection",
             "xtb": {
@@ -371,6 +385,7 @@ pub fn capabilities() -> Value {
         "optimization": {
             "status": "implemented",
             "methods": ["bayesian_optimization", "pso"],
+            "method_aliases": {"bo": "bayesian_optimization"},
             "sources": {
                 "external_trajectory": {
                     "required": ["smiles/repeat_smiles or mapping.mode=ndx", "trajectory_source.path"],
@@ -395,18 +410,28 @@ pub fn capabilities() -> Value {
                     "example": "examples/warp_cg/xtb_tuning_request.json"
                 },
                 "precomputed_reference_with_runner": {
-                    "required": ["smiles/repeat_smiles or source mapping", "reference_source.kind=precomputed", "reference_source.precomputed.target_set", "optimization.evaluator.kind=json_file"],
-                    "semantics": "use existing ReferenceTargetSet JSON as the reference and delegate candidate simulation to a consumer-owned JSON-file runner",
+                    "required": ["smiles/repeat_smiles or source mapping", "reference_source.kind=precomputed", "reference_source.precomputed.target_set", "optimization.evaluator.kind=json_file or optimization.runner.kind=martini_openmm"],
+                    "semantics": "use existing ReferenceTargetSet JSON as the reference and delegate candidate simulation to a consumer-owned JSON-file runner or the managed Martini/OpenMM runner",
                     "runner_result": "runner may return objective directly, candidate_targets for immediate warp-cg EMD scoring, or candidate_trajectory when evaluator-side extraction context is configured; auto mode uses simulation-backed scoring when candidate_extraction is present"
                 }
             },
             "objective": "bonded_parameter_parity",
             "fitting_modes": {
-                "auto": "default behavior: if a json_file evaluator has candidate_extraction, require candidate_trajectory and score extracted candidate targets/Rg/SASA in warp-cg; otherwise use external evaluator when provided, distribution_fit when reference targets exist, or stats-proxy BO/PSO",
+                "auto": "default behavior: if a json_file evaluator or managed runner has candidate_extraction, require candidate_trajectory and score extracted candidate targets/Rg/SASA in warp-cg; otherwise use external evaluator/runner when provided, distribution_fit when reference targets exist, or stats-proxy BO/PSO",
                 "direct_statistics": "do not run BO/PSO; assign equilibrium values from mapped AA bonded statistics and estimate force constants from inverse fluctuations",
                 "distribution_fit": "optimize equilibrium value/phase and force constant parameters per selected grouped reference target against mapped AA reference distributions with EMD scoring",
-                "external_evaluator": "delegate candidate CG simulation/scoring to optimization.evaluator and use returned objective/candidate_targets/candidate_trajectory",
-                "simulation_fit": "strict simulation-backed mode; requires optimization.evaluator.json_file.candidate_extraction and candidate_trajectory results, ignores runner objective, and scores extracted candidate bonded targets plus Rg/SASA metrics in warp-cg"
+                "external_evaluator": "delegate candidate CG simulation/scoring to optimization.evaluator or optimization.runner and use returned objective/candidate_targets/candidate_trajectory",
+                "simulation_fit": "strict simulation-backed mode; requires evaluator.json_file.candidate_extraction or runner.candidate_extraction and candidate_trajectory results, ignores runner objective, and scores extracted candidate bonded targets plus Rg/SASA metrics in warp-cg"
+            },
+            "managed_runner": {
+                "field": "optimization.runner",
+                "kind": "martini_openmm",
+                "dependency": "optional Python runtime dependency: martini-openmm plus openmm; core warp-md imports do not require it",
+                "inputs": ["gro", "top", "optional template_dir", "optional replacements", "optional protocol"],
+                "template_replacements": "candidate named parameters replace placeholders like {{bond.group_1_length_nm}} in copied template files; explicit replacements can restrict parameter/file/format",
+                "protocol": "minimize, NPT equilibration, and optional NPT/NVT production with platform, precision, device, timestep, cutoff, reporting, defines, epsilon_r, and dry_run controls",
+                "command": "warp-cg writes martini_openmm_runner_spec.json under output.out_dir/<runner.work_dir> and invokes python -m warp_md.cg_martini_openmm_evaluator for each candidate",
+                "direct_cli": "warp-cg runner martini-openmm --gro system.gro --top system.top --outdir run01 --eq-ns 50 --prod-ns 1000 --platform CUDA --device 0"
             },
             "metric_scoring": {
                 "field": "optimization.metric_scoring",
@@ -444,14 +469,24 @@ pub fn capabilities() -> Value {
                     "status": "completed, failed_simulation, failed_extraction, timed_out, or invalid_parameters"
                 },
                 "candidate_extraction_config": {
-                    "field": "optimization.evaluator.json_file.candidate_extraction",
+                    "field": "optimization.evaluator.json_file.candidate_extraction or optimization.runner.candidate_extraction",
                     "required_for_candidate_trajectory": ["mapping.bead_names", "mapping.atom_indices", "connections or bonded_terms"],
-                    "optional_reader_fields": ["format", "topology", "topology_format", "start", "stop", "stride", "length_scale", "target_selection", "atom_indices", "mass_weighted", "make_whole", "chunk_frames"],
+                    "optional_reader_fields": ["format", "topology", "topology_format", "start", "stop", "stride", "length_scale", "target_selection", "atom_indices", "mass_weighted", "make_whole", "chunk_frames", "sasa"],
                     "bonded_terms": "optional Gromacs topology/ITP source for grouped constraint/bond/angle/dihedral candidate target extraction"
                 },
                 "engine_boundary": "OpenMM, Gromacs, xTB, or user scripts own simulation; warp-cg exchanges candidate parameters, reference targets, candidate targets or candidate trajectory paths, metrics, and status"
             },
             "defaults": {"method": "bayesian_optimization", "max_evaluations": 32, "seed": 42},
+            "bo": {
+                "method": "set optimization.method to bayesian_optimization or bo",
+                "algorithm": "gp_expected_improvement",
+                "acquisition": "log_expected_improvement by default; expected_improvement is also accepted",
+                "n_startup_trials": "optional positive Latin-hypercube warmup count",
+                "n_candidates": "optional positive acquisition candidate count",
+                "checkpoint_path": "optional JSON checkpoint path for long BO runs",
+                "checkpoint_interval_evaluations": "save checkpoint after this many additional objective evaluations",
+                "resume_from_checkpoint": "resume matching checkpoint state, including RNG state and evaluator signature"
+            },
             "pso": {
                 "swarm_size": "optional particle count override; default uses int(10 + 2*sqrt(dimensions))",
                 "discrete_choices": "Rust optimizer API supports fst-pso-style categorical search by expanding each choice set into a probability segment and sampling choice indices before objective evaluation",

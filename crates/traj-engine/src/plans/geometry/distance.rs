@@ -5,7 +5,7 @@ use traj_core::system::System;
 
 use super::geometry_math::*;
 use crate::executor::{Device, Plan, PlanOutput};
-use crate::plans::PbcMode;
+use crate::plans::{PbcMode, ReferenceMode};
 
 #[cfg(feature = "cuda")]
 use traj_gpu::{convert_coords, GpuBufferF32, GpuGroups, GpuSelection};
@@ -13,6 +13,11 @@ use traj_gpu::{convert_coords, GpuBufferF32, GpuGroups, GpuSelection};
 pub struct DistancePlan {
     sel_a: Selection,
     sel_b: Selection,
+    io_selection: Vec<u32>,
+    sel_a_local: Vec<u32>,
+    sel_b_local: Vec<u32>,
+    selected_masses: Vec<f32>,
+    use_selected_input: bool,
     mass_weighted: bool,
     pbc: PbcMode,
     results: Vec<f32>,
@@ -20,10 +25,213 @@ pub struct DistancePlan {
     gpu: Option<DistanceGpuState>,
 }
 
+pub struct MultiDistancePlan {
+    pairs: Vec<(Selection, Selection)>,
+    io_selection: Vec<u32>,
+    local_pairs: Vec<(Vec<u32>, Vec<u32>)>,
+    selected_masses: Vec<f32>,
+    use_selected_input: bool,
+    mass_weighted: bool,
+    pbc: PbcMode,
+    results: Vec<f32>,
+    frames: usize,
+}
+
+pub struct DistanceCenterToPointPlan {
+    selection: Selection,
+    selected_masses: Vec<f32>,
+    point: [f64; 3],
+    mass_weighted: bool,
+    pbc: PbcMode,
+    results: Vec<f32>,
+}
+
+pub struct DistanceCenterToReferencePlan {
+    selection: Selection,
+    selected_masses: Vec<f32>,
+    reference_mode: ReferenceMode,
+    mass_weighted: bool,
+    pbc: PbcMode,
+    reference_center: Option<[f64; 3]>,
+    results: Vec<f32>,
+}
+
 #[cfg(feature = "cuda")]
 struct DistanceGpuState {
     groups: GpuGroups,
     masses: GpuBufferF32,
+}
+
+impl DistanceCenterToPointPlan {
+    pub fn new(selection: Selection, point: [f64; 3], mass_weighted: bool, pbc: PbcMode) -> Self {
+        Self {
+            selection,
+            selected_masses: Vec::new(),
+            point,
+            mass_weighted,
+            pbc,
+            results: Vec::new(),
+        }
+    }
+}
+
+impl DistanceCenterToReferencePlan {
+    pub fn new(
+        selection: Selection,
+        reference_mode: ReferenceMode,
+        mass_weighted: bool,
+        pbc: PbcMode,
+    ) -> Self {
+        Self {
+            selection,
+            selected_masses: Vec::new(),
+            reference_mode,
+            mass_weighted,
+            pbc,
+            reference_center: None,
+            results: Vec::new(),
+        }
+    }
+}
+
+fn center_of_positions(
+    positions: &[[f32; 4]],
+    indices: &[u32],
+    masses: &[f32],
+    mass_weighted: bool,
+) -> [f64; 3] {
+    let mut center = [0.0f64; 3];
+    let mut weight_sum = 0.0f64;
+    for &idx in indices.iter() {
+        let atom_idx = idx as usize;
+        if atom_idx >= positions.len() {
+            continue;
+        }
+        let weight = if mass_weighted {
+            masses.get(atom_idx).copied().unwrap_or(1.0) as f64
+        } else {
+            1.0
+        };
+        let pos = positions[atom_idx];
+        center[0] += pos[0] as f64 * weight;
+        center[1] += pos[1] as f64 * weight;
+        center[2] += pos[2] as f64 * weight;
+        weight_sum += weight;
+    }
+    if weight_sum > 0.0 {
+        center[0] /= weight_sum;
+        center[1] /= weight_sum;
+        center[2] /= weight_sum;
+    }
+    center
+}
+
+fn selected_masses(system: &System, selection: &[u32]) -> Vec<f32> {
+    selection
+        .iter()
+        .map(|idx| system.atoms.mass.get(*idx as usize).copied().unwrap_or(1.0))
+        .collect()
+}
+
+fn center_of_selected_chunk(
+    chunk: &FrameChunk,
+    frame: usize,
+    local_indices: &[u32],
+    masses: &[f32],
+    mass_weighted: bool,
+) -> [f64; 3] {
+    center_of_selection(chunk, frame, local_indices, masses, mass_weighted)
+}
+
+fn center_of_all_selected_chunk(
+    chunk: &FrameChunk,
+    frame: usize,
+    masses: &[f32],
+    mass_weighted: bool,
+) -> [f64; 3] {
+    let n_atoms = chunk.n_atoms;
+    let mut sum = [0.0f64; 3];
+    let mut mass_sum = 0.0f64;
+    let frame_base = frame * n_atoms;
+    for atom_idx in 0..n_atoms {
+        let p = chunk.coords[frame_base + atom_idx];
+        let m = if mass_weighted {
+            masses.get(atom_idx).copied().unwrap_or(1.0) as f64
+        } else {
+            1.0
+        };
+        sum[0] += p[0] as f64 * m;
+        sum[1] += p[1] as f64 * m;
+        sum[2] += p[2] as f64 * m;
+        mass_sum += m;
+    }
+    if mass_sum == 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+    [sum[0] / mass_sum, sum[1] / mass_sum, sum[2] / mass_sum]
+}
+
+fn distance_between_centers(
+    center: [f64; 3],
+    reference: [f64; 3],
+    chunk: &FrameChunk,
+    frame: usize,
+    pbc: PbcMode,
+) -> TrajResult<f32> {
+    let mut dx = center[0] - reference[0];
+    let mut dy = center[1] - reference[1];
+    let mut dz = center[2] - reference[2];
+    if matches!(pbc, PbcMode::Orthorhombic) {
+        let (lx, ly, lz) = box_lengths(chunk, frame)?;
+        apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
+    }
+    Ok((dx * dx + dy * dy + dz * dz).sqrt() as f32)
+}
+
+fn build_multi_distance_io_layout(
+    pairs: &[(Selection, Selection)],
+) -> (Vec<u32>, Vec<(Vec<u32>, Vec<u32>)>) {
+    let mut io = Vec::<u32>::new();
+    let mut index =
+        std::collections::HashMap::<u32, usize>::with_capacity(pairs.len().saturating_mul(2));
+    for (sel_a, sel_b) in pairs.iter() {
+        for &idx in sel_a.indices.iter().chain(sel_b.indices.iter()) {
+            if let std::collections::hash_map::Entry::Vacant(entry) = index.entry(idx) {
+                let local = io.len();
+                io.push(idx);
+                entry.insert(local);
+            }
+        }
+    }
+
+    let local_pairs = pairs
+        .iter()
+        .map(|(sel_a, sel_b)| {
+            let local_a = sel_a
+                .indices
+                .iter()
+                .map(|idx| {
+                    *index
+                        .get(idx)
+                        .expect("multi_distance io layout missing sel_a index")
+                        as u32
+                })
+                .collect();
+            let local_b = sel_b
+                .indices
+                .iter()
+                .map(|idx| {
+                    *index
+                        .get(idx)
+                        .expect("multi_distance io layout missing sel_b index")
+                        as u32
+                })
+                .collect();
+            (local_a, local_b)
+        })
+        .collect();
+
+    (io, local_pairs)
 }
 
 pub struct CenterOfMassPlan {
@@ -209,14 +417,40 @@ impl Plan for CenterOfGeometryPlan {
 
 impl DistancePlan {
     pub fn new(sel_a: Selection, sel_b: Selection, mass_weighted: bool, pbc: PbcMode) -> Self {
+        let (io_selection, sel_a_local, sel_b_local) =
+            build_pairwise_io_layout(&sel_a.indices, &sel_b.indices);
+        let sel_a_local = sel_a_local.into_iter().map(|idx| idx as u32).collect();
+        let sel_b_local = sel_b_local.into_iter().map(|idx| idx as u32).collect();
         Self {
             sel_a,
             sel_b,
+            io_selection,
+            sel_a_local,
+            sel_b_local,
+            selected_masses: Vec::new(),
+            use_selected_input: true,
             mass_weighted,
             pbc,
             results: Vec::new(),
             #[cfg(feature = "cuda")]
             gpu: None,
+        }
+    }
+}
+
+impl MultiDistancePlan {
+    pub fn new(pairs: Vec<(Selection, Selection)>, mass_weighted: bool, pbc: PbcMode) -> Self {
+        let (io_selection, local_pairs) = build_multi_distance_io_layout(&pairs);
+        Self {
+            pairs,
+            io_selection,
+            local_pairs,
+            selected_masses: Vec::new(),
+            use_selected_input: true,
+            mass_weighted,
+            pbc,
+            results: Vec::new(),
+            frames: 0,
         }
     }
 }
@@ -228,10 +462,13 @@ impl Plan for DistancePlan {
 
     fn init(&mut self, _system: &System, _device: &Device) -> TrajResult<()> {
         self.results.clear();
+        self.selected_masses = selected_masses(_system, &self.io_selection);
+        self.use_selected_input = matches!(_device, Device::Cpu);
         #[cfg(feature = "cuda")]
         {
             self.gpu = None;
             if let Device::Cuda(ctx) = _device {
+                self.use_selected_input = false;
                 let mut indices =
                     Vec::with_capacity(self.sel_a.indices.len() + self.sel_b.indices.len());
                 indices.extend(self.sel_a.indices.iter().copied());
@@ -253,6 +490,18 @@ impl Plan for DistancePlan {
             }
         }
         Ok(())
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        if self.use_selected_input {
+            Some(self.io_selection.as_slice())
+        } else {
+            None
+        }
+    }
+
+    fn preferred_selection_hint(&self, _system: &System) -> Option<&[u32]> {
+        Some(self.io_selection.as_slice())
     }
 
     fn process_chunk(
@@ -301,6 +550,353 @@ impl Plan for DistancePlan {
                 apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
             }
             let dist = (dx * dx + dy * dy + dz * dz).sqrt() as f32;
+            self.results.push(dist);
+        }
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        source_selection: &[u32],
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        if source_selection != self.io_selection.as_slice() {
+            return Err(TrajError::Mismatch(
+                "distance selected chunk does not match expected IO selection".into(),
+            ));
+        }
+        for frame in 0..chunk.n_frames {
+            let com_a = center_of_selected_chunk(
+                chunk,
+                frame,
+                &self.sel_a_local,
+                &self.selected_masses,
+                self.mass_weighted,
+            );
+            let com_b = center_of_selected_chunk(
+                chunk,
+                frame,
+                &self.sel_b_local,
+                &self.selected_masses,
+                self.mass_weighted,
+            );
+            let mut dx = com_b[0] - com_a[0];
+            let mut dy = com_b[1] - com_a[1];
+            let mut dz = com_b[2] - com_a[2];
+            if matches!(self.pbc, PbcMode::Orthorhombic) {
+                let (lx, ly, lz) = box_lengths(chunk, frame)?;
+                apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
+            }
+            self.results
+                .push((dx * dx + dy * dy + dz * dz).sqrt() as f32);
+        }
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Series(std::mem::take(&mut self.results)))
+    }
+}
+
+impl Plan for MultiDistancePlan {
+    fn name(&self) -> &'static str {
+        "multi_distance"
+    }
+
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.frames = 0;
+        self.selected_masses = selected_masses(system, &self.io_selection);
+        self.use_selected_input = true;
+        let n_atoms = system.n_atoms() as u32;
+        for (sel_a, sel_b) in self.pairs.iter() {
+            for &idx in sel_a.indices.iter().chain(sel_b.indices.iter()) {
+                if idx >= n_atoms {
+                    return Err(TrajError::Mismatch(
+                        "multi_distance atom index out of range".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        if self.use_selected_input {
+            Some(self.io_selection.as_slice())
+        } else {
+            None
+        }
+    }
+
+    fn preferred_selection_hint(&self, _system: &System) -> Option<&[u32]> {
+        Some(self.io_selection.as_slice())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        let masses = &system.atoms.mass;
+        for frame in 0..chunk.n_frames {
+            let (lx, ly, lz) = if matches!(self.pbc, PbcMode::Orthorhombic) {
+                box_lengths(chunk, frame)?
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            for (sel_a, sel_b) in self.pairs.iter() {
+                let com_a =
+                    center_of_selection(chunk, frame, &sel_a.indices, masses, self.mass_weighted);
+                let com_b =
+                    center_of_selection(chunk, frame, &sel_b.indices, masses, self.mass_weighted);
+                let mut dx = com_b[0] - com_a[0];
+                let mut dy = com_b[1] - com_a[1];
+                let mut dz = com_b[2] - com_a[2];
+                if matches!(self.pbc, PbcMode::Orthorhombic) {
+                    apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
+                }
+                self.results
+                    .push((dx * dx + dy * dy + dz * dz).sqrt() as f32);
+            }
+            self.frames += 1;
+        }
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        source_selection: &[u32],
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        if source_selection != self.io_selection.as_slice() {
+            return Err(TrajError::Mismatch(
+                "multi_distance selected chunk does not match expected IO selection".into(),
+            ));
+        }
+        for frame in 0..chunk.n_frames {
+            let (lx, ly, lz) = if matches!(self.pbc, PbcMode::Orthorhombic) {
+                box_lengths(chunk, frame)?
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            for (sel_a, sel_b) in self.local_pairs.iter() {
+                let com_a = center_of_selected_chunk(
+                    chunk,
+                    frame,
+                    sel_a,
+                    &self.selected_masses,
+                    self.mass_weighted,
+                );
+                let com_b = center_of_selected_chunk(
+                    chunk,
+                    frame,
+                    sel_b,
+                    &self.selected_masses,
+                    self.mass_weighted,
+                );
+                let mut dx = com_b[0] - com_a[0];
+                let mut dy = com_b[1] - com_a[1];
+                let mut dz = com_b[2] - com_a[2];
+                if matches!(self.pbc, PbcMode::Orthorhombic) {
+                    apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
+                }
+                self.results
+                    .push((dx * dx + dy * dy + dz * dz).sqrt() as f32);
+            }
+            self.frames += 1;
+        }
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Matrix {
+            data: std::mem::take(&mut self.results),
+            rows: self.frames,
+            cols: self.pairs.len(),
+        })
+    }
+}
+
+impl Plan for DistanceCenterToPointPlan {
+    fn name(&self) -> &'static str {
+        "distance_center_to_point"
+    }
+
+    fn init(&mut self, _system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.selected_masses = selected_masses(_system, &self.selection.indices);
+        Ok(())
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        Some(&self.selection.indices)
+    }
+
+    fn preferred_selection_hint(&self, _system: &System) -> Option<&[u32]> {
+        Some(&self.selection.indices)
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        let masses = &system.atoms.mass;
+        for frame in 0..chunk.n_frames {
+            let center = center_of_selection(
+                chunk,
+                frame,
+                &self.selection.indices,
+                masses,
+                self.mass_weighted,
+            );
+            let dist = distance_between_centers(center, self.point, chunk, frame, self.pbc)?;
+            self.results.push(dist);
+        }
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        source_selection: &[u32],
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        if source_selection != self.selection.indices.as_ref().as_slice() {
+            return Err(TrajError::Mismatch(
+                "distance_center_to_point selected chunk does not match expected selection".into(),
+            ));
+        }
+        for frame in 0..chunk.n_frames {
+            let center = center_of_all_selected_chunk(
+                chunk,
+                frame,
+                &self.selected_masses,
+                self.mass_weighted,
+            );
+            let dist = distance_between_centers(center, self.point, chunk, frame, self.pbc)?;
+            self.results.push(dist);
+        }
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Series(std::mem::take(&mut self.results)))
+    }
+}
+
+impl Plan for DistanceCenterToReferencePlan {
+    fn name(&self) -> &'static str {
+        "distance_center_to_reference"
+    }
+
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.selected_masses = selected_masses(system, &self.selection.indices);
+        self.reference_center = match self.reference_mode {
+            ReferenceMode::Topology => {
+                let positions0 = system
+                    .positions0
+                    .as_ref()
+                    .ok_or_else(|| TrajError::Mismatch("no topology reference coords".into()))?;
+                Some(center_of_positions(
+                    positions0,
+                    &self.selection.indices,
+                    &system.atoms.mass,
+                    self.mass_weighted,
+                ))
+            }
+            ReferenceMode::Frame0 => None,
+        };
+        Ok(())
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        Some(&self.selection.indices)
+    }
+
+    fn preferred_selection_hint(&self, _system: &System) -> Option<&[u32]> {
+        Some(&self.selection.indices)
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        if self.reference_center.is_none() && matches!(self.reference_mode, ReferenceMode::Frame0) {
+            if chunk.n_frames == 0 {
+                return Ok(());
+            }
+            self.reference_center = Some(center_of_selection(
+                chunk,
+                0,
+                &self.selection.indices,
+                &system.atoms.mass,
+                self.mass_weighted,
+            ));
+        }
+        let reference = self
+            .reference_center
+            .ok_or_else(|| TrajError::Mismatch("reference not initialized".into()))?;
+        for frame in 0..chunk.n_frames {
+            let center = center_of_selection(
+                chunk,
+                frame,
+                &self.selection.indices,
+                &system.atoms.mass,
+                self.mass_weighted,
+            );
+            let dist = distance_between_centers(center, reference, chunk, frame, self.pbc)?;
+            self.results.push(dist);
+        }
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        source_selection: &[u32],
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        if source_selection != self.selection.indices.as_ref().as_slice() {
+            return Err(TrajError::Mismatch(
+                "distance_center_to_reference selected chunk does not match expected selection"
+                    .into(),
+            ));
+        }
+        if self.reference_center.is_none() && matches!(self.reference_mode, ReferenceMode::Frame0) {
+            if chunk.n_frames == 0 {
+                return Ok(());
+            }
+            self.reference_center = Some(center_of_all_selected_chunk(
+                chunk,
+                0,
+                &self.selected_masses,
+                self.mass_weighted,
+            ));
+        }
+        let reference = self
+            .reference_center
+            .ok_or_else(|| TrajError::Mismatch("reference not initialized".into()))?;
+        for frame in 0..chunk.n_frames {
+            let center = center_of_all_selected_chunk(
+                chunk,
+                frame,
+                &self.selected_masses,
+                self.mass_weighted,
+            );
+            let dist = distance_between_centers(center, reference, chunk, frame, self.pbc)?;
             self.results.push(dist);
         }
         Ok(())
@@ -455,6 +1051,13 @@ pub struct PairwiseDistancePlan {
     gpu: Option<PairwiseGpuState>,
 }
 
+pub struct PairListDistancePlan {
+    pairs: Vec<(u32, u32)>,
+    pbc: PbcMode,
+    results: Vec<f32>,
+    frames: usize,
+}
+
 #[cfg(feature = "cuda")]
 struct PairwiseGpuState {
     sel_a: GpuSelection,
@@ -479,6 +1082,17 @@ impl PairwiseDistancePlan {
             pairs,
             #[cfg(feature = "cuda")]
             gpu: None,
+        }
+    }
+}
+
+impl PairListDistancePlan {
+    pub fn new(pairs: Vec<(u32, u32)>, pbc: PbcMode) -> Self {
+        Self {
+            pairs,
+            pbc,
+            results: Vec::new(),
+            frames: 0,
         }
     }
 }
@@ -647,6 +1261,65 @@ impl Plan for PairwiseDistancePlan {
             data: std::mem::take(&mut self.results),
             rows: self.frames,
             cols: self.pairs,
+        })
+    }
+}
+
+impl Plan for PairListDistancePlan {
+    fn name(&self) -> &'static str {
+        "pair_list_distance"
+    }
+
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.frames = 0;
+        let n_atoms = system.n_atoms() as u32;
+        for &(left, right) in self.pairs.iter() {
+            if left >= n_atoms || right >= n_atoms {
+                return Err(TrajError::Mismatch(
+                    "pair_list_distance atom index out of range".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        let n_atoms = chunk.n_atoms;
+        for frame in 0..chunk.n_frames {
+            let (lx, ly, lz) = if matches!(self.pbc, PbcMode::Orthorhombic) {
+                box_lengths(chunk, frame)?
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            let frame_base = frame * n_atoms;
+            for &(left, right) in self.pairs.iter() {
+                let pa = chunk.coords[frame_base + left as usize];
+                let pb = chunk.coords[frame_base + right as usize];
+                let mut dx = (pb[0] - pa[0]) as f64;
+                let mut dy = (pb[1] - pa[1]) as f64;
+                let mut dz = (pb[2] - pa[2]) as f64;
+                if matches!(self.pbc, PbcMode::Orthorhombic) {
+                    apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
+                }
+                self.results
+                    .push((dx * dx + dy * dy + dz * dz).sqrt() as f32);
+            }
+            self.frames += 1;
+        }
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Matrix {
+            data: std::mem::take(&mut self.results),
+            rows: self.frames,
+            cols: self.pairs.len(),
         })
     }
 }

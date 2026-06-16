@@ -158,6 +158,7 @@ fn source_request(
         topology: None,
         trajectory_source: None,
         reference_source: None,
+        forcefield: None,
         optimization: None,
         output: CgOutputRequest {
             out_dir: out_dir.to_string_lossy().to_string(),

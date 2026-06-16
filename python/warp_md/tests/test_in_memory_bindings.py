@@ -5,13 +5,14 @@ from warp_md.analysis.align import align, align_principal_axis, superpose
 from warp_md.analysis.autoimage import autoimage
 from warp_md.analysis.density import density
 from warp_md.analysis.fluct import atomicfluct, rmsf
+from warp_md.analysis.geometry import distance
 from warp_md.analysis.closest import closest
 from warp_md.analysis.matrix import correl, covar, dist, mwcovar
 from warp_md.analysis.multidihedral import multidihedral
 from warp_md.analysis.pca import pca, projection
 from warp_md.analysis.rmsd import distance_rmsd, pairwise_rmsd
 from warp_md.analysis.rotation import rotation_matrix
-from warp_md.analysis.structure import make_structure, mean_structure, radgyr_tensor
+from warp_md.analysis.structure import make_structure, mean_structure, radgyr, radgyr_tensor
 from warp_md.analysis.transform import center, rotate, scale, transform, translate
 from warp_md.analysis.atomiccorr import atomiccorr
 from warp_md.analysis.velocity import get_velocity
@@ -44,6 +45,19 @@ def test_system_from_arrays_supports_selection():
     sel = system.select("protein and name CA")
     assert list(sel.indices) == [0, 1, 2]
     np.testing.assert_allclose(system.positions0(), coords0, rtol=1e-6)
+
+
+def test_system_from_arrays_round_trips_gb_radii():
+    table = _atom_table(2)
+    table["gb_radius"] = [1.4, 2.0]
+    table["parse_radius"] = [1.0, 1.7]
+    table["vdw_radius"] = [1.2, 1.8]
+    system = warp_md.System.from_arrays(table)
+    atoms = system.atom_table()
+    np.testing.assert_allclose(atoms["gb_radius"], [1.4, 2.0], rtol=1e-6)
+    np.testing.assert_allclose(atoms["radius"], [1.4, 2.0], rtol=1e-6)
+    np.testing.assert_allclose(atoms["parse_radius"], [1.0, 1.7], rtol=1e-6)
+    np.testing.assert_allclose(atoms["vdw_radius"], [1.2, 1.8], rtol=1e-6)
 
 
 def test_trajectory_from_numpy_exposes_chunk_box_and_time():
@@ -81,6 +95,35 @@ def test_distance_rmsd_runs_on_in_memory_native_objects():
     traj = warp_md.Trajectory.from_numpy(coords)
     vals = distance_rmsd(traj, system, mask="protein", ref=0)
     np.testing.assert_allclose(vals, np.zeros(2, dtype=np.float32), atol=1e-6)
+
+
+def test_distance_streams_native_frame_subset():
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    system = warp_md.System.from_arrays(_atom_table(2), positions0=coords[0])
+
+    pair_values = distance(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        np.array([[0, 1]], dtype=np.int64),
+        frame_indices=[0, 2],
+    )
+    np.testing.assert_allclose(pair_values, np.array([[1.0, 3.0]], dtype=np.float32))
+
+    mask_values = distance(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        "@1 @2",
+        mass=False,
+        frame_indices=[1, -1],
+    )
+    np.testing.assert_allclose(mask_values, np.array([2.0, 3.0], dtype=np.float32))
 
 
 def test_align_supports_nonzero_reference_and_ref_mask():
@@ -315,6 +358,20 @@ def test_align_principal_axis_and_radgyr_tensor_run_natively():
         dtype="dict",
     )
     np.testing.assert_allclose(rg["rg"], np.array([1.0], dtype=np.float32), atol=1e-6)
+
+    rg_main = radgyr(
+        warp_md.Trajectory.from_numpy(coords[:, :2, :]),
+        warp_md.System.from_arrays(_atom_table(2), positions0=coords[0, :2, :]),
+        mask="all",
+        mass=False,
+        nomax=False,
+        frame_indices=[0, 1],
+    )
+    np.testing.assert_allclose(
+        rg_main,
+        np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float32),
+        atol=1e-6,
+    )
 
 
 def test_closest_fluct_velocity_and_pca_run_natively():

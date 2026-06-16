@@ -70,6 +70,7 @@ fn reference_target_optimization_honors_requested_target_terms() {
             atom_indices: None,
             mass_weighted: None,
             make_whole: None,
+            sasa: None,
         }),
         reference_source: Some(ReferenceSource {
             kind: "external".to_string(),
@@ -83,6 +84,7 @@ fn reference_target_optimization_honors_requested_target_terms() {
             metrics: Vec::new(),
             transform: None,
         }),
+        forcefield: None,
         optimization: Some(ParameterTuningRequest {
             enabled: true,
             source: "aa_trajectory".to_string(),
@@ -102,6 +104,7 @@ fn reference_target_optimization_honors_requested_target_terms() {
             xtb: None,
             metric_scoring: None,
             evaluator: None,
+            runner: None,
         }),
         output: CgOutputRequest {
             out_dir: tmp.path().to_string_lossy().to_string(),

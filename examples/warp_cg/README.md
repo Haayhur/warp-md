@@ -14,8 +14,23 @@ These files are machine-readable request templates for `warp-cg run <request.jso
 - `coordinates_topology_charge_manifest_to_cg_request.json`: direct coordinates plus topology plus charge manifest request.
 - `solvated_external_bo_request.json`: map a target molecule from a solvated external trajectory, write CG coordinate/topology artifacts, and tune bonded parameters with native Bayesian optimization.
 - `xtb_pso_request.json`: initiate an xTB reference workflow from SMILES, map the resulting reference, write CG coordinate/topology artifacts, and tune bonded parameters with PSO.
+- `simulation_fit_bo_request.json`: precomputed reference targets plus the managed Martini/OpenMM runner; use this for BO over real candidate CG simulations. Change `optimization.method` to `pso` and set `swarm_size` for the same loop with PSO.
 
 Paths are placeholders. Replace topology, trajectory, and output directories with real project paths before running.
+
+Use `warp-cg forcefield inspect --kind martini3` to inspect the bundled
+Martini3 snapshot, or `warp-cg forcefield install --kind martini3 --dest
+forcefields/martini3` to create a project-local copy before using
+`forcefield.source=path`.
+
+For simulation-backed refinement, prepare a candidate template directory with a
+solvated Martini `.gro/.top` system and placeholder tokens in the molecule
+`.itp`, for example `{{bond.group_1_length_nm}}`. The managed runner copies the
+template per candidate, applies BO/PSO parameter values, mirrors the materialized
+Martini forcefield into the evaluation directory, runs Martini/OpenMM, and
+returns the candidate trajectory for warp-cg scoring. Use
+`warp-cg runner martini-openmm --gro system.gro --top system.top --outdir run01`
+to smoke-test the prepared system outside the optimizer.
 
 Manifest/source requests are accepted by `warp-cg validate` for handoff checks
 and by `warp-cg run` for source-driven polymer mapping. Use `mapping.mode=auto`

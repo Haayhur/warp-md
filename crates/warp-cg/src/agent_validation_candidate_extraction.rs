@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 
-use super::super::{BondedTermSource, CandidateTrajectoryExtractionRequest};
+use super::super::{BondedTermSource, CandidateTrajectoryExtractionRequest, SasaRequest};
 
 pub(super) fn validate_candidate_trajectory_extraction(
     extraction: &CandidateTrajectoryExtractionRequest,
@@ -75,6 +75,44 @@ pub(super) fn validate_candidate_trajectory_extraction(
         .is_some_and(|(start, stop)| start >= stop)
     {
         return Err(anyhow!("{field}.start must be less than stop"));
+    }
+    if let Some(sasa) = &extraction.sasa {
+        validate_sasa_request(sasa, &format!("{field}.sasa"))?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_sasa_request(source: &SasaRequest, field: &str) -> Result<()> {
+    if source
+        .probe_radius_nm
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err(anyhow!(
+            "{field}.probe_radius_nm must be finite and non-negative"
+        ));
+    }
+    if source.n_sphere_points.is_some_and(|value| value < 8) {
+        return Err(anyhow!("{field}.n_sphere_points must be at least 8"));
+    }
+    if source
+        .fallback_radius_nm
+        .is_some_and(|value| !value.is_finite() || value <= 0.0)
+    {
+        return Err(anyhow!(
+            "{field}.fallback_radius_nm must be finite and greater than zero"
+        ));
+    }
+    if let Some(radii) = &source.radii_nm {
+        if radii.is_empty() {
+            return Err(anyhow!("{field}.radii_nm must not be empty"));
+        }
+        for (idx, radius) in radii.iter().enumerate() {
+            if !radius.is_finite() || *radius <= 0.0 {
+                return Err(anyhow!(
+                    "{field}.radii_nm[{idx}] must be finite and greater than zero"
+                ));
+            }
+        }
     }
     Ok(())
 }

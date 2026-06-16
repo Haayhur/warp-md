@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::json;
 
+use crate::forcefield::materialize_request_forcefield;
 use crate::parameters::{AngleStats, BondStats, DihedralStats};
 
 use super::agent_render::render_martini_top;
@@ -50,7 +51,26 @@ pub(super) fn write_topology_top(
     if request.output.write_topology_top {
         let top_path = out_dir.join(format!("{}_martini.top", request.name));
         let itp_file = format!("{}_martini.itp", request.name);
-        let top = render_martini_top(&request.name, &itp_file);
+        let forcefield = request
+            .forcefield
+            .as_ref()
+            .map(|forcefield| materialize_request_forcefield(forcefield, out_dir))
+            .transpose()?;
+        if let Some(forcefield) = &forcefield {
+            artifacts.push(CgArtifact {
+                path: forcefield.manifest_path.to_string_lossy().to_string(),
+                kind: "forcefield_manifest_json".to_string(),
+            });
+            artifacts.push(CgArtifact {
+                path: forcefield.root.to_string_lossy().to_string(),
+                kind: "forcefield_directory".to_string(),
+            });
+        }
+        let include_paths = forcefield
+            .as_ref()
+            .map(|forcefield| forcefield.include_paths.as_slice())
+            .unwrap_or(&[]);
+        let top = render_martini_top(&request.name, &itp_file, include_paths);
         std::fs::write(&top_path, top)?;
         artifacts.push(CgArtifact {
             path: top_path.to_string_lossy().to_string(),

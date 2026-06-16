@@ -8,6 +8,11 @@ from .h2order import h2order
 from .helix import helix
 from .helixorient import helixorient
 from .hydorder import hydorder
+from .hydrophobic_defect import (
+    hydrophobic_defect_points,
+    hydrophobic_defects,
+    write_hydrophobic_defect_points,
+)
 from .mdmat import mdmat
 from .potential import potential
 from .rama import rama
@@ -40,7 +45,7 @@ from .lipid import (
 )
 from .fluct import atomicfluct, bfactors, rmsf
 from .matrix import correl, covar, dist, mwcovar
-from .structure import get_average_frame, mean_structure, make_structure, strip, radgyr_tensor
+from .structure import get_average_frame, mean_structure, make_structure, strip, radgyr, radgyr_tensor
 from .velocity import get_velocity
 from .wavelet import wavelet
 from .rmsd import distance_rmsd
@@ -58,7 +63,7 @@ from .pca import pca, projection
 from .modes import analyze_modes
 from .vector import vector, vector_mask
 from .rotation import rotation_matrix
-from .geometry import angle, dihedral
+from .geometry import angle, dihedral, distance
 from .neighbors import search_neighbors
 from .symmrmsd import symmrmsd
 from .set_velocity import set_velocity
@@ -84,7 +89,8 @@ from .randomize_ions import randomize_ions
 from .dihedral_tools import rotate_dihedral, set_dihedral
 from .atomiccorr import atomiccorr
 from .fiximagedbonds import fiximagedbonds
-from .surf import surf, molsurf
+from .rdf import rdf, radial
+from .surf import surf, molsurf, sasa
 from .docking import docking, docking_ligplot_svg
 from .pucker import pucker
 from .rotdif import rotdif
@@ -106,6 +112,9 @@ __all__ = [
     "helix",
     "helixorient",
     "hydorder",
+    "hydrophobic_defects",
+    "hydrophobic_defect_points",
+    "write_hydrophobic_defect_points",
     "mdmat",
     "sorient",
     "spol",
@@ -158,6 +167,7 @@ __all__ = [
     "get_average_frame",
     "strip",
     "radgyr_tensor",
+    "radgyr",
     "get_velocity",
     "wavelet",
     "distance_rmsd",
@@ -181,6 +191,7 @@ __all__ = [
     "rotation_matrix",
     "angle",
     "dihedral",
+    "distance",
     "search_neighbors",
     "symmrmsd",
     "set_velocity",
@@ -198,6 +209,8 @@ __all__ = [
     "dihedral_rms",
     "watershell",
     "pairdist",
+    "rdf",
+    "radial",
     "diffusion",
     "tordiff",
     "toroidal_diffusion",
@@ -212,6 +225,7 @@ __all__ = [
     "fiximagedbonds",
     "surf",
     "molsurf",
+    "sasa",
     "docking",
     "docking_ligplot_svg",
     "pucker",

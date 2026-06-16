@@ -68,6 +68,21 @@ def _native_simulate() -> Any:
     return native
 
 
+def _native_forcefield() -> Any:
+    native = _native()
+    required = (
+        "cg_forcefield_inspect",
+        "cg_forcefield_install",
+    )
+    missing = [name for name in required if not hasattr(native, name)]
+    if missing:
+        raise RuntimeError(
+            "warp-md coarse-graining forcefield bindings unavailable in this build. Missing: "
+            + ", ".join(missing)
+        )
+    return native
+
+
 def _render_payload(payload: Dict[str, Any], fmt: str) -> str:
     if fmt == "json":
         return json.dumps(payload, indent=2)
@@ -206,6 +221,25 @@ def cg_simulate_status(run_dir: str) -> Tuple[int, Dict[str, Any]]:
     return int(exit_code), result
 
 
+def cg_forcefield_inspect(kind: str = "martini3") -> Dict[str, Any]:
+    payload = _native_forcefield().cg_forcefield_inspect(kind)
+    if not isinstance(payload, dict):
+        raise RuntimeError("native forcefield manifest must decode to a dict")
+    return payload
+
+
+def cg_forcefield_install(
+    dest: str,
+    *,
+    kind: str = "martini3",
+    overwrite: bool = False,
+) -> Dict[str, Any]:
+    payload = _native_forcefield().cg_forcefield_install(dest, kind, overwrite)
+    if not isinstance(payload, dict):
+        raise RuntimeError("native forcefield install manifest must decode to a dict")
+    return payload
+
+
 __all__ = [
     "CG_AGENT_SCHEMA_VERSION",
     "CG_AGENT_RESULT_VERSION",
@@ -225,4 +259,6 @@ __all__ = [
     "validate_simulate_request_payload",
     "plan_cg_simulate_request",
     "cg_simulate_status",
+    "cg_forcefield_inspect",
+    "cg_forcefield_install",
 ]

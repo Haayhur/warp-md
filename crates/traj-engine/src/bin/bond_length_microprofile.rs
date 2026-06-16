@@ -312,8 +312,15 @@ fn output_checksum(out: &PlanOutput) -> f64 {
         }
         PlanOutput::DensityMap(d) => d.matrix.iter().map(|&x| x as f64).sum(),
         PlanOutput::Grid(g) => g.mean.iter().map(|&x| x as f64).sum(),
+        PlanOutput::HydrophobicDefect(h) => h.mean.iter().map(|&x| x as f64).sum(),
         PlanOutput::LipidMatrix(l) => l.values.iter().map(|&x| x as f64).sum(),
         PlanOutput::LipidFlipFlop(f) => f.events.iter().map(|&x| x as f64).sum(),
+        PlanOutput::PairDistribution(p) => p.probability.iter().map(|&x| x as f64).sum(),
+        PlanOutput::Surface(s) => {
+            s.total.iter().map(|&x| x as f64).sum::<f64>()
+                + s.atom_area.iter().map(|&x| x as f64).sum::<f64>()
+                + s.volume.iter().map(|&x| x as f64).sum::<f64>()
+        }
         PlanOutput::Pca(p) => p.eigenvalues.iter().map(|&x| x as f64).sum(),
         PlanOutput::Clustering(c) => c.labels.iter().map(|&x| x as f64).sum(),
     }
