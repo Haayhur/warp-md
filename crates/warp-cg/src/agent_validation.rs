@@ -8,12 +8,12 @@ use candidate_extraction::{validate_candidate_trajectory_extraction, validate_sa
 use crate::forcefield::validate_request_forcefield;
 
 use super::{
-    validate_positive, BoTrainingSetPolicyRequest, BoTuningRequest, BondedTermSource,
-    BondingPolicyRequest, CgRequest, CgSource, ChemistryHintRequest, ChemistryPolicyRequest,
-    JsonFileEvaluatorRequest, MetricScoringRequest, ObjectiveEvaluatorRequest,
-    ParameterTuningRequest, PolymerPolicyRequest, PrecomputedReferenceRequest,
-    ReferenceMetricSourceRequest, ReferenceTransformRequest, SimulationRunnerRequest, XtbRequest,
-    AGENT_SCHEMA_VERSION,
+    validate_positive, BoTrainingSetPolicyRequest, BoTuningRequest, BondedClassingRequest,
+    BondedTermSource, BondingPolicyRequest, CgRequest, CgSource, ChemistryHintRequest,
+    ChemistryPolicyRequest, JsonFileEvaluatorRequest, MetricScoringRequest,
+    ObjectiveEvaluatorRequest, ParameterTuningRequest, PolymerPolicyRequest,
+    PrecomputedReferenceRequest, ReferenceMetricSourceRequest, ReferenceTransformRequest,
+    SimulationRunnerRequest, XtbRequest, AGENT_SCHEMA_VERSION,
 };
 
 pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
@@ -143,6 +143,9 @@ pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
             .is_some_and(|hint| hint.trim().is_empty())
         {
             return Err(anyhow!("mapping.repeat_unit_hint must not be empty"));
+        }
+        if let Some(classing) = &mapping.bonded_classing {
+            validate_bonded_classing(classing)?;
         }
     }
     if request
@@ -321,6 +324,122 @@ fn validate_precomputed_reference(source: &PrecomputedReferenceRequest) -> Resul
         return Err(anyhow!(
             "reference_source.precomputed.source_kind must not be empty"
         ));
+    }
+    Ok(())
+}
+
+fn validate_bonded_classing(classing: &BondedClassingRequest) -> Result<()> {
+    if !matches!(classing.mode.as_str(), "auto" | "explicit" | "patch") {
+        return Err(anyhow!(
+            "mapping.bonded_classing.mode must be auto, explicit, or patch"
+        ));
+    }
+    if let Some(source) = classing.source.as_deref() {
+        if source.trim().is_empty() {
+            return Err(anyhow!("mapping.bonded_classing.source must not be empty"));
+        }
+    }
+    if let Some(base) = classing.base.as_deref() {
+        if base != "auto" {
+            return Err(anyhow!("mapping.bonded_classing.base must be auto"));
+        }
+    }
+    if let Some(policy) = classing.on_unclassified.as_deref() {
+        if !matches!(policy, "auto" | "singleton" | "drop" | "error") {
+            return Err(anyhow!(
+                "mapping.bonded_classing.on_unclassified must be auto, singleton, drop, or error"
+            ));
+        }
+    }
+    if let Some(policy) = classing.on_duplicate_member.as_deref() {
+        if !matches!(policy, "error" | "allow") {
+            return Err(anyhow!(
+                "mapping.bonded_classing.on_duplicate_member must be error or allow"
+            ));
+        }
+    }
+    for (idx, class) in classing.bonds.iter().enumerate() {
+        validate_class_label(
+            &class.label,
+            &format!("mapping.bonded_classing.bonds[{idx}].label"),
+        )?;
+        if class.members.is_empty() {
+            return Err(anyhow!(
+                "mapping.bonded_classing.bonds[{idx}].members must not be empty"
+            ));
+        }
+    }
+    for (idx, class) in classing.angles.iter().enumerate() {
+        validate_class_label(
+            &class.label,
+            &format!("mapping.bonded_classing.angles[{idx}].label"),
+        )?;
+        if class.members.is_empty() {
+            return Err(anyhow!(
+                "mapping.bonded_classing.angles[{idx}].members must not be empty"
+            ));
+        }
+    }
+    for (idx, class) in classing.dihedrals.iter().enumerate() {
+        validate_class_label(
+            &class.label,
+            &format!("mapping.bonded_classing.dihedrals[{idx}].label"),
+        )?;
+        if class.members.is_empty() {
+            return Err(anyhow!(
+                "mapping.bonded_classing.dihedrals[{idx}].members must not be empty"
+            ));
+        }
+    }
+    for (idx, merge) in classing.merge.iter().enumerate() {
+        validate_class_label(
+            &merge.label,
+            &format!("mapping.bonded_classing.merge[{idx}].label"),
+        )?;
+        if merge.from.is_empty() {
+            return Err(anyhow!(
+                "mapping.bonded_classing.merge[{idx}].from must not be empty"
+            ));
+        }
+    }
+    for (idx, rename) in classing.rename.iter().enumerate() {
+        validate_class_label(
+            &rename.from,
+            &format!("mapping.bonded_classing.rename[{idx}].from"),
+        )?;
+        validate_class_label(
+            &rename.to,
+            &format!("mapping.bonded_classing.rename[{idx}].to"),
+        )?;
+    }
+    for (idx, split) in classing.split.iter().enumerate() {
+        validate_class_label(
+            &split.from,
+            &format!("mapping.bonded_classing.split[{idx}].from"),
+        )?;
+        if split.into.is_empty() {
+            return Err(anyhow!(
+                "mapping.bonded_classing.split[{idx}].into must not be empty"
+            ));
+        }
+        for (target_idx, target) in split.into.iter().enumerate() {
+            validate_class_label(
+                &target.label,
+                &format!("mapping.bonded_classing.split[{idx}].into[{target_idx}].label"),
+            )?;
+            if target.members.is_empty() {
+                return Err(anyhow!(
+                    "mapping.bonded_classing.split[{idx}].into[{target_idx}].members must not be empty"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_class_label(label: &str, field: &str) -> Result<()> {
+    if label.trim().is_empty() {
+        return Err(anyhow!("{field} must not be empty"));
     }
     Ok(())
 }
@@ -692,6 +811,17 @@ fn validate_tuning_request(
         if !evaluator_has_candidate_extraction && !runner_has_candidate_extraction {
             return Err(anyhow!(
                 "{field}.fitting_mode=simulation_fit requires evaluator.json_file.candidate_extraction or runner.candidate_extraction"
+            ));
+        }
+        if tuning.runner.as_ref().is_some_and(|runner| {
+            runner
+                .protocol
+                .as_ref()
+                .and_then(|protocol| protocol.trajectory_format.as_deref())
+                == Some("none")
+        }) {
+            return Err(anyhow!(
+                "{field}.fitting_mode=simulation_fit requires optimization.runner.protocol.trajectory_format to be xtc or dcd"
             ));
         }
     }

@@ -158,7 +158,8 @@ impl ReferenceTargetSet {
         bin_config: ReferenceBinConfig,
         transform: &ReferenceTransformConfig,
     ) -> Self {
-        let values = transform.apply(values);
+        let values = bonded_lengths_angstrom_to_nm(values);
+        let values = transform.apply(&values);
         let constraints = values
             .constraints
             .iter()
@@ -330,6 +331,26 @@ impl ReferenceTargetSet {
             terms,
         }
     }
+}
+
+pub(crate) fn bonded_lengths_angstrom_to_nm(values: &BondedValueSeries) -> BondedValueSeries {
+    BondedValueSeries {
+        constraints: bond_group_lengths_angstrom_to_nm(&values.constraints),
+        bonds: bond_group_lengths_angstrom_to_nm(&values.bonds),
+        angles: values.angles.clone(),
+        dihedrals: values.dihedrals.clone(),
+    }
+}
+
+fn bond_group_lengths_angstrom_to_nm(groups: &[BondValueSeries]) -> Vec<BondValueSeries> {
+    groups
+        .iter()
+        .map(|group| {
+            let mut group = group.clone();
+            group.values = group.values.iter().map(|value| value / 10.0).collect();
+            group
+        })
+        .collect()
 }
 
 fn transform_bond_groups(

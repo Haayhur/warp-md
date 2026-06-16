@@ -594,6 +594,16 @@ fn martini_openmm_runner_fields_are_validated() {
     });
     let (exit_code, result) = validate_request_json(&simulation_with_extraction.to_string());
     assert_eq!(exit_code, 0, "{result}");
+
+    let mut simulation_without_trajectory = simulation_with_extraction;
+    simulation_without_trajectory["optimization"]["runner"]["protocol"]["trajectory_format"] =
+        json!("none");
+    let (exit_code, result) = validate_request_json(&simulation_without_trajectory.to_string());
+    assert_eq!(exit_code, 2);
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("trajectory_format"));
 }
 
 #[test]
@@ -1125,6 +1135,37 @@ fn martini_itp_preserves_grouped_reference_target_nm_lengths() {
 
     assert!(itp.contains("    1     2     1    0.50000"));
     assert!(itp.contains("    3     4     1    0.50000   2500.000"));
+}
+
+#[test]
+fn martini_itp_converts_grouped_trajectory_bond_lengths_to_nm() {
+    let mapping = MappingResult {
+        bead_names: vec!["C1".to_string(), "C1".to_string()],
+        atom_groups: vec![vec![0], vec![1]],
+        connections: vec![(0, 1)],
+        bead_features: vec![Vec::new(), Vec::new()],
+        bead_formal_charges: vec![0, 0],
+    };
+    let values = crate::parameters::BondedValueSeries {
+        bonds: vec![crate::parameters::BondValueSeries {
+            label: Some("bond.middle.M0_AR1__M0_SO2".to_string()),
+            members: vec![[0, 1]],
+            bead_i: 0,
+            bead_j: 1,
+            values: vec![1.22287],
+        }],
+        ..crate::parameters::BondedValueSeries::default()
+    };
+    let targets = crate::reference::ReferenceTargetSet::from_values(
+        &values,
+        crate::reference::ReferenceBinConfig::default(),
+    );
+
+    let itp = render_martini_itp("chain", &mapping, &[], &[], &[], Some(&targets), None);
+
+    assert!(itp.contains("; class: bond.middle.M0_AR1__M0_SO2"));
+    assert!(itp.contains("    1     2     1    0.12229"));
+    assert!(!itp.contains("    1     2     1    1.22287"));
 }
 
 #[test]

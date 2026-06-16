@@ -44,6 +44,7 @@ fn source_request_accepts_gromacs_ndx_mapping() {
             ndx: Some(ndx_path.to_string_lossy().to_string()),
             repeat_unit_hint: None,
             terminal_aware: None,
+            bonded_classing: None,
         }),
         topology: None,
         trajectory_source: None,
@@ -233,6 +234,7 @@ fn trajectory_ndx_reference_runs_without_smiles_or_source() {
             ndx: Some(ndx_path.to_string_lossy().to_string()),
             repeat_unit_hint: None,
             terminal_aware: None,
+            bonded_classing: None,
         }),
         topology: None,
         trajectory_source: Some(TrajectorySource {
@@ -317,7 +319,7 @@ fn trajectory_ndx_reference_runs_without_smiles_or_source() {
         serde_json::from_slice(&std::fs::read(bond_stats_path).unwrap()).unwrap();
     let transformed_mean = bond_stats[0]["mean"].as_f64().unwrap();
     assert!(
-        (transformed_mean - 4.5).abs() < 1.0e-6,
+        (transformed_mean - 0.45).abs() < 1.0e-6,
         "transformed_mean={transformed_mean}"
     );
 }

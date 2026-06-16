@@ -259,6 +259,10 @@ pub fn example_requests() -> Value {
                 "mode": "template",
                 "template": "pes_trimer_mapping_template.json",
                 "template_policy": "assignment_only",
+                "bonded_classing": {
+                    "mode": "auto",
+                    "source": "template_role_order"
+                },
                 "expected_beads_per_role": {
                     "head": 8,
                     "middle": 8,
@@ -529,6 +533,16 @@ pub fn capabilities() -> Value {
                 "field": "mapping.expected_beads_per_role",
                 "roles": ["head", "middle", "tail", "standalone"],
                 "mismatch_policy": "mapping.on_bead_count_mismatch supports error or warn and emits warp_cg.bead_count_mismatch with residue role/count details"
+            },
+            "bonded_classing": {
+                "field": "mapping.bonded_classing",
+                "default": {"mode": "auto", "source": "template_role_order"},
+                "modes": {
+                    "auto": "derive grouped BondedTermSet classes from head/middle/tail role, template bead names, relative residue offset, and canonical forward/reverse ordering",
+                    "explicit": "use user/agent supplied zero-based CG bead member classes and apply on_unclassified auto/singleton/drop/error",
+                    "patch": "start from auto classes, then merge, split, or rename selected class labels"
+                },
+                "validation": ["member index range", "term tuple length", "duplicate member policy", "class label existence in patch mode", "non-empty classes", "explicit members present in generated CG bonded graph", "on_unclassified=error coverage"]
             },
             "supported_handoff_schemas": ["warp-build.manifest.v1", "warp-pack manifest", "coordinates_topology"],
             "terminal_aware_polymers": true,

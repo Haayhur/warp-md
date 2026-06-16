@@ -9,6 +9,7 @@ use crate::trajectory::{
     map_native_trajectory, map_native_trajectory_with_terms, BeadMapping, NativeTrajectoryOptions,
 };
 
+use super::target::bonded_lengths_angstrom_to_nm;
 use super::{
     ReferenceArtifact, ReferenceBinConfig, ReferenceMetadata, ReferenceTargetSet,
     ReferenceTransformConfig,
@@ -80,12 +81,22 @@ impl TargetExtractor for TrajectoryTargetExtractor {
                 &self.options,
             )?
         };
-        let bonded_values = request
-            .transform
-            .map(|transform| transform.apply(&report.bonded_values))
-            .unwrap_or_else(|| report.bonded_values.clone());
-        let target_set =
-            ReferenceTargetSet::from_values(&bonded_values, ReferenceBinConfig::default());
+        let default_transform;
+        let transform = if let Some(transform) = request.transform {
+            transform
+        } else {
+            default_transform = ReferenceTransformConfig::default();
+            &default_transform
+        };
+        let target_set = ReferenceTargetSet::from_values_with_transform(
+            &report.bonded_values,
+            ReferenceBinConfig::default(),
+            transform,
+        );
+        let transformed_bonded_values = request.transform.map(|transform| {
+            let nm_values = bonded_lengths_angstrom_to_nm(&report.bonded_values);
+            transform.apply(&nm_values)
+        });
 
         let mut artifacts = Vec::new();
         if let Some(path) = output_path.as_ref() {
@@ -124,7 +135,12 @@ impl TargetExtractor for TrajectoryTargetExtractor {
         Ok(TargetExtraction {
             bonded_stats: BondedStats {
                 bonds: if request.transform.is_some() {
-                    bond_stats_from_series(&bonded_values.bonds)
+                    bond_stats_from_series(
+                        &transformed_bonded_values
+                            .as_ref()
+                            .expect("transformed values present when transform is configured")
+                            .bonds,
+                    )
                 } else {
                     report.bond_stats
                 },

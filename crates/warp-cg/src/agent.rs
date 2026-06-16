@@ -9,6 +9,8 @@ use std::time::Instant;
 mod agent_artifacts;
 #[path = "agent_bo.rs"]
 mod agent_bo;
+#[path = "agent_bonded_classing.rs"]
+mod agent_bonded_classing;
 #[path = "agent_contract.rs"]
 mod agent_contract;
 #[path = "agent_defaults.rs"]
@@ -194,6 +196,85 @@ pub struct CgMappingRequest {
     pub repeat_unit_hint: Option<String>,
     #[serde(default)]
     pub terminal_aware: Option<bool>,
+    #[serde(default)]
+    pub bonded_classing: Option<BondedClassingRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BondedClassingRequest {
+    #[serde(default = "default_bonded_classing_mode")]
+    #[schemars(default = "default_bonded_classing_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub bonds: Vec<ExplicitBondClass>,
+    #[serde(default)]
+    pub angles: Vec<ExplicitAngleClass>,
+    #[serde(default)]
+    pub dihedrals: Vec<ExplicitDihedralClass>,
+    #[serde(default)]
+    pub on_unclassified: Option<String>,
+    #[serde(default)]
+    pub on_duplicate_member: Option<String>,
+    #[serde(default)]
+    pub merge: Vec<BondedClassMerge>,
+    #[serde(default)]
+    pub rename: Vec<BondedClassRename>,
+    #[serde(default)]
+    pub split: Vec<BondedClassSplit>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExplicitBondClass {
+    pub label: String,
+    pub members: Vec<[usize; 2]>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExplicitAngleClass {
+    pub label: String,
+    pub members: Vec<[usize; 3]>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExplicitDihedralClass {
+    pub label: String,
+    pub members: Vec<[usize; 4]>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BondedClassMerge {
+    pub label: String,
+    pub from: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BondedClassRename {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BondedClassSplit {
+    pub from: String,
+    pub into: Vec<BondedClassSplitTarget>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BondedClassSplitTarget {
+    pub label: String,
+    pub members: Vec<Vec<usize>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

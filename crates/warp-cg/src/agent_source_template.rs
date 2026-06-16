@@ -8,6 +8,7 @@ use warp_structure::AtomRecord;
 
 use crate::mapping::MappingResult;
 
+use super::agent_bonded_classing::resolve_bonded_classing;
 use super::agent_source_bonded_terms::template_bonded_term_set;
 use super::agent_source_mapping::{
     append_bead_count_mismatch_warnings, append_chemistry_hint_warnings, apply_source_selection,
@@ -289,22 +290,30 @@ pub(super) fn build_template_source_mapping(
     } else {
         geometry_connections.clone()
     };
-    let bonded_terms =
+    let auto_bonded_terms =
         template_bonded_term_set(bead_names.len(), &effective_connections, &bead_contexts);
-    let bonded_class_summary = json!({
+    let bonded_classing_request = request
+        .mapping
+        .as_ref()
+        .and_then(|mapping| mapping.bonded_classing.as_ref());
+    let bonded_classing =
+        resolve_bonded_classing(bonded_classing_request, auto_bonded_terms, bead_names.len())?;
+    let bonded_terms = bonded_classing.terms;
+    let mut bonded_class_summary = bonded_classing.summary;
+    if let Some(summary) = bonded_class_summary.as_object_mut() {
+        summary.insert(
+            "connection_source".to_string(),
+            Value::String(connection_source.to_string()),
+        );
+    }
+    let legacy_bonded_class_summary = json!({
         "enabled": true,
-        "class_source": "template",
+        "class_source": bonded_class_summary["class_source"].clone(),
         "connection_source": connection_source,
-        "raw_instance_counts": {
-            "bonds": bonded_terms.bonds.iter().map(|group| group.members.len()).sum::<usize>(),
-            "angles": bonded_terms.angles.iter().map(|group| group.members.len()).sum::<usize>(),
-            "dihedrals": bonded_terms.dihedrals.iter().map(|group| group.members.len()).sum::<usize>()
-        },
-        "class_counts": {
-            "bonds": bonded_terms.bonds.len(),
-            "angles": bonded_terms.angles.len(),
-            "dihedrals": bonded_terms.dihedrals.len()
-        }
+        "raw_instance_counts": bonded_class_summary["raw_instance_counts"].clone(),
+        "class_counts": bonded_class_summary["class_counts"].clone(),
+        "unclassified_counts": bonded_class_summary["unclassified_counts"].clone(),
+        "mode": bonded_class_summary["mode"].clone()
     });
     if policy == "assignment_only" {
         warnings.push(json!({
@@ -372,7 +381,8 @@ pub(super) fn build_template_source_mapping(
             "bond_count": geometry_connections.len(),
             "source_bond_source": bond_source,
             "template_connection_source": connection_source,
-            "bonded_parameter_classing": bonded_class_summary,
+            "bonded_classing_summary": bonded_class_summary,
+            "bonded_parameter_classing": legacy_bonded_class_summary,
             "warning_count": warning_count,
             "chemistry_hint_count": request.chemistry_hints.len(),
             "residue_bead_counts": residue_to_bead_indices.iter().enumerate().map(|(idx, beads)| {

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "warp-md"
-version = "0.4.24"
+version = "0.4.25"
 description = "warp-md Python bindings"
 requires-python = ">=3.9"
 dependencies = [

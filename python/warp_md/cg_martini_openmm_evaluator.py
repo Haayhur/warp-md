@@ -130,7 +130,8 @@ def _apply_parameter_replacements(
     parameters: Dict[str, float],
 ) -> Dict[str, Any]:
     replacements = spec.get("replacements") or []
-    applied: Dict[str, Any] = {"count": 0, "missing": []}
+    applied: Dict[str, Any] = {"count": 0, "missing": [], "parameters": []}
+    applied_parameters = set()
     if replacements:
         for replacement in replacements:
             if not isinstance(replacement, dict):
@@ -154,15 +155,30 @@ def _apply_parameter_replacements(
             rendered = _format_parameter(parameters[name], replacement.get("format"))
             if _apply_replacement(target, placeholder, rendered):
                 applied["count"] += 1
+                applied_parameters.add(name)
             else:
                 applied["missing"].append({"parameter": name, "path": rel_path, "reason": "placeholder not found"})
+        applied["parameters"] = sorted(applied_parameters)
         return applied
 
     for path in _iter_template_text_files(eval_dir):
         for name, value in parameters.items():
             if _apply_replacement(path, f"{{{{{name}}}}}", _format_parameter(value, None)):
                 applied["count"] += 1
+                applied_parameters.add(name)
+    applied["parameters"] = sorted(applied_parameters)
     return applied
+
+
+def _validate_required_replacements(spec: Dict[str, Any], parameters: Dict[str, float], applied: Dict[str, Any]) -> None:
+    if not spec.get("require_parameter_replacements"):
+        return
+    missing = sorted(set(parameters) - set(applied.get("parameters") or []))
+    if missing:
+        raise RuntimeError(
+            "simulation_fit requires every candidate parameter to be applied to the OpenMM template; "
+            f"missing replacements for: {', '.join(missing)}"
+        )
 
 
 def _relative_to_eval(path: Path, eval_dir: Path) -> str:
@@ -181,6 +197,7 @@ def evaluate(spec_path: Path, candidate_path: Path, result_path: Path) -> int:
         gro, top = _materialize_inputs(spec, spec_path, eval_dir)
         _materialize_forcefield(spec, eval_dir)
         applied = _apply_parameter_replacements(spec, spec_path, eval_dir, parameters)
+        _validate_required_replacements(spec, parameters, applied)
         (eval_dir / "applied_parameters.json").write_text(
             json.dumps({"parameters": parameters, "replacements": applied}, indent=2) + "\n",
             encoding="utf-8",
@@ -190,6 +207,8 @@ def evaluate(spec_path: Path, candidate_path: Path, result_path: Path) -> int:
         metrics = {
             "runner.parameter_count": float(len(parameters)),
             "runner.replacements": float(applied["count"]),
+            "runner.simulation_fit": 1.0 if spec.get("simulation_fit") else 0.0,
+            "runner.dry_run": 1.0 if run_result.get("dry_run") else 0.0,
         }
         payload: Dict[str, Any] = {
             "schema_version": OBJECTIVE_RESULT_SCHEMA,

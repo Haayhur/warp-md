@@ -69,6 +69,17 @@ pub(super) fn run_optimization(
     if report.status == "error" {
         return Err(anyhow!("{}", report.message));
     }
+    if tuning.fitting_mode.as_deref() == Some("simulation_fit") {
+        report.message = if report.message.is_empty() {
+            "Optimized bonded parameters with simulation-backed candidate trajectory scoring."
+                .to_string()
+        } else {
+            format!(
+                "{} Simulation-backed scoring required a runner/evaluator candidate_trajectory for every completed evaluation.",
+                report.message
+            )
+        };
+    }
     if let Some(warning) = sample_warning {
         if report.message.is_empty() {
             report.message = warning;
@@ -367,7 +378,12 @@ fn runner_json_file_evaluator(
     let spec_path = evaluator_work_dir.join("martini_openmm_runner_spec.json");
     std::fs::write(
         &spec_path,
-        serde_json::to_vec_pretty(&runner_spec_json(runner, out_dir, forcefield)?)?,
+        serde_json::to_vec_pretty(&runner_spec_json(
+            runner,
+            out_dir,
+            forcefield,
+            simulation_fit,
+        )?)?,
     )?;
     Ok(JsonFileObjectiveEvaluator::new(JsonFileEvaluatorConfig {
         work_dir: evaluator_work_dir,
@@ -402,6 +418,7 @@ fn runner_spec_json(
     runner: &SimulationRunnerRequest,
     out_dir: &Path,
     forcefield: Option<&ForcefieldRequest>,
+    simulation_fit: bool,
 ) -> Result<Value> {
     let mut value = serde_json::to_value(runner)?;
     let Value::Object(map) = &mut value else {
@@ -418,6 +435,15 @@ fn runner_spec_json(
     map.insert(
         "out_dir".to_string(),
         json!(out_dir.to_string_lossy().to_string()),
+    );
+    map.insert("simulation_fit".to_string(), json!(simulation_fit));
+    map.insert(
+        "require_candidate_trajectory".to_string(),
+        json!(simulation_fit),
+    );
+    map.insert(
+        "require_parameter_replacements".to_string(),
+        json!(simulation_fit),
     );
     if let Some(forcefield) = forcefield {
         let materialized = materialize_request_forcefield(forcefield, out_dir)?;

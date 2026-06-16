@@ -60,6 +60,10 @@ pub(super) fn default_mapping_mode() -> String {
     "auto".to_string()
 }
 
+pub(super) fn default_bonded_classing_mode() -> String {
+    "auto".to_string()
+}
+
 pub(super) fn default_tuning_enabled() -> bool {
     false
 }

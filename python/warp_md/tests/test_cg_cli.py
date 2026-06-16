@@ -167,8 +167,68 @@ def test_martini_openmm_evaluator_applies_template_replacements(tmp_path: Path) 
     payload = json.loads(result.read_text(encoding="utf-8"))
     assert payload["status"] == "completed"
     assert payload["metrics"]["runner.replacements"] == 1.0
+    assert payload["metrics"]["runner.dry_run"] == 1.0
+    assert payload["metrics"]["runner.simulation_fit"] == 0.0
     assert "candidate_trajectory" in payload
     assert "0.420" in (evaluation_dir / "molecule.itp").read_text(encoding="utf-8")
+    applied = json.loads((evaluation_dir / "applied_parameters.json").read_text(encoding="utf-8"))
+    assert applied["replacements"]["parameters"] == ["bond.group_1_length_nm"]
+
+
+def test_martini_openmm_evaluator_requires_replacements_for_simulation_fit(tmp_path: Path) -> None:
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "system.gro").write_text("dummy gro\n", encoding="utf-8")
+    (template / "system.top").write_text('#include "molecule.itp"\n', encoding="utf-8")
+    (template / "molecule.itp").write_text("bond {{other_parameter}}\n", encoding="utf-8")
+
+    spec = tmp_path / "spec.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "schema_version": "warp-cg.martini-openmm-runner.v1",
+                "base_dir": str(tmp_path),
+                "kind": "martini_openmm",
+                "simulation_fit": True,
+                "require_parameter_replacements": True,
+                "template_dir": str(template),
+                "gro": "system.gro",
+                "top": "system.top",
+                "protocol": {"dry_run": True, "trajectory_format": "xtc"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    evaluation_dir = tmp_path / "evaluation_000000"
+    evaluation_dir.mkdir()
+    candidate = evaluation_dir / "candidate.json"
+    candidate.write_text(
+        json.dumps(
+            {
+                "schema_version": "warp-cg.objective-request.v1",
+                "candidate": {
+                    "named_parameters": [
+                        {
+                            "name": "bond.group_1_length_nm",
+                            "value": 0.42,
+                            "normalized_value": 0.5,
+                            "min": 0.1,
+                            "max": 1.0,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = evaluation_dir / "result.json"
+
+    exit_code = cg_martini_openmm_evaluator.evaluate(spec, candidate, result)
+
+    assert exit_code == 0
+    payload = json.loads(result.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed_simulation"
+    assert "missing replacements" in payload["reason"]
 
 
 def test_cg_contract_native_run_writes_mapping_and_itp(tmp_path: Path) -> None:

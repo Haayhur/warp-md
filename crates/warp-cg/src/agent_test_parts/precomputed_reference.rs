@@ -282,7 +282,7 @@ fn precomputed_reference_targets_can_use_json_file_runner_evaluator() {
             enabled: true,
             source: "external_trajectory".to_string(),
             method: "pso".to_string(),
-            fitting_mode: None,
+            fitting_mode: Some("external_evaluator".to_string()),
             allow_single_frame: None,
             min_samples_per_term: None,
             on_insufficient_samples: None,
@@ -435,7 +435,7 @@ fn json_file_runner_can_return_candidate_trajectory_for_agent_extraction() {
             enabled: true,
             source: "external_trajectory".to_string(),
             method: "pso".to_string(),
-            fitting_mode: None,
+            fitting_mode: Some("simulation_fit".to_string()),
             allow_single_frame: None,
             min_samples_per_term: None,
             on_insufficient_samples: None,
@@ -501,6 +501,7 @@ fn json_file_runner_can_return_candidate_trajectory_for_agent_extraction() {
     let report = result.optimization.unwrap().report.unwrap();
 
     assert_eq!(report.objective, "candidate_trajectory_targets");
+    assert!(report.message.contains("Simulation-backed scoring"));
     assert_eq!(report.evaluations.len(), 2);
     assert!(report.evaluations.iter().all(|record| {
         record.metrics["runner.frames"] == 2.0

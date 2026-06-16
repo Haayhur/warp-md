@@ -154,6 +154,7 @@ fn source_request(
             ndx: None,
             repeat_unit_hint: Some("PAA".to_string()),
             terminal_aware: Some(true),
+            bonded_classing: None,
         }),
         topology: None,
         trajectory_source: None,

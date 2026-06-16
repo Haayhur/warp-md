@@ -66,8 +66,8 @@ fn trajectory_provider_maps_reference_and_records_artifact() {
     assert_eq!(target_set.bonds.len(), 1);
     assert_eq!(target_set.bonds[0].samples, 2);
     assert_eq!(target_set.bonds[0].units, "nm");
-    assert!((target_set.bonds[0].mean - 1.5).abs() < 1.0e-6);
-    assert_eq!(target_set.bonds[0].domain, [1.0, 2.0]);
+    assert!((target_set.bonds[0].mean - 0.15).abs() < 1.0e-6);
+    assert_eq!(target_set.bonds[0].domain, [0.1, 0.2]);
     assert!((target_set.bonds[0].probabilities.iter().sum::<f64>() - 1.0).abs() < 1.0e-12);
     assert_eq!(data.artifacts.len(), 2);
     assert_eq!(data.artifacts[0].kind, "coarse_grained_trajectory");
@@ -563,7 +563,7 @@ fn trajectory_provider_uses_explicit_grouped_constraints() {
         vec![vec![0, 1], vec![1, 2]]
     );
     assert_eq!(target_set.constraints[0].units, "nm");
-    assert!((target_set.constraints[0].mean - 1.25).abs() < 1.0e-6);
+    assert!((target_set.constraints[0].mean - 0.125).abs() < 1.0e-6);
     assert_eq!(target_set.constraints[0].samples, 4);
     assert!(target_set.bonds.is_empty());
 }
@@ -732,7 +732,7 @@ fn trajectory_provider_preserves_gromacs_groups_as_targets() {
     assert_eq!(target_set.bonds[0].label.as_deref(), Some("bond group 1"));
     assert_eq!(target_set.bonds[0].members, vec![vec![0, 1], vec![2, 3]]);
     assert_eq!(target_set.bonds[0].units, "nm");
-    assert!((target_set.bonds[0].mean - 1.1).abs() < 1.0e-6);
+    assert!((target_set.bonds[0].mean - 0.11).abs() < 1.0e-6);
     assert_eq!(target_set.bonds[0].samples, 4);
     assert_eq!(target_set.bonds[1].members, vec![vec![3, 4]]);
     assert_eq!(target_set.bonds[1].units, "nm");
