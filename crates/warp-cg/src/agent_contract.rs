@@ -25,7 +25,10 @@ pub fn example_request() -> Value {
             "write_topology_itp": true,
             "write_topology_top": true,
             "write_cg_pdb": true,
-            "write_bonded_parameter_map": true
+            "write_bonded_parameter_map": true,
+            "exclusions": {"mode": "explicit_all_intra"},
+            "dihedrals": {"enabled": false},
+            "coordinates": {"unwrap_polymer": true}
         },
         "optimization": {
             "enabled": false,
@@ -560,8 +563,15 @@ pub fn capabilities() -> Value {
                 "residue_to_bead_map",
                 "bead_connectivity_across_residues",
                 "cg_topology_for_chain",
-                "aa_to_cg_mapping_provenance"
-            ]
+                "aa_to_cg_mapping_provenance",
+                "simulation_readiness_json"
+            ],
+            "simulation_readiness": {
+                "default_exclusions_mode": "explicit_all_intra",
+                "dihedrals_default_enabled": false,
+                "coordinate_unwrap_default": true,
+                "reports": ["explicit exclusion policy", "dihedral emission policy", "max bonded distance before/after CG PDB unwrap"]
+            }
         },
         "validation_checks": [
             "source files exist",
@@ -586,6 +596,7 @@ pub fn capabilities() -> Value {
             "bonded_parameter_map_json",
             "bonded_optimization_report",
             "aa_to_cg_mapping_provenance",
+            "simulation_readiness_json",
             "martini_topology_itp",
             "martini_topology_top"
         ],

@@ -10,7 +10,8 @@ use crate::forcefield::validate_request_forcefield;
 use super::{
     validate_positive, BoTrainingSetPolicyRequest, BoTuningRequest, BondedClassingRequest,
     BondedTermSource, BondingPolicyRequest, CgRequest, CgSource, ChemistryHintRequest,
-    ChemistryPolicyRequest, JsonFileEvaluatorRequest, MetricScoringRequest,
+    ChemistryPolicyRequest, CoordinateEmissionRequest, DihedralEmissionRequest,
+    ExclusionEmissionRequest, JsonFileEvaluatorRequest, MetricScoringRequest,
     ObjectiveEvaluatorRequest, ParameterTuningRequest, PolymerPolicyRequest,
     PrecomputedReferenceRequest, ReferenceMetricSourceRequest, ReferenceTransformRequest,
     SimulationRunnerRequest, XtbRequest, AGENT_SCHEMA_VERSION,
@@ -179,6 +180,15 @@ pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
             "output.write_topology_top requires output.write_topology_itp because the .top includes the generated .itp"
         ));
     }
+    if let Some(exclusions) = &request.output.exclusions {
+        validate_exclusion_emission(exclusions)?;
+    }
+    if let Some(dihedrals) = &request.output.dihedrals {
+        validate_dihedral_emission(dihedrals)?;
+    }
+    if let Some(coordinates) = &request.output.coordinates {
+        validate_coordinate_emission(coordinates)?;
+    }
     if let Some(forcefield) = &request.forcefield {
         validate_request_forcefield(forcefield)?;
     }
@@ -291,6 +301,31 @@ pub(super) fn validate_request(request: CgRequest) -> Result<CgRequest> {
         validate_tuning_request(tuning, "optimization", &request)?;
     }
     Ok(request)
+}
+
+fn validate_exclusion_emission(exclusions: &ExclusionEmissionRequest) -> Result<()> {
+    if !matches!(
+        exclusions.mode.as_str(),
+        "none" | "nrexcl" | "explicit_nhop" | "explicit_all_intra"
+    ) {
+        return Err(anyhow!(
+            "output.exclusions.mode must be none, nrexcl, explicit_nhop, or explicit_all_intra"
+        ));
+    }
+    if exclusions.n_hops.is_some_and(|value| value == 0) {
+        return Err(anyhow!(
+            "output.exclusions.n_hops must be greater than zero"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_dihedral_emission(_dihedrals: &DihedralEmissionRequest) -> Result<()> {
+    Ok(())
+}
+
+fn validate_coordinate_emission(_coordinates: &CoordinateEmissionRequest) -> Result<()> {
+    Ok(())
 }
 
 fn validate_bonded_term_source(source: &BondedTermSource) -> Result<()> {

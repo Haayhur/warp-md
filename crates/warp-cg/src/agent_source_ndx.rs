@@ -167,6 +167,7 @@ pub(super) fn build_ndx_source_mapping(
                 })
             }).collect::<Vec<_>>()
         }),
+        box_vectors: molecule.box_vectors,
     })
 }
 

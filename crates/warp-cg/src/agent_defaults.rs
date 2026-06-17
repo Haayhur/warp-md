@@ -28,6 +28,18 @@ pub(super) fn default_write_bonded_parameter_map() -> bool {
     true
 }
 
+pub(super) fn default_exclusions_mode() -> String {
+    "explicit_all_intra".to_string()
+}
+
+pub(super) fn default_dihedrals_enabled() -> bool {
+    false
+}
+
+pub(super) fn default_unwrap_polymer_coordinates() -> bool {
+    true
+}
+
 pub(super) fn default_external_trajectory_kind() -> String {
     "external".to_string()
 }
@@ -98,5 +110,8 @@ pub(super) fn default_output() -> CgOutputRequest {
         write_cg_pdb: true,
         cg_pdb: None,
         write_bonded_parameter_map: true,
+        exclusions: None,
+        dihedrals: None,
+        coordinates: None,
     }
 }

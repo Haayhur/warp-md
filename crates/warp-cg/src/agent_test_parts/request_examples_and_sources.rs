@@ -39,6 +39,9 @@ fn benzene_mapping_has_three_beads() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
     let result = run_request(&request, Instant::now()).unwrap();
@@ -101,6 +104,9 @@ fn downstream_setup_artifacts_include_pdb_itp_top_and_parameter_map() {
             write_cg_pdb: true,
             cg_pdb: None,
             write_bonded_parameter_map: true,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -222,6 +228,9 @@ fn external_trajectory_reference_uses_gromacs_bonded_terms() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -341,6 +350,9 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
             write_cg_pdb: true,
             cg_pdb: None,
             write_bonded_parameter_map: true,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -502,12 +514,62 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
             write_cg_pdb: true,
             cg_pdb: None,
             write_bonded_parameter_map: true,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
     let replay = run_request(&replay_request, Instant::now()).unwrap();
     assert_eq!(replay.summary.mapping_mode, "template");
     assert_eq!(replay.bead_count, result.bead_count);
     assert_eq!(replay.connections, result.connections);
+}
+
+#[test]
+fn source_cg_pdb_unwraps_bonded_polymer_across_pbc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("wrapped_polymer.pdb");
+    std::fs::write(
+        &source_path,
+        [
+            "CRYST1   10.000   10.000   10.000  90.00  90.00  90.00 P 1           1",
+            "ATOM      1 C1   STA A   1       9.000   0.000   0.000  1.00  0.00           C",
+            "ATOM      2 C2   STA A   1       9.200   0.000   0.000  1.00  0.00           C",
+            "ATOM      3 C1   MID A   2       0.300   0.000   0.000  1.00  0.00           C",
+            "ATOM      4 C2   MID A   2       0.500   0.000   0.000  1.00  0.00           C",
+            "ATOM      5 C1   END A   3       1.500   0.000   0.000  1.00  0.00           C",
+            "ATOM      6 C2   END A   3       1.700   0.000   0.000  1.00  0.00           C",
+            "CONECT    1    2",
+            "CONECT    2    3",
+            "CONECT    3    4",
+            "CONECT    4    5",
+            "CONECT    5    6",
+            "END",
+            "",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    let request = source_request("wrapped_polymer", &source_path, tmp.path(), "auto", None);
+    run_request(&request, Instant::now()).unwrap();
+
+    let readiness: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(tmp.path().join("wrapped_polymer_simulation_readiness.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(readiness["coordinate_output"]["unwrap_applied"], true);
+    assert!(
+        readiness["coordinate_output"]["max_bonded_distance_before_angstrom"]
+            .as_f64()
+            .unwrap()
+            > 8.0
+    );
+    assert!(
+        readiness["coordinate_output"]["max_bonded_distance_after_angstrom"]
+            .as_f64()
+            .unwrap()
+            < 2.0
+    );
 }
 
 #[test]
@@ -942,6 +1004,9 @@ fn structure_source_infers_bonds_and_reports_mapping_summary() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -1054,6 +1119,9 @@ fn smiles_hint_reports_aromatic_geometry_conflict() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -1215,6 +1283,9 @@ fn polymer_manifest_source_run_resolves_relative_artifacts() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 

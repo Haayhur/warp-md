@@ -60,6 +60,9 @@ fn source_request_accepts_gromacs_ndx_mapping() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -287,6 +290,9 @@ fn trajectory_ndx_reference_runs_without_smiles_or_source() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 

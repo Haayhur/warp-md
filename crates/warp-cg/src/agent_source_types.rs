@@ -1,6 +1,7 @@
 use crate::bonded_terms::BondedTermSet;
 use crate::mapping::MappingResult;
 use serde_json::Value;
+use warp_structure::model::BoxVectors;
 
 #[derive(Clone, Debug)]
 pub(super) struct SourceHandoff {
@@ -44,6 +45,7 @@ pub(super) struct SourceMappingResult {
     pub(super) provenance: Value,
     pub(super) warnings: Vec<Value>,
     pub(super) mapping_summary: Value,
+    pub(super) box_vectors: Option<BoxVectors>,
 }
 
 #[derive(Clone, Debug)]

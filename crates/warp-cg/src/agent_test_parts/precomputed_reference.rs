@@ -81,6 +81,9 @@ fn precomputed_reference_targets_run_without_trajectory_source() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -186,6 +189,9 @@ fn optimization_rejects_single_sample_reference_when_strict() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -320,6 +326,9 @@ fn precomputed_reference_targets_can_use_json_file_runner_evaluator() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -494,6 +503,9 @@ fn json_file_runner_can_return_candidate_trajectory_for_agent_extraction() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 
@@ -689,6 +701,9 @@ fn candidate_trajectory_extraction_uses_gromacs_bonded_term_groups() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 

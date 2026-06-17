@@ -115,6 +115,9 @@ fn reference_target_optimization_honors_requested_target_terms() {
             write_cg_pdb: false,
             cg_pdb: None,
             write_bonded_parameter_map: false,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     };
 

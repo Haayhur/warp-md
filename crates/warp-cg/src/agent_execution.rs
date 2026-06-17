@@ -5,6 +5,9 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use serde_json::json;
+use traj_core::{minimum_image_vector, Box3};
+use warp_structure::model::BoxVectors;
 
 use crate::bonded_terms::BondedTermSet;
 use crate::mapping::{map_molecule_with_options, MappingOptions};
@@ -21,9 +24,9 @@ use super::agent_artifacts::{write_bonded_stats, write_topology_top};
 use super::agent_reference_only::{is_reference_only_request, run_reference_only_request};
 use super::agent_reference_result::reference_result_from_data;
 use super::agent_render::{
-    beads, bonded_parameter_map_json, mapping_json, render_cg_pdb, render_martini_itp,
-    render_source_cg_pdb, render_source_martini_itp, source_bonded_parameter_map_json,
-    source_mapping_json,
+    beads, bonded_parameter_map_json, mapping_json, render_cg_pdb, render_martini_itp_with_policy,
+    render_source_cg_pdb, render_source_martini_itp_with_policy, source_bonded_parameter_map_json,
+    source_mapping_json, TopologyRenderPolicy,
 };
 use super::agent_runtime::{
     native_options, normalized_trajectory_source, resolve_output_path, run_optimization,
@@ -218,7 +221,8 @@ fn write_small_molecule_artifacts(
     )?;
     if request.output.write_topology_itp {
         let itp_path = out_dir.join(format!("{}_martini.itp", request.name));
-        let itp = render_martini_itp(
+        let policy = TopologyRenderPolicy::from_output(&request.output);
+        let itp = render_martini_itp_with_policy(
             &request.name,
             mapping,
             bond_stats,
@@ -226,6 +230,7 @@ fn write_small_molecule_artifacts(
             dihedral_stats,
             reference_targets,
             optimization_report,
+            &policy,
         );
         std::fs::write(&itp_path, itp)?;
         artifacts.push(CgArtifact {
@@ -646,11 +651,27 @@ fn write_source_artifacts(
             .clone()
             .unwrap_or_else(|| format!("{}_cg.pdb", request.name));
         let pdb_path = resolve_output_path(out_dir, &pdb_name);
-        let pdb = render_source_cg_pdb(source_mapping, first_cg_coords);
+        let (coords, coordinate_report) =
+            prepare_source_pdb_coords(request, source_mapping, first_cg_coords)?;
+        let pdb = render_source_cg_pdb(source_mapping, coords.as_deref());
         std::fs::write(&pdb_path, pdb)?;
         artifacts.push(CgArtifact {
             path: pdb_path.to_string_lossy().to_string(),
             kind: "coarse_grained_pdb".to_string(),
+        });
+        let readiness_path = out_dir.join(format!("{}_simulation_readiness.json", request.name));
+        std::fs::write(
+            &readiness_path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": "warp-cg.simulation-readiness.v1",
+                "name": request.name,
+                "coordinate_output": coordinate_report,
+                "topology_output": topology_readiness_report(request, source_mapping.mapping.bead_names.len(), source_mapping.mapping.connections.len()),
+            }))?,
+        )?;
+        artifacts.push(CgArtifact {
+            path: readiness_path.to_string_lossy().to_string(),
+            kind: "simulation_readiness_json".to_string(),
         });
     }
     write_bonded_stats(
@@ -663,7 +684,8 @@ fn write_source_artifacts(
     )?;
     if request.output.write_topology_itp {
         let itp_path = out_dir.join(format!("{}_martini.itp", request.name));
-        let itp = render_source_martini_itp(
+        let policy = TopologyRenderPolicy::from_output(&request.output);
+        let itp = render_source_martini_itp_with_policy(
             &request.name,
             source_mapping,
             bond_stats,
@@ -671,6 +693,7 @@ fn write_source_artifacts(
             dihedral_stats,
             reference_targets,
             optimization_report,
+            &policy,
         );
         std::fs::write(&itp_path, itp)?;
         artifacts.push(CgArtifact {
@@ -696,4 +719,161 @@ fn write_source_artifacts(
         }
     }
     write_topology_top(request, out_dir, artifacts)
+}
+
+fn prepare_source_pdb_coords(
+    request: &CgRequest,
+    source_mapping: &SourceMappingResult,
+    first_cg_coords: Option<&[[f32; 3]]>,
+) -> Result<(Option<Vec<[f32; 3]>>, serde_json::Value)> {
+    let mut coords = first_cg_coords
+        .map(|coords| coords.to_vec())
+        .unwrap_or_else(|| {
+            source_mapping
+                .beads
+                .iter()
+                .map(|bead| bead.coord)
+                .collect::<Vec<_>>()
+        });
+    if coords.is_empty() {
+        return Ok((
+            None,
+            json!({
+                "unwrap_applied": false,
+                "reason": "no_coordinates",
+                "max_bonded_distance_before_angstrom": null,
+                "max_bonded_distance_after_angstrom": null
+            }),
+        ));
+    }
+    let unwrap_requested = request
+        .output
+        .coordinates
+        .as_ref()
+        .map(|policy| policy.unwrap_polymer)
+        .unwrap_or(true);
+    let before = max_bonded_distance(&coords, &source_mapping.mapping.connections);
+    let mut report = json!({
+        "unwrap_requested": unwrap_requested,
+        "unwrap_applied": false,
+        "box_vectors_available": source_mapping.box_vectors.is_some(),
+        "max_bonded_distance_before_angstrom": before,
+        "max_bonded_distance_after_angstrom": before
+    });
+    if unwrap_requested {
+        if let Some(box_vectors) = source_mapping.box_vectors {
+            coords =
+                unwrap_by_bonded_graph(&coords, &source_mapping.mapping.connections, box_vectors)?;
+            let after = max_bonded_distance(&coords, &source_mapping.mapping.connections);
+            report = json!({
+                "unwrap_requested": true,
+                "unwrap_applied": true,
+                "box_vectors_available": true,
+                "max_bonded_distance_before_angstrom": before,
+                "max_bonded_distance_after_angstrom": after
+            });
+        }
+    }
+    Ok((Some(coords), report))
+}
+
+fn topology_readiness_report(
+    request: &CgRequest,
+    bead_count: usize,
+    bond_count: usize,
+) -> serde_json::Value {
+    let policy = TopologyRenderPolicy::from_output(&request.output);
+    json!({
+        "exclusions": {
+            "mode": policy.exclusions_mode,
+            "n_hops": policy.exclusion_hops,
+            "explicit_exclusions_expected": matches!(policy.exclusions_mode.as_str(), "explicit_nhop" | "explicit_all_intra")
+        },
+        "dihedrals": {
+            "enabled": policy.dihedrals_enabled,
+            "default": if request.output.dihedrals.is_some() { "request" } else { "disabled_for_generated_topology_stability" }
+        },
+        "bead_count": bead_count,
+        "bond_count": bond_count
+    })
+}
+
+fn unwrap_by_bonded_graph(
+    coords: &[[f32; 3]],
+    connections: &[(usize, usize)],
+    box_vectors: BoxVectors,
+) -> Result<Vec<[f32; 3]>> {
+    if coords.is_empty() || connections.is_empty() {
+        return Ok(coords.to_vec());
+    }
+    let mut adjacency = vec![Vec::<usize>::new(); coords.len()];
+    for &(left, right) in connections {
+        if left >= coords.len() || right >= coords.len() {
+            continue;
+        }
+        adjacency[left].push(right);
+        adjacency[right].push(left);
+    }
+    let box_ = box_vectors_to_box3(box_vectors);
+    let mut repaired = coords.to_vec();
+    let mut seen = vec![false; coords.len()];
+    for root in 0..coords.len() {
+        if seen[root] {
+            continue;
+        }
+        seen[root] = true;
+        let mut stack = vec![root];
+        while let Some(current) = stack.pop() {
+            for &next in &adjacency[current] {
+                if seen[next] {
+                    continue;
+                }
+                let delta = minimum_image_vector(
+                    repaired[current].map(f64::from),
+                    coords[next].map(f64::from),
+                    box_,
+                    1.0,
+                )
+                .map_err(|err| anyhow!("failed to unwrap source CG coordinates: {err}"))?;
+                repaired[next] = [
+                    repaired[current][0] + delta[0] as f32,
+                    repaired[current][1] + delta[1] as f32,
+                    repaired[current][2] + delta[2] as f32,
+                ];
+                seen[next] = true;
+                stack.push(next);
+            }
+        }
+    }
+    Ok(repaired)
+}
+
+fn box_vectors_to_box3(vectors: BoxVectors) -> Box3 {
+    Box3::Triclinic {
+        m: [
+            vectors[0][0],
+            vectors[0][1],
+            vectors[0][2],
+            vectors[1][0],
+            vectors[1][1],
+            vectors[1][2],
+            vectors[2][0],
+            vectors[2][1],
+            vectors[2][2],
+        ],
+    }
+}
+
+fn max_bonded_distance(coords: &[[f32; 3]], connections: &[(usize, usize)]) -> Option<f64> {
+    connections
+        .iter()
+        .filter_map(|&(left, right)| {
+            let a = coords.get(left)?;
+            let b = coords.get(right)?;
+            let dx = f64::from(a[0] - b[0]);
+            let dy = f64::from(a[1] - b[1]);
+            let dz = f64::from(a[2] - b[2]);
+            Some((dx * dx + dy * dy + dz * dz).sqrt())
+        })
+        .reduce(f64::max)
 }

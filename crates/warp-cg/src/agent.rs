@@ -53,7 +53,9 @@ pub use agent_contract::{capabilities, example_request, example_requests, schema
 use agent_defaults::*;
 use agent_execution::run_request;
 #[cfg(test)]
-use agent_render::{render_martini_itp, render_martini_top};
+use agent_render::{
+    render_martini_itp, render_martini_itp_with_policy, render_martini_top, TopologyRenderPolicy,
+};
 use agent_runtime::validate_positive;
 use agent_source_types::{
     SourceBeadClassContext, SourceBeadRecord, SourceHandoff, SourceMappingResult, SourceResidue,
@@ -766,6 +768,38 @@ pub struct CgOutputRequest {
     #[serde(default = "default_write_bonded_parameter_map")]
     #[schemars(default = "default_write_bonded_parameter_map")]
     pub write_bonded_parameter_map: bool,
+    #[serde(default)]
+    pub exclusions: Option<ExclusionEmissionRequest>,
+    #[serde(default)]
+    pub dihedrals: Option<DihedralEmissionRequest>,
+    #[serde(default)]
+    pub coordinates: Option<CoordinateEmissionRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExclusionEmissionRequest {
+    #[serde(default = "default_exclusions_mode")]
+    #[schemars(default = "default_exclusions_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub n_hops: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DihedralEmissionRequest {
+    #[serde(default = "default_dihedrals_enabled")]
+    #[schemars(default = "default_dihedrals_enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CoordinateEmissionRequest {
+    #[serde(default = "default_unwrap_polymer_coordinates")]
+    #[schemars(default = "default_unwrap_polymer_coordinates")]
+    pub unwrap_polymer: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

@@ -929,6 +929,41 @@ fn output_paths_must_not_be_empty() {
 }
 
 #[test]
+fn output_simulation_readiness_fields_are_validated() {
+    let request = json!({
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "name": "bad_output_policy",
+        "smiles": "CC",
+        "output": {
+            "out_dir": ".",
+            "exclusions": {"mode": "implicit_magic"}
+        }
+    });
+    let (exit_code, result) = validate_request_json(&request.to_string());
+    assert_eq!(exit_code, 2);
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("output.exclusions.mode"));
+
+    let request = json!({
+        "schema_version": AGENT_SCHEMA_VERSION,
+        "name": "bad_output_policy",
+        "smiles": "CC",
+        "output": {
+            "out_dir": ".",
+            "exclusions": {"mode": "explicit_nhop", "n_hops": 0}
+        }
+    });
+    let (exit_code, result) = validate_request_json(&request.to_string());
+    assert_eq!(exit_code, 2);
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("output.exclusions.n_hops"));
+}
+
+#[test]
 fn martini_itp_contains_atoms_and_bonds() {
     let mol = Molecule::from_smiles("c1ccccc1").unwrap();
     let mapping = map_molecule(&mol);
@@ -937,6 +972,7 @@ fn martini_itp_contains_atoms_and_bonds() {
     assert!(itp.contains("[ moleculetype ]"));
     assert!(itp.contains("[ atoms ]"));
     assert!(itp.contains("[ bonds ]"));
+    assert!(itp.contains("[ exclusions ]"));
     assert!(itp.contains("BENZENE"));
 }
 
@@ -1016,7 +1052,36 @@ fn martini_itp_contains_angle_and_dihedral_sections() {
     );
 
     assert!(itp.contains("[ angles ]"));
-    assert!(itp.contains("[ dihedrals ]"));
+    assert!(!itp.contains("[ dihedrals ]"));
+
+    let mut policy = TopologyRenderPolicy::default();
+    policy.dihedrals_enabled = true;
+    let itp_with_dihedrals = render_martini_itp_with_policy(
+        "chain",
+        &mapping,
+        &[],
+        &[AngleStats {
+            bead_i: 0,
+            bead_j: 1,
+            bead_k: 2,
+            mean_deg: 120.0,
+            std_deg: 5.0,
+            samples: 4,
+        }],
+        &[DihedralStats {
+            bead_i: 0,
+            bead_j: 1,
+            bead_k: 2,
+            bead_l: 3,
+            mean_deg: 180.0,
+            std_deg: 10.0,
+            samples: 4,
+        }],
+        None,
+        None,
+        &policy,
+    );
+    assert!(itp_with_dihedrals.contains("[ dihedrals ]"));
 }
 
 #[test]

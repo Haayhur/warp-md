@@ -170,6 +170,9 @@ fn source_request(
             write_cg_pdb: true,
             cg_pdb: None,
             write_bonded_parameter_map: true,
+            exclusions: None,
+            dihedrals: None,
+            coordinates: None,
         },
     }
 }

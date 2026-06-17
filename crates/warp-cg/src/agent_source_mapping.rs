@@ -4,6 +4,7 @@ use std::path::Path;
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use warp_structure::io::{read_molecule, read_system_auto, MoleculeData};
+use warp_structure::model::BoxVectors;
 use warp_structure::AtomRecord;
 
 use crate::mapping::{map_molecule_with_options, MappingOptions, MappingResult};
@@ -555,6 +556,9 @@ pub(super) fn build_source_mapping(
         handoff.topology.as_deref().map(Path::new),
     )
     .map_err(|err| anyhow!("failed to read source coordinates: {err}"))?;
+    let source_box_vectors = molecule
+        .box_vectors
+        .or_else(|| read_source_box_vectors(handoff).ok().flatten());
     let mut warnings = Vec::new();
     if let Some(source) = request.source.as_ref() {
         molecule = apply_source_selection(request, source, handoff, molecule, &mut warnings)?;
@@ -697,7 +701,75 @@ pub(super) fn build_source_mapping(
         provenance,
         warnings,
         mapping_summary,
+        box_vectors: source_box_vectors,
     })
+}
+
+pub(super) fn read_source_box_vectors(handoff: &SourceHandoff) -> Result<Option<BoxVectors>> {
+    let format = handoff
+        .coordinate_format
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .or_else(|| {
+            Path::new(&handoff.coordinates)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_ascii_lowercase)
+        })
+        .unwrap_or_default();
+    match format.as_str() {
+        "pdb" | "ent" | "brk" => read_pdb_cryst1_box_vectors(&handoff.coordinates),
+        _ => Ok(None),
+    }
+}
+
+fn read_pdb_cryst1_box_vectors(path: &str) -> Result<Option<BoxVectors>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| anyhow!("failed to read source coordinates for CRYST1 box: {err}"))?;
+    let Some(line) = text.lines().find(|line| line.starts_with("CRYST1")) else {
+        return Ok(None);
+    };
+    let a = parse_pdb_float_field(line, 6, 15, "CRYST1 a")?;
+    let b = parse_pdb_float_field(line, 15, 24, "CRYST1 b")?;
+    let c = parse_pdb_float_field(line, 24, 33, "CRYST1 c")?;
+    let alpha = parse_pdb_float_field(line, 33, 40, "CRYST1 alpha")?;
+    let beta = parse_pdb_float_field(line, 40, 47, "CRYST1 beta")?;
+    let gamma = parse_pdb_float_field(line, 47, 54, "CRYST1 gamma")?;
+    Ok(Some(box_vectors_from_lengths_angles(
+        a, b, c, alpha, beta, gamma,
+    )))
+}
+
+fn parse_pdb_float_field(line: &str, start: usize, end: usize, label: &str) -> Result<f32> {
+    line.get(start..end)
+        .unwrap_or("")
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| anyhow!("invalid {label} field in source PDB CRYST1 record"))
+}
+
+fn box_vectors_from_lengths_angles(
+    a: f32,
+    b: f32,
+    c: f32,
+    alpha_deg: f32,
+    beta_deg: f32,
+    gamma_deg: f32,
+) -> BoxVectors {
+    let alpha = alpha_deg.to_radians();
+    let beta = beta_deg.to_radians();
+    let gamma = gamma_deg.to_radians();
+    let ax = a;
+    let bx = b * gamma.cos();
+    let by = b * gamma.sin();
+    let cx = c * beta.cos();
+    let cy = if by.abs() > f32::EPSILON {
+        c * (alpha.cos() - beta.cos() * gamma.cos()) / gamma.sin()
+    } else {
+        0.0
+    };
+    let cz2 = (c * c - cx * cx - cy * cy).max(0.0);
+    [[ax, 0.0, 0.0], [bx, by, 0.0], [cx, cy, cz2.sqrt()]]
 }
 
 pub(super) fn apply_source_selection(

@@ -13,7 +13,7 @@ use super::agent_source_bonded_terms::template_bonded_term_set;
 use super::agent_source_mapping::{
     append_bead_count_mismatch_warnings, append_chemistry_hint_warnings, apply_source_selection,
     atom_group_is_connected, atom_name_bonds_for_group, bead_center, load_mapping_template,
-    residue_role, resolve_bonds, source_atom_element, source_atom_name,
+    read_source_box_vectors, residue_role, resolve_bonds, source_atom_element, source_atom_name,
     source_connections_from_mapping, source_mapping_provenance, source_mapping_template_ref,
     source_residues, template_policy,
 };
@@ -173,6 +173,9 @@ pub(super) fn build_template_source_mapping(
         handoff.topology.as_deref().map(Path::new),
     )
     .map_err(|err| anyhow!("failed to read source coordinates: {err}"))?;
+    let source_box_vectors = molecule
+        .box_vectors
+        .or_else(|| read_source_box_vectors(handoff).ok().flatten());
     let mut warnings = Vec::new();
     if let Some(source) = request.source.as_ref() {
         molecule = apply_source_selection(request, source, handoff, molecule, &mut warnings)?;
@@ -397,6 +400,7 @@ pub(super) fn build_template_source_mapping(
                 })
             }).collect::<Vec<_>>()
         }),
+        box_vectors: source_box_vectors,
     })
 }
 
