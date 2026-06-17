@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::{collections::BTreeMap, ffi::OsString};
+use std::{collections::BTreeMap, collections::BTreeSet, ffi::OsString};
 
 use serde_json::{json, Value};
 
@@ -922,15 +922,31 @@ fn charge_projection_from_request(
         .and_then(Value::as_str)
         .unwrap_or("explicit")
         .to_string();
+    let retained_source_policy = spec
+        .get("retained_source_policy")
+        .and_then(Value::as_str)
+        .unwrap_or("preserve");
+    if retained_source_policy == "error" && retained_source_overlap(spec) {
+        return None;
+    }
+    let redistribution = redistribution_rules(&charges, spec);
     let projected = projected_charges(&charges, spec)?;
-    let deployable_sets = deployable_sets(&projected, spec);
+    let deployable_sets = deployable_sets(&charges, &redistribution, spec);
     Some(ChargeProjectionManifest {
         policy,
         projected_charges_e: projected,
         deployable_sets,
-        redistribution: redistribution_rules(&charges, spec),
+        redistribution,
         provenance: BTreeMap::from([
             ("source".into(), json!("engine.settings.charge_projection")),
+            (
+                "retained_source_policy".into(),
+                json!(retained_source_policy),
+            ),
+            (
+                "deployable_projection".into(),
+                json!("set_aware_redistribute_only_omitted_sources"),
+            ),
             (
                 "indexing".into(),
                 json!("zero_based atom indices into atom_charges_e"),
@@ -996,7 +1012,11 @@ fn redistribution_rules(charges: &[f64], spec: &Value) -> Vec<ChargeRedistributi
         .collect()
 }
 
-fn deployable_sets(charges: &[f64], spec: &Value) -> Vec<ChargeDeployableSet> {
+fn deployable_sets(
+    charges: &[f64],
+    rules: &[ChargeRedistributionRule],
+    spec: &Value,
+) -> Vec<ChargeDeployableSet> {
     let Some(sets) = spec.get("deployable_sets").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -1012,14 +1032,73 @@ fn deployable_sets(charges: &[f64], spec: &Value) -> Vec<ChargeDeployableSet> {
             if atom_indices.iter().any(|idx| *idx >= charges.len()) {
                 return None;
             }
+            let set_members: BTreeSet<usize> = atom_indices.iter().copied().collect();
+            let mut set_charges: BTreeMap<usize, f64> = atom_indices
+                .iter()
+                .map(|idx| (*idx, charges[*idx]))
+                .collect();
+            for rule in rules {
+                if set_members.contains(&rule.source_atom) {
+                    continue;
+                }
+                let retained_targets: Vec<(usize, f64)> = rule
+                    .target_atoms
+                    .iter()
+                    .copied()
+                    .zip(rule.weights.iter().copied())
+                    .filter(|(target, _)| set_members.contains(target))
+                    .collect();
+                if retained_targets.is_empty() {
+                    continue;
+                }
+                let retained_weight_sum: f64 =
+                    retained_targets.iter().map(|(_, weight)| weight).sum();
+                if retained_weight_sum == 0.0 {
+                    continue;
+                }
+                for (target, weight) in retained_targets {
+                    if let Some(charge) = set_charges.get_mut(&target) {
+                        *charge += rule.source_charge_e * weight / retained_weight_sum;
+                    }
+                }
+            }
             Some(ChargeDeployableSet {
                 name,
-                charges_e: atom_indices.iter().map(|idx| charges[*idx]).collect(),
+                charges_e: atom_indices
+                    .iter()
+                    .map(|idx| set_charges.get(idx).copied().unwrap_or(charges[*idx]))
+                    .collect(),
                 atom_indices,
                 role: set.get("role").and_then(Value::as_str).map(str::to_string),
             })
         })
         .collect()
+}
+
+fn retained_source_overlap(spec: &Value) -> bool {
+    let source_atoms: BTreeSet<usize> = spec
+        .get("redistribution")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|rule| {
+            rule.get("source_atom")
+                .and_then(Value::as_u64)
+                .map(|idx| idx as usize)
+        })
+        .collect();
+    spec.get("deployable_sets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|set| {
+            set.get("atom_indices")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .any(|idx| source_atoms.contains(&(idx as usize)))
+        })
 }
 
 #[derive(Clone, Debug)]

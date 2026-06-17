@@ -200,6 +200,48 @@ fn projection_infer_emits_fake_cap_redistribution_and_region_sets() {
 }
 
 #[test]
+fn projection_infer_uses_graph_context_for_terminal_cap_name_collisions() {
+    let dir = std::env::temp_dir().join(format!(
+        "warp_qm_projection_infer_terminal_context_test_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create dir");
+    let training = dir.join("training.mol2");
+    let middle = dir.join("middle.mol2");
+    let end = dir.join("end.mol2");
+    fs::write(
+        &training,
+        "@<TRIPOS>MOLECULE\nM\n5 4 0 0 0\nSMALL\nUSER_CHARGES\n@<TRIPOS>ATOM\n1 H 0 0 0 H 1 MOL 0\n2 C1 1 0 0 C 1 MOL 0\n3 C2 2 0 0 C 1 MOL 0\n4 C3 3 0 0 C 1 MOL 0\n5 H_1 4 0 0 H 1 MOL 0\n@<TRIPOS>BOND\n1 1 2 1\n2 2 3 1\n3 3 4 1\n4 4 5 1\n",
+    )
+    .expect("write training");
+    fs::write(
+        &middle,
+        "@<TRIPOS>MOLECULE\nM\n3 2 0 0 0\nSMALL\nUSER_CHARGES\n@<TRIPOS>ATOM\n1 C1 1 0 0 C 1 MOL 0\n2 C2 2 0 0 C 1 MOL 0\n3 C3 3 0 0 C 1 MOL 0\n@<TRIPOS>BOND\n1 1 2 1\n2 2 3 1\n",
+    )
+    .expect("write middle");
+    fs::write(
+        &end,
+        "@<TRIPOS>MOLECULE\nM\n4 3 0 0 0\nSMALL\nUSER_CHARGES\n@<TRIPOS>ATOM\n1 C1 1 0 0 C 1 MOL 0\n2 C2 2 0 0 C 1 MOL 0\n3 C3 3 0 0 C 1 MOL 0\n4 H 4 0 0 H 1 MOL 0\n@<TRIPOS>BOND\n1 1 2 1\n2 2 3 1\n3 3 4 1\n",
+    )
+    .expect("write end");
+    let (code, payload) = warp_qm::infer_projection_json(
+        &training.to_string_lossy(),
+        &middle.to_string_lossy(),
+        None,
+        Some(&end.to_string_lossy()),
+        "fake_caps_redistributed_region_sets",
+    );
+    assert_eq!(code, 0, "{payload}");
+    assert_eq!(payload["provenance"]["matching"], "graph_context_subset_v2");
+    assert_eq!(
+        payload["deployable_sets"][2]["atom_indices"],
+        serde_json::json!([1, 2, 3, 4])
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn project_polymer_charges_tiles_repeat_set() {
     let dir = std::env::temp_dir().join(format!(
         "warp_qm_polymer_project_test_{}",
@@ -804,6 +846,161 @@ fn multiwfn_charge_manifest_projects_fake_caps_and_region_sets() {
     assert_eq!(manifest["projection"]["deployable_sets"][1]["name"], "mid");
     assert_eq!(manifest["projection"]["deployable_sets"][2]["name"], "tail");
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn multiwfn_projection_preserves_retained_real_cap_charges_per_deployable_set() {
+    let dir = std::env::temp_dir().join(format!(
+        "warp_qm_multiwfn_retained_cap_projection_test_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create dir");
+    let fake_multiwfn = dir.join("fake_multiwfn");
+    fs::write(
+        &fake_multiwfn,
+        "#!/bin/sh\ncat > molecule.chg <<'EOF'\nH 0 0 0 0.1000000000\nC 1 0 0 -0.2000000000\nC 2 0 0 0.0000000000\nH 3 0 0 0.4000000000\nEOF\n",
+    )
+    .expect("write fake multiwfn");
+    let mut perms = fs::metadata(&fake_multiwfn)
+        .expect("metadata")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&fake_multiwfn, perms).expect("chmod");
+    let input = dir.join("molecule.fchk");
+    fs::write(&input, "stub").expect("write input");
+    let request = serde_json::json!({
+        "schema_version": "warp-qm.agent.v1",
+        "request_id": "multiwfn-retained-cap-projection",
+        "engine": {
+            "name": "multiwfn",
+            "executable": fake_multiwfn,
+            "settings": {
+                "menu_script": "q\n",
+                "expected_outputs": ["molecule.chg"],
+                "charge_projection": {
+                    "policy": "real_caps_set_aware",
+                    "retained_source_policy": "preserve",
+                    "redistribution": [
+                        {"source_atom": 0, "target_atoms": [1]},
+                        {"source_atom": 3, "target_atoms": [2]}
+                    ],
+                    "deployable_sets": [
+                        {"name": "head", "role": "head_cap_plus_first_repeat", "atom_indices": [0, 1, 2]},
+                        {"name": "mid", "role": "interior_repeat", "atom_indices": [1, 2]},
+                        {"name": "tail", "role": "last_repeat_plus_tail_cap", "atom_indices": [1, 2, 3]}
+                    ]
+                }
+            }
+        },
+        "molecule": {
+            "source": {"kind": "file", "path": input, "format": "fchk"},
+            "charge": 0,
+            "multiplicity": 1
+        },
+        "task": {"kind": "generic_run", "method": "multiwfn", "charge_model": "resp"},
+        "runtime": {"work_dir": dir.join("work")}
+    });
+    let (code, payload) = warp_qm::run_request_json(&request.to_string(), false);
+    assert_eq!(code, 0, "{payload}");
+    let manifest: Value = serde_json::from_str(
+        &fs::read_to_string(dir.join("work/charge_manifest.json")).expect("manifest"),
+    )
+    .expect("manifest json");
+    assert_eq!(manifest["projection"]["projected_charges_e"][0], 0.0);
+    assert_eq!(manifest["projection"]["projected_charges_e"][3], 0.0);
+    assert_eq!(
+        manifest["projection"]["provenance"]["deployable_projection"],
+        "set_aware_redistribute_only_omitted_sources"
+    );
+    assert!(
+        (manifest["projection"]["deployable_sets"][0]["charges_e"][0]
+            .as_f64()
+            .unwrap()
+            - 0.1)
+            .abs()
+            < 1e-12
+    );
+    assert!(
+        (manifest["projection"]["deployable_sets"][0]["charges_e"][2]
+            .as_f64()
+            .unwrap()
+            - 0.4)
+            .abs()
+            < 1e-12
+    );
+    assert!(
+        (manifest["projection"]["deployable_sets"][1]["charges_e"][0]
+            .as_f64()
+            .unwrap()
+            + 0.1)
+            .abs()
+            < 1e-12
+    );
+    assert!(
+        (manifest["projection"]["deployable_sets"][1]["charges_e"][1]
+            .as_f64()
+            .unwrap()
+            - 0.4)
+            .abs()
+            < 1e-12
+    );
+    assert!(
+        (manifest["projection"]["deployable_sets"][2]["charges_e"][0]
+            .as_f64()
+            .unwrap()
+            + 0.1)
+            .abs()
+            < 1e-12
+    );
+    assert!(
+        (manifest["projection"]["deployable_sets"][2]["charges_e"][2]
+            .as_f64()
+            .unwrap()
+            - 0.4)
+            .abs()
+            < 1e-12
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn charge_projection_strict_retained_source_policy_rejects_overlap() {
+    let request = serde_json::json!({
+        "schema_version": "warp-qm.agent.v1",
+        "engine": {
+            "name": "multiwfn",
+            "settings": {
+                "menu_script": "q\n",
+                "charge_projection": {
+                    "policy": "real_caps_set_aware",
+                    "retained_source_policy": "error",
+                    "redistribution": [
+                        {"source_atom": 0, "target_atoms": [1]}
+                    ],
+                    "deployable_sets": [
+                        {"name": "head", "atom_indices": [0, 1]}
+                    ]
+                }
+            }
+        },
+        "molecule": {
+            "source": {"kind": "file", "path": "molecule.fchk", "format": "fchk"},
+            "charge": 0,
+            "multiplicity": 1
+        },
+        "task": {"kind": "generic_run", "method": "multiwfn", "charge_model": "resp"}
+    });
+    let (code, payload) = warp_qm::validate_request_json(&request.to_string());
+    assert_eq!(code, 2, "{payload}");
+    assert!(payload["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|error| error["message"]
+            .as_str()
+            .unwrap()
+            .contains("redistribution source_atom 0 is retained")));
 }
 
 #[test]

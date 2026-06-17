@@ -459,6 +459,8 @@ impl Default for Resp2Settings {
 pub struct ChargeProjectionSettings {
     pub policy: String,
     #[serde(default)]
+    pub retained_source_policy: Option<String>,
+    #[serde(default)]
     pub redistribution: Vec<ChargeProjectionRuleInput>,
     #[serde(default)]
     pub deployable_sets: Vec<ChargeDeployableSetInput>,
@@ -851,11 +853,11 @@ fn infer_projection(
             }));
         }
     }
-    let head =
-        deployable_indices_from_optional(start_mol2, &training_names, &mid_indices, "start")?;
-    let tail = deployable_indices_from_optional(end_mol2, &training_names, &mid_indices, "end")?;
+    let head = deployable_indices_from_optional(start_mol2, &training, &mid_indices, "start")?;
+    let tail = deployable_indices_from_optional(end_mol2, &training, &mid_indices, "end")?;
     Ok(json!({
         "policy": policy,
+        "retained_source_policy": "preserve",
         "redistribution": redistribution,
         "deployable_sets": [
             {
@@ -880,7 +882,7 @@ fn infer_projection(
             "middle_mol2": middle_mol2,
             "start_mol2": start_mol2,
             "end_mol2": end_mol2,
-            "matching": "unique_atom_name_subset_v1",
+            "matching": "graph_context_subset_v2",
             "indexing": "zero_based atom indices into training_mol2"
         }
     }))
@@ -922,7 +924,7 @@ fn indices_for_names(
 
 fn deployable_indices_from_optional(
     mol2: Option<&str>,
-    training_names: &BTreeMap<String, usize>,
+    training: &warp_structure::io::MoleculeData,
     fallback: &[usize],
     label: &str,
 ) -> Result<Vec<usize>, String> {
@@ -932,8 +934,189 @@ fn deployable_indices_from_optional(
     let molecule =
         warp_structure::io::read_molecule(Path::new(path), Some("mol2"), false, false, None)
             .map_err(|err| format!("failed to read {label} mol2: {err}"))?;
-    let names = unique_atom_names(&molecule, label)?;
-    indices_for_names(training_names, &names, label)
+    deployable_indices_by_graph_context(training, &molecule, label)
+}
+
+fn deployable_indices_by_graph_context(
+    training: &warp_structure::io::MoleculeData,
+    query: &warp_structure::io::MoleculeData,
+    label: &str,
+) -> Result<Vec<usize>, String> {
+    let training_adj = adjacency_sets(training.atoms.len(), &training.bonds);
+    let query_adj = adjacency_sets(query.atoms.len(), &query.bonds);
+    let mut order: Vec<usize> = (0..query.atoms.len()).collect();
+    order.sort_by_key(|idx| std::cmp::Reverse(query_adj[*idx].len()));
+    let candidates: Vec<Vec<usize>> = query
+        .atoms
+        .iter()
+        .map(|query_atom| {
+            let mut items: Vec<usize> = training
+                .atoms
+                .iter()
+                .enumerate()
+                .filter(|(_, training_atom)| {
+                    query_atom.element.trim().is_empty()
+                        || training_atom
+                            .element
+                            .eq_ignore_ascii_case(&query_atom.element)
+                })
+                .map(|(idx, _)| idx)
+                .collect();
+            items.sort_by_key(|idx| {
+                (
+                    !training.atoms[*idx]
+                        .name
+                        .eq_ignore_ascii_case(&query_atom.name),
+                    *idx,
+                )
+            });
+            items
+        })
+        .collect();
+    if candidates.iter().any(Vec::is_empty) {
+        return Err(format!(
+            "{label} mol2 contains an atom with no element-compatible training atom"
+        ));
+    }
+
+    let mut mapping = vec![None; query.atoms.len()];
+    let mut used = BTreeSet::new();
+    let mut best_score: Option<usize> = None;
+    let mut best_mapping: Option<Vec<usize>> = None;
+    let mut tied_best = false;
+    search_deployable_mapping(
+        0,
+        &order,
+        &candidates,
+        &query_adj,
+        &training_adj,
+        query,
+        training,
+        &mut mapping,
+        &mut used,
+        &mut best_score,
+        &mut best_mapping,
+        &mut tied_best,
+    );
+    if tied_best {
+        return Err(format!(
+            "{label} mol2 matches multiple training subgraphs equally; use distinct cap atom names or a more specific template"
+        ));
+    }
+    let Some(mapping) = best_mapping else {
+        return Err(format!(
+            "{label} mol2 could not be matched to the training graph by element/connectivity context"
+        ));
+    };
+    let mut indices = mapping;
+    indices.sort_unstable();
+    Ok(indices)
+}
+
+fn adjacency_sets(atom_count: usize, bonds: &[(usize, usize)]) -> Vec<BTreeSet<usize>> {
+    let mut adjacency = vec![BTreeSet::new(); atom_count];
+    for &(a, b) in bonds {
+        if a < atom_count && b < atom_count {
+            adjacency[a].insert(b);
+            adjacency[b].insert(a);
+        }
+    }
+    adjacency
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_deployable_mapping(
+    depth: usize,
+    order: &[usize],
+    candidates: &[Vec<usize>],
+    query_adj: &[BTreeSet<usize>],
+    training_adj: &[BTreeSet<usize>],
+    query: &warp_structure::io::MoleculeData,
+    training: &warp_structure::io::MoleculeData,
+    mapping: &mut [Option<usize>],
+    used: &mut BTreeSet<usize>,
+    best_score: &mut Option<usize>,
+    best_mapping: &mut Option<Vec<usize>>,
+    tied_best: &mut bool,
+) {
+    if depth == order.len() {
+        let concrete: Vec<usize> = mapping.iter().map(|idx| idx.unwrap()).collect();
+        let score = concrete
+            .iter()
+            .enumerate()
+            .filter(|(query_idx, training_idx)| {
+                query.atoms[*query_idx]
+                    .name
+                    .eq_ignore_ascii_case(&training.atoms[**training_idx].name)
+            })
+            .count();
+        match best_score {
+            Some(best) if score < *best => {}
+            Some(best) if score == *best => {
+                if best_mapping.as_ref() != Some(&concrete) {
+                    *tied_best = true;
+                }
+            }
+            _ => {
+                *best_score = Some(score);
+                *best_mapping = Some(concrete);
+                *tied_best = false;
+            }
+        }
+        return;
+    }
+    let query_idx = order[depth];
+    for &training_idx in &candidates[query_idx] {
+        if used.contains(&training_idx)
+            || !mapping_is_graph_compatible(
+                query_idx,
+                training_idx,
+                query_adj,
+                training_adj,
+                mapping,
+            )
+        {
+            continue;
+        }
+        mapping[query_idx] = Some(training_idx);
+        used.insert(training_idx);
+        search_deployable_mapping(
+            depth + 1,
+            order,
+            candidates,
+            query_adj,
+            training_adj,
+            query,
+            training,
+            mapping,
+            used,
+            best_score,
+            best_mapping,
+            tied_best,
+        );
+        used.remove(&training_idx);
+        mapping[query_idx] = None;
+    }
+}
+
+fn mapping_is_graph_compatible(
+    query_idx: usize,
+    training_idx: usize,
+    query_adj: &[BTreeSet<usize>],
+    training_adj: &[BTreeSet<usize>],
+    mapping: &[Option<usize>],
+) -> bool {
+    for (other_query_idx, other_training_idx) in mapping.iter().enumerate() {
+        let Some(other_training_idx) = other_training_idx else {
+            continue;
+        };
+        let query_bonded = query_adj[query_idx].contains(&other_query_idx);
+        let training_bonded = training_adj[training_idx].contains(other_training_idx);
+        if query_bonded != training_bonded {
+            return false;
+        }
+    }
+    true
 }
 
 fn fake_components(
@@ -1553,6 +1736,15 @@ fn validate_charge_projection(spec: &Value) -> Vec<Value> {
         ));
         return errors;
     }
+    if let Some(policy) = spec.get("retained_source_policy").and_then(Value::as_str) {
+        if !matches!(policy, "preserve" | "error") {
+            errors.push(error(
+                "E_CHARGE_PROJECTION_INVALID",
+                "engine.settings.charge_projection.retained_source_policy",
+                "retained_source_policy must be preserve or error",
+            ));
+        }
+    }
     for (idx, rule) in spec
         .get("redistribution")
         .and_then(Value::as_array)
@@ -1609,6 +1801,43 @@ fn validate_charge_projection(spec: &Value) -> Vec<Value> {
                 format!("engine.settings.charge_projection.deployable_sets[{idx}]").as_str(),
                 "deployable sets require name and non-empty zero-based atom_indices",
             ));
+        }
+    }
+    if spec
+        .get("retained_source_policy")
+        .and_then(Value::as_str)
+        .unwrap_or("preserve")
+        == "error"
+    {
+        let source_atoms: BTreeSet<u64> = spec
+            .get("redistribution")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|rule| rule.get("source_atom").and_then(Value::as_u64))
+            .collect();
+        for (set_idx, set) in spec
+            .get("deployable_sets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            for atom in set
+                .get("atom_indices")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+            {
+                if source_atoms.contains(&atom) {
+                    errors.push(error(
+                        "E_CHARGE_PROJECTION_INVALID",
+                        format!("engine.settings.charge_projection.deployable_sets[{set_idx}].atom_indices").as_str(),
+                        format!("redistribution source_atom {atom} is retained in this deployable set; use retained_source_policy='preserve' or remove it from the set"),
+                    ));
+                }
+            }
         }
     }
     errors
