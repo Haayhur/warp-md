@@ -107,6 +107,77 @@ A successful build emits:
 
 The build manifest is the canonical handoff artifact for downstream `warp-pack`.
 
+### Topology Graph Schema (`warp-build.topology-graph.v5`)
+
+The `topology_graph` output file contains a rich JSON representation of the built polymer topology, useful for analytical introspection, force field assignments, or visualization:
+
+<details>
+<summary>Key Graph Fields</summary>
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | `str` | Always `"warp-build.topology-graph.v5"` |
+| `request_id` | `str` | The triggering request's ID |
+| `bundle_id` | `str` | The source parameters bundle ID |
+| `atoms` | `list[Atom]` | Flat array of atom records |
+| `bonds` | `list[Pair]` | Global atom index bond pairs `{"a": idx, "b": idx}` |
+| `angles` | `list[Angle]` | Global atom index angles `{"a", "b", "c"}` |
+| `dihedrals` | `list[Torsion]` | Global atom index dihedrals `{"a", "b", "c", "d"}` |
+| `impropers` | `list[Torsion]` | Global atom index improper dihedrals |
+| `exclusions` | `list[Exclusion]` | Lists of excluded nonbonded atoms per atom |
+| `residues` | `list[Residue]` | Array of residue structures |
+| `sequence` | `list[str]` | Target polymer token sequence |
+| `open_ports` | `list[OpenPort]` | Active connection ports left uncapped |
+| `applied_caps` | `list[AppliedCap]` | Capping groups applied to ports |
+| `relax_metadata` | `RelaxMetadata?` | Metrics from geometry relaxation (e.g. max clash) |
+
+</details>
+
+<details>
+<summary>Sub-record Specifications</summary>
+
+**`Atom` Record**:
+```json
+{
+  "index": 0,
+  "name": "C1",
+  "element": "C",
+  "resid": 1,
+  "resname": "MMA",
+  "charge_e": -0.15,
+  "mass": 12.011,
+  "atom_type_index": 4,
+  "amber_atom_type": "c3",
+  "lj_class": "CT",
+  "position": [0.0, 1.2, -0.4],
+  "neighbors": [1, 2, 3]
+}
+```
+
+**`Residue` Record**:
+```json
+{
+  "resid": 1,
+  "resname": "MMA",
+  "node_id": "monomer_0",
+  "request_node_id": "monomer_0",
+  "sequence_token": "M",
+  "token_kind": "unit",
+  "source_token": "M",
+  "branch_depth": 0,
+  "branch_path": "0",
+  "atom_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  "ports": [
+    { "name": "head", "attach_atom": "C1", "leaving_atoms": ["H1"] },
+    { "name": "tail", "attach_atom": "C2", "leaving_atoms": ["H2"] }
+  ]
+}
+```
+
+</details>
+
+
+
 ## End-to-End Verification
 
 Use the lightweight verifier when you need behavior evidence beyond unit tests:
@@ -172,6 +243,14 @@ Common realization modes:
 - `random_walk`
 - `aligned`
 - `ensemble`
+
+Common stereochemistry/tacticity modes (`target.stereochemistry.mode`):
+
+- `inherit` (default, copy from training oligomer configuration)
+- `training` (use exact training sample sequence configurations)
+- `isotactic` (all chiral centers identical)
+- `syndiotactic` (alternating chiral centers)
+- `atactic` (randomly assigned chiral centers)
 
 For the most deterministic production handoff tests, use `aligned` or `extended` for linear chains. These modes build an axis-biased zigzag chain and run a final synthetic-topology relaxation when emitting synthetic PRMTOP/INPCRD artifacts.
 

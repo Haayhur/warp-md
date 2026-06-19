@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -37,6 +37,16 @@ def _atoms_by_resid(system) -> dict:
     return by_res
 
 
+def _resnames_by_resid(system) -> dict:
+    atoms = system.atom_table()
+    resids = atoms.get("resid", [])
+    resnames = atoms.get("resname", [])
+    out = {}
+    for resid, resname in zip(resids, resnames):
+        out.setdefault(resid, str(resname).upper())
+    return out
+
+
 def _parse_resrange(resrange: Optional[Union[str, Sequence[int]]]) -> Optional[List[int]]:
     if resrange is None or resrange == "":
         return None
@@ -52,7 +62,11 @@ def _parse_resrange(resrange: Optional[Union[str, Sequence[int]]]) -> Optional[L
     return [int(x) for x in resrange]
 
 
-def _phi_psi_defs(system, resrange: Optional[List[int]]) -> List[DihedralDef]:
+def _phi_psi_defs(
+    system,
+    resrange: Optional[List[int]],
+    kind: Optional[str] = None,
+) -> List[DihedralDef]:
     by_res = _atoms_by_resid(system)
     resids = sorted(by_res.keys())
     if resrange is not None:
@@ -65,7 +79,12 @@ def _phi_psi_defs(system, resrange: Optional[List[int]]) -> List[DihedralDef]:
         prev = by_res.get(prev_res, {})
         nxt = by_res.get(next_res, {})
         # phi: C_{i-1} N_i CA_i C_i
-        if prev and {"C", "N", "CA"}.issubset(cur.keys()) and "C" in prev:
+        if (
+            kind in (None, "phi")
+            and prev
+            and {"C", "N", "CA"}.issubset(cur.keys())
+            and "C" in prev
+        ):
             defs.append(
                 DihedralDef(
                     label=f"phi:{r}",
@@ -73,7 +92,12 @@ def _phi_psi_defs(system, resrange: Optional[List[int]]) -> List[DihedralDef]:
                 )
             )
         # psi: N_i CA_i C_i N_{i+1}
-        if nxt and {"N", "CA", "C"}.issubset(cur.keys()) and "N" in nxt:
+        if (
+            kind in (None, "psi")
+            and nxt
+            and {"N", "CA", "C"}.issubset(cur.keys())
+            and "N" in nxt
+        ):
             defs.append(
                 DihedralDef(
                     label=f"psi:{r}",
@@ -103,19 +127,123 @@ def _omega_defs(system, resrange: Optional[List[int]]) -> List[DihedralDef]:
     return defs
 
 
-def _chi1_defs(system, resrange: Optional[List[int]]) -> List[DihedralDef]:
+_CHI_TEMPLATES = {
+    "ARG": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "CD"),
+        "chi3": ("CB", "CG", "CD", "NE"),
+        "chi4": ("CG", "CD", "NE", "CZ"),
+        "chi5": ("CD", "NE", "CZ", "NH1"),
+    },
+    "ASN": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "OD1"),
+    },
+    "ASP": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "OD1"),
+    },
+    "CYS": {"chi1": ("N", "CA", "CB", "SG")},
+    "GLN": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "CD"),
+        "chi3": ("CB", "CG", "CD", "OE1"),
+    },
+    "GLU": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "CD"),
+        "chi3": ("CB", "CG", "CD", "OE1"),
+    },
+    "HIS": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "ND1"),
+    },
+    "HIE": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "ND1"),
+    },
+    "HID": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "ND1"),
+    },
+    "HIP": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "ND1"),
+    },
+    "ILE": {
+        "chi1": ("N", "CA", "CB", "CG1"),
+        "chi2": ("CA", "CB", "CG1", "CD1"),
+    },
+    "LEU": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "CD1"),
+    },
+    "LYS": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "CD"),
+        "chi3": ("CB", "CG", "CD", "CE"),
+        "chi4": ("CG", "CD", "CE", "NZ"),
+    },
+    "MET": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "SD"),
+        "chi3": ("CB", "CG", "SD", "CE"),
+    },
+    "PHE": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "CD1"),
+    },
+    "PRO": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "CD"),
+    },
+    "SER": {"chi1": ("N", "CA", "CB", "OG")},
+    "THR": {"chi1": ("N", "CA", "CB", "OG1")},
+    "TRP": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "CD1"),
+    },
+    "TYR": {
+        "chi1": ("N", "CA", "CB", "CG"),
+        "chi2": ("CA", "CB", "CG", "CD1"),
+    },
+    "VAL": {"chi1": ("N", "CA", "CB", "CG1")},
+}
+
+_GENERIC_CHI = {
+    "chi1": ("N", "CA", "CB", ("CG", "CG1", "OG", "OG1", "SG")),
+    "chi2": ("CA", "CB", ("CG", "CG1"), ("CD", "CD1", "OD1", "ND1", "SD")),
+    "chi3": (("CB",), ("CG", "CG1"), ("CD", "SD"), ("NE", "CE", "OE1")),
+    "chi4": (("CG", "CG1"), ("CD",), ("NE", "CE"), ("CZ", "NZ")),
+    "chi5": (("CD",), ("NE",), ("CZ",), ("NH1",)),
+}
+
+
+def _pick_atom(cur: dict, spec) -> Optional[int]:
+    names = spec if isinstance(spec, tuple) else (spec,)
+    for name in names:
+        if name in cur:
+            return cur[name]
+    return None
+
+
+def _chi_defs(system, resrange: Optional[List[int]], chi_name: str) -> List[DihedralDef]:
     by_res = _atoms_by_resid(system)
+    resnames = _resnames_by_resid(system)
     resids = sorted(by_res.keys())
     if resrange is not None:
         resids = [r for r in resids if r in resrange]
     defs: List[DihedralDef] = []
     for r in resids:
         cur = by_res.get(r, {})
-        if {"N", "CA", "CB", "CG"}.issubset(cur.keys()):
+        resname = resnames.get(r, "")
+        template = _CHI_TEMPLATES.get(resname, {}).get(chi_name, _GENERIC_CHI[chi_name])
+        atoms = [_pick_atom(cur, spec) for spec in template]
+        if all(atom is not None for atom in atoms):
             defs.append(
                 DihedralDef(
-                    label=f"chi1:{r}",
-                    atoms=(cur["N"], cur["CA"], cur["CB"], cur["CG"]),
+                    label=f"{chi_name}:{r}",
+                    atoms=tuple(int(atom) for atom in atoms),
                 )
             )
     return defs
@@ -129,13 +257,16 @@ def _build_defs(system, dihedral_types: Optional[str], resrange: Optional[List[i
     defs: List[DihedralDef] = []
     for t in types:
         if t == "phi":
-            defs.extend(_phi_psi_defs(system, resrange))
+            defs.extend(_phi_psi_defs(system, resrange, "phi"))
         elif t == "psi":
-            defs.extend(_phi_psi_defs(system, resrange))
+            defs.extend(_phi_psi_defs(system, resrange, "psi"))
         elif t == "omega":
             defs.extend(_omega_defs(system, resrange))
-        elif t in ("chi", "chi1", "chip"):
-            defs.extend(_chi1_defs(system, resrange))
+        elif t in ("chi", "chip"):
+            for chi_name in ("chi1", "chi2", "chi3", "chi4", "chi5"):
+                defs.extend(_chi_defs(system, resrange, chi_name))
+        elif t in ("chi1", "chi2", "chi3", "chi4", "chi5"):
+            defs.extend(_chi_defs(system, resrange, t))
         else:
             raise ValueError(f"unsupported dihedral type: {t}")
     # remove duplicates by label
@@ -156,7 +287,7 @@ def multidihedral(
     mass: bool = False,
     chunk_frames: Optional[int] = None,
 ):
-    """Compute multiple dihedrals (phi/psi/omega/chi1)."""
+    """Compute multiple dihedrals (phi/psi/omega/chi1-chi5)."""
     res_list = _parse_resrange(resrange)
     defs = _build_defs(system, dihedral_types, res_list)
     if not defs:

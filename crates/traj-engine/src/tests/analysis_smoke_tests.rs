@@ -54,6 +54,57 @@ fn symmrmsd_plan_align_zero() {
 }
 
 #[test]
+fn symmrmsd_plan_remaps_swapped_atoms() {
+    let mut interner = StringInterner::new();
+    let name = interner.intern_upper("CA");
+    let res = interner.intern_upper("ALA");
+    let atoms = AtomTable {
+        name_id: vec![name, name, name],
+        resname_id: vec![res, res, res],
+        resid: vec![1, 1, 1],
+        chain_id: vec![0, 0, 0],
+        element_id: vec![0, 0, 0],
+        mass: vec![1.0, 1.0, 1.0],
+    };
+    let positions0 = vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [-1.0, 0.0, 0.0, 1.0],
+    ];
+    let mut system = System::with_atoms(atoms, interner, Some(positions0.clone()));
+    let sel = system.select("name CA").unwrap();
+    let mut plain = SymmRmsdPlan::new(sel.clone(), ReferenceMode::Topology, false);
+    let mut remapped = SymmRmsdPlan::new(sel, ReferenceMode::Topology, false)
+        .with_symmetry_groups(vec![vec![1, 2]], 8)
+        .unwrap();
+    let frames = vec![
+        positions0,
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+        ],
+    ];
+
+    let mut plain_traj = InMemoryTraj::new(frames.clone());
+    let plain_out = Executor::new(system.clone())
+        .run_plan(&mut plain, &mut plain_traj)
+        .unwrap();
+    let mut remap_traj = InMemoryTraj::new(frames);
+    let remap_out = Executor::new(system)
+        .run_plan(&mut remapped, &mut remap_traj)
+        .unwrap();
+    match (plain_out, remap_out) {
+        (PlanOutput::Series(plain_vals), PlanOutput::Series(remap_vals)) => {
+            assert!(plain_vals[1] > 0.0);
+            assert!(remap_vals[0].abs() < 1e-6);
+            assert!(remap_vals[1].abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn center_of_mass_plan_basic() {
     let mut system = build_system();
     let sel = system.select("name CA").unwrap();
@@ -326,8 +377,8 @@ fn check_structure_plan_nan() {
     match out {
         PlanOutput::Series(vals) => {
             assert_eq!(vals.len(), 2);
-            assert_eq!(vals[0], 1.0);
-            assert_eq!(vals[1], 0.0);
+            assert_eq!(vals[0], 0.0);
+            assert_eq!(vals[1], 1.0);
         }
         _ => panic!("unexpected output"),
     }
@@ -414,6 +465,42 @@ fn rotate_dihedral_plan_basic() {
 }
 
 #[test]
+fn rotate_dihedral_trajectory_plan_outputs_coords_and_box() {
+    let mut system = build_four_resid_system();
+    let sel_a = system.select("resid 1").unwrap();
+    let sel_b = system.select("resid 2").unwrap();
+    let sel_c = system.select("resid 3").unwrap();
+    let sel_d = system.select("resid 4").unwrap();
+    let rotate_sel = system.select("resid 4").unwrap();
+    let mut plan = RotateDihedralTrajectoryPlan::new(
+        sel_a, sel_b, sel_c, sel_d, rotate_sel, 90.0, false, true,
+    );
+    let frames = vec![vec![
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0],
+    ]];
+    let box_ = Box3::Orthorhombic {
+        lx: 8.0,
+        ly: 9.0,
+        lz: 10.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 1);
+            assert_eq!(out.atoms, 4);
+            assert_eq!(out.coords.len(), 12);
+            assert_eq!(out.box_, vec![box_]);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn set_dihedral_plan_basic() {
     let mut system = build_four_resid_system();
     let sel_a = system.select("resid 1").unwrap();
@@ -451,6 +538,51 @@ fn set_dihedral_plan_basic() {
             assert!(x.abs() < 1e-5);
             assert!((y - 1.0).abs() < 1e-5);
             assert!((z + 1.0).abs() < 1e-5);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn set_dihedral_trajectory_plan_outputs_coords_and_box() {
+    let mut system = build_four_resid_system();
+    let sel_a = system.select("resid 1").unwrap();
+    let sel_b = system.select("resid 2").unwrap();
+    let sel_c = system.select("resid 3").unwrap();
+    let sel_d = system.select("resid 4").unwrap();
+    let rotate_sel = system.select("resid 4").unwrap();
+    let mut plan = SetDihedralTrajectoryPlan::new(
+        sel_a,
+        sel_b,
+        sel_c,
+        sel_d,
+        rotate_sel,
+        90.0,
+        false,
+        PbcMode::None,
+        true,
+        false,
+    );
+    let frames = vec![vec![
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0],
+    ]];
+    let box_ = Box3::Orthorhombic {
+        lx: 8.0,
+        ly: 9.0,
+        lz: 10.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 1);
+            assert_eq!(out.atoms, 4);
+            assert_eq!(out.coords.len(), 12);
+            assert_eq!(out.box_, vec![box_]);
         }
         _ => panic!("unexpected output"),
     }
@@ -821,6 +953,44 @@ fn surf_plan_sasa_residue_area_output_aggregates_selected_atoms() {
                     .sum();
                 assert!((output.total[frame] - row_sum).abs() < 1e-6);
             }
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn surf_plan_sasa_solutemask_occludes_report_selection() {
+    let mut system = build_two_resid_system();
+    let report = system.select("resid 1").unwrap();
+    let solute = system.select("resid 1:2").unwrap();
+    let frames = vec![vec![[0.0, 0.0, 0.0, 1.0], [0.5, 0.0, 0.0, 1.0]]];
+
+    let mut isolated_plan = SurfPlan::new(report.clone())
+        .with_algorithm(SurfAlgorithm::Sasa)
+        .with_probe_radius(0.0)
+        .with_n_sphere_points(96)
+        .with_radii(Some(vec![1.0]));
+    let mut isolated_traj = InMemoryTraj::new(frames.clone());
+    let isolated_out = Executor::new(system.clone())
+        .run_plan(&mut isolated_plan, &mut isolated_traj)
+        .unwrap();
+
+    let mut occluded_plan = SurfPlan::new(report)
+        .with_algorithm(SurfAlgorithm::Sasa)
+        .with_probe_radius(0.0)
+        .with_n_sphere_points(96)
+        .with_radii(Some(vec![1.0, 1.0]))
+        .with_solute_selection(Some(solute));
+    let mut occluded_traj = InMemoryTraj::new(frames);
+    let occluded_out = Executor::new(system)
+        .run_plan(&mut occluded_plan, &mut occluded_traj)
+        .unwrap();
+
+    match (isolated_out, occluded_out) {
+        (PlanOutput::Series(isolated), PlanOutput::Series(occluded)) => {
+            assert_eq!(isolated.len(), 1);
+            assert_eq!(occluded.len(), 1);
+            assert!(occluded[0] < isolated[0]);
         }
         _ => panic!("unexpected output"),
     }

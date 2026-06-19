@@ -8,6 +8,8 @@ from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+import warp_md
+
 from ._chunk_io import read_chunk_fields
 
 
@@ -45,22 +47,10 @@ def _center(coords: np.ndarray, indices: np.ndarray, masses: Optional[np.ndarray
 def _haar_details(series: np.ndarray) -> np.ndarray:
     if series.size < 2:
         return np.empty((0, 0), dtype=np.float32)
-    current = series.astype(np.float64)
-    max_cols = current.size // 2
-    details = []
-    while current.size >= 2:
-        n = current.size // 2
-        a = current[0 : 2 * n : 2]
-        b = current[1 : 2 * n : 2]
-        next_level = 0.5 * (a + b)
-        detail = 0.5 * (a - b)
-        details.append(detail)
-        current = next_level
-    rows = len(details)
-    out = np.zeros((rows, max_cols), dtype=np.float64)
-    for r, detail in enumerate(details):
-        out[r, : detail.size] = detail
-    return out.astype(np.float32)
+    fn = getattr(warp_md, "haar_details_array", None)
+    if fn is None or getattr(fn, "__name__", "") != "haar_details_array":
+        raise RuntimeError("haar_details_array native binding unavailable")
+    return np.asarray(fn(np.asarray(series, dtype=np.float32)), dtype=np.float32)
 
 
 def wavelet(

@@ -19,7 +19,6 @@ from .cli_api import (
     EquipartitionPlan,
     FreeVolumePlan,
     HydrophobicDefectPlan,
-    HbondPlan,
     IonPairCorrelationPlan,
     MsdPlan,
     PersistenceLengthPlan,
@@ -78,6 +77,29 @@ def _build_rg(system: System, spec: Dict[str, Any]):
     sel = _select(system, spec.get("selection"), "rg.selection")
     kwargs = _pick(spec, ["mass_weighted"])
     return RgPlan(sel, **kwargs)
+
+
+def _build_gyrate(system: System, spec: Dict[str, Any]):
+    from .analysis.structure import gyrate as gyrate_analysis
+
+    selection = spec.get("selection")
+    if not selection:
+        raise ValueError("gyrate.selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "mass",
+            "axes",
+            "nomax",
+            "tensor",
+            "frame_indices",
+            "chunk_frames",
+            "length_scale",
+            "dtype",
+        ],
+    )
+    kwargs["mask"] = selection
+    return _CallablePlan(gyrate_analysis, kwargs)
 
 
 def _build_rmsd(system: System, spec: Dict[str, Any]):
@@ -218,6 +240,29 @@ def _build_dipole_alignment(system: System, spec: Dict[str, Any]):
     return DipoleAlignmentPlan(sel, charges, group_by=group_by, **kwargs)
 
 
+def _build_dipole_moments(system: System, spec: Dict[str, Any]):
+    from .analysis.dipole import dipole_moments as dipole_moments_analysis
+
+    selection = spec.get("selection")
+    if not selection:
+        raise ValueError("dipole_moments.selection is required")
+    charges_spec = spec.get("charges")
+    if charges_spec is None:
+        raise ValueError("dipole_moments.charges is required")
+    sel = _select(system, selection, "dipole_moments.selection")
+    group_by = spec.get("group_by", "resid")
+    charges = _resolve_charges(system, charges_spec)
+    group_types = _resolve_group_types(system, sel, group_by, spec.get("group_types"))
+    kwargs = _pick(
+        spec,
+        ["selection", "group_by", "length_scale", "frame_indices", "chunk_frames", "dtype"],
+    )
+    kwargs["charges"] = charges
+    if group_types is not None:
+        kwargs["group_types"] = group_types
+    return _CallablePlan(dipole_moments_analysis, kwargs)
+
+
 def _build_ion_pair(system: System, spec: Dict[str, Any]):
     sel = _select(system, spec.get("selection"), "ion_pair_correlation.selection")
     group_by = spec.get("group_by", "resid")
@@ -331,17 +376,320 @@ def _build_equipartition(system: System, spec: Dict[str, Any]):
 
 
 def _build_hbond(system: System, spec: Dict[str, Any]):
-    donors = _select(system, spec.get("donors"), "hbond.donors")
-    acceptors = _select(system, spec.get("acceptors"), "hbond.acceptors")
+    from .analysis.hbond import hbond as hbond_analysis
+
     dist_cutoff = spec.get("dist_cutoff")
     if dist_cutoff is None:
         raise ValueError("hbond.dist_cutoff is required")
-    hydrogens_expr = spec.get("hydrogens")
-    angle_cutoff = spec.get("angle_cutoff")
-    if hydrogens_expr:
-        hydrogens = _select(system, hydrogens_expr, "hbond.hydrogens")
-        return HbondPlan(donors, acceptors, dist_cutoff, hydrogens=hydrogens, angle_cutoff=angle_cutoff)
-    return HbondPlan(donors, acceptors, dist_cutoff)
+    kwargs = _pick(
+        spec,
+        [
+            "donors",
+            "acceptors",
+            "dist_cutoff",
+            "hydrogens",
+            "angle_cutoff",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(hbond_analysis, kwargs)
+
+
+def _build_saltbr(system: System, spec: Dict[str, Any]):
+    from .analysis.saltbr import saltbr as saltbr_analysis
+
+    selection = spec.get("selection")
+    if not selection:
+        raise ValueError("saltbr.selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "selection",
+            "charges",
+            "group_by",
+            "truncate",
+            "contact_cutoff",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(saltbr_analysis, kwargs)
+
+
+def _build_h2order(system: System, spec: Dict[str, Any]):
+    from .analysis.h2order import h2order as h2order_analysis
+
+    kwargs = _pick(
+        spec,
+        [
+            "selection",
+            "charges",
+            "axis",
+            "bin",
+            "n_slices",
+            "length_scale",
+            "water_resnames",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(h2order_analysis, kwargs)
+
+
+def _build_hydorder(system: System, spec: Dict[str, Any]):
+    from .analysis.hydorder import hydorder as hydorder_analysis
+
+    if not spec.get("selection"):
+        raise ValueError("hydorder.selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "selection",
+            "axis",
+            "bin",
+            "tblock",
+            "sgang1",
+            "sgang2",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(hydorder_analysis, kwargs)
+
+
+def _build_sorient(system: System, spec: Dict[str, Any]):
+    from .analysis.sorient import sorient as sorient_analysis
+
+    if not spec.get("solute_selection"):
+        raise ValueError("sorient.solute_selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "solute_selection",
+            "solvent_selection",
+            "atom1_indices",
+            "atom2_indices",
+            "atom3_indices",
+            "r_min",
+            "r_max",
+            "cbin",
+            "rbin",
+            "use_com",
+            "use_vector23",
+            "r_profile_max",
+            "length_scale",
+            "water_resnames",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(sorient_analysis, kwargs)
+
+
+def _build_spol(system: System, spec: Dict[str, Any]):
+    from .analysis.spol import spol as spol_analysis
+
+    if not spec.get("solute_selection"):
+        raise ValueError("spol.solute_selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "solute_selection",
+            "solvent_selection",
+            "charges",
+            "atom1_indices",
+            "atom2_indices",
+            "atom3_indices",
+            "r_min",
+            "r_max",
+            "bin",
+            "use_com",
+            "reference_atom",
+            "direction_atom_offsets",
+            "refdip",
+            "r_hist_max",
+            "length_scale",
+            "water_resnames",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(spol_analysis, kwargs)
+
+
+def _build_rama(system: System, spec: Dict[str, Any]):
+    from .analysis.rama import rama as rama_analysis
+
+    kwargs = _pick(spec, ["selection", "range360", "frame_indices", "chunk_frames"])
+    return _CallablePlan(rama_analysis, kwargs)
+
+
+def _build_current(system: System, spec: Dict[str, Any]):
+    from .analysis.current import current as current_analysis
+
+    kwargs = _pick(
+        spec,
+        [
+            "selection",
+            "charges",
+            "temperature",
+            "group_by",
+            "length_scale",
+            "group_types",
+            "make_whole",
+            "frame_decimation",
+            "dt_decimation",
+            "time_binning",
+            "lag_mode",
+            "max_lag",
+            "memory_budget_bytes",
+            "multi_tau_m",
+            "multi_tau_levels",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    if "frame_decimation" in kwargs:
+        kwargs["frame_decimation"] = _as_tuple(kwargs["frame_decimation"], 2, "frame_decimation")
+    if "dt_decimation" in kwargs:
+        kwargs["dt_decimation"] = _as_tuple(kwargs["dt_decimation"], 4, "dt_decimation")
+    if "time_binning" in kwargs:
+        kwargs["time_binning"] = _as_tuple(kwargs["time_binning"], 2, "time_binning")
+    return _CallablePlan(current_analysis, kwargs)
+
+
+def _build_bundle(system: System, spec: Dict[str, Any]):
+    from .analysis.bundle import bundle as bundle_analysis
+
+    if not spec.get("top_selection"):
+        raise ValueError("bundle.top_selection is required")
+    if not spec.get("bottom_selection"):
+        raise ValueError("bundle.bottom_selection is required")
+    if spec.get("n_axes") is None:
+        raise ValueError("bundle.n_axes is required")
+    kwargs = _pick(
+        spec,
+        [
+            "top_selection",
+            "bottom_selection",
+            "n_axes",
+            "kink_selection",
+            "use_z_reference",
+            "mass_weighted",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(bundle_analysis, kwargs)
+
+
+def _build_helix(system: System, spec: Dict[str, Any]):
+    from .analysis.helix import helix as helix_analysis
+
+    kwargs = _pick(
+        spec,
+        [
+            "selection",
+            "fit",
+            "check_each_frame",
+            "residue_start",
+            "residue_end",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(helix_analysis, kwargs)
+
+
+def _build_helixorient(system: System, spec: Dict[str, Any]):
+    from .analysis.helixorient import helixorient as helixorient_analysis
+
+    if not spec.get("ca_selection"):
+        raise ValueError("helixorient.ca_selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "ca_selection",
+            "sidechain_selection",
+            "incremental",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(helixorient_analysis, kwargs)
+
+
+def _build_mdmat(system: System, spec: Dict[str, Any]):
+    from .analysis.mdmat import mdmat as mdmat_analysis
+
+    kwargs = _pick(
+        spec,
+        [
+            "selection",
+            "truncate",
+            "include_contacts",
+            "include_frames",
+            "frames_mode",
+            "frames_out",
+            "memory_budget_bytes",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(mdmat_analysis, kwargs)
+
+
+def _build_pairdist(system: System, spec: Dict[str, Any]):
+    from .analysis.pairdist import pairdist as pairdist_analysis
+
+    kwargs = _pick(
+        spec,
+        [
+            "mask",
+            "mask2",
+            "delta",
+            "maxdist",
+            "mode",
+            "frame_indices",
+            "chunk_frames",
+            "image",
+        ],
+    )
+    return _CallablePlan(pairdist_analysis, kwargs)
+
+
+def _build_dist_extrema(system: System, spec: Dict[str, Any], fn_name: str):
+    from .analysis.pairdist import maxdist as maxdist_analysis
+    from .analysis.pairdist import mindist as mindist_analysis
+
+    analysis_fn = mindist_analysis if fn_name == "mindist" else maxdist_analysis
+    kwargs = _pick(
+        spec,
+        [
+            "mask",
+            "mask2",
+            "maxdist",
+            "frame_indices",
+            "chunk_frames",
+            "image",
+        ],
+    )
+    return _CallablePlan(analysis_fn, kwargs)
+
+
+def _build_mindist(system: System, spec: Dict[str, Any]):
+    return _build_dist_extrema(system, spec, "mindist")
+
+
+def _build_maxdist(system: System, spec: Dict[str, Any]):
+    return _build_dist_extrema(system, spec, "maxdist")
 
 
 def _build_rdf(system: System, spec: Dict[str, Any]):
@@ -431,8 +779,21 @@ def _build_docking(system: System, spec: Dict[str, Any]):
 
 def _build_dssp(system: System, spec: Dict[str, Any]):
     from .analysis.dssp import dssp as dssp_analysis
-    kwargs = _pick(spec, ["mask", "simplified", "chunk_frames"])
+    kwargs = _pick(spec, ["mask", "simplified", "dtype", "frame_indices", "chunk_frames"])
     return _CallablePlan(dssp_analysis, kwargs)
+
+
+def _build_kabsch_sander(system: System, spec: Dict[str, Any]):
+    from .analysis.kabsch_sander import kabsch_sander as kabsch_sander_analysis
+
+    selection = spec.get("selection", "protein")
+    if not selection:
+        raise ValueError("kabsch_sander.selection is required")
+    kwargs = _pick(
+        spec,
+        ["selection", "energy_cutoff", "frame_indices", "chunk_frames", "dtype"],
+    )
+    return _CallablePlan(kabsch_sander_analysis, kwargs)
 
 
 def _build_diffusion(system: System, spec: Dict[str, Any]):
@@ -446,7 +807,7 @@ def _build_pca(system: System, spec: Dict[str, Any]):
     mask = spec.get("mask", "")
     if not mask:
         raise ValueError("pca.mask is required")
-    kwargs = _pick(spec, ["mask", "n_vecs", "fit", "ref", "ref_mask", "chunk_frames"])
+    kwargs = _pick(spec, ["mask", "n_vecs", "fit", "ref", "ref_mask", "dtype", "chunk_frames"])
     return _CallablePlan(pca_analysis, kwargs)
 
 
@@ -526,6 +887,10 @@ def _build_surf(system: System, spec: Dict[str, Any]):
             "solutemask",
             "n_sphere_points",
             "radii",
+            "radii_mode",
+            "atom_area",
+            "volume",
+            "residue_area",
             "frame_indices",
             "chunk_frames",
             "device",
@@ -547,6 +912,10 @@ def _build_molsurf(system: System, spec: Dict[str, Any]):
             "offset",
             "n_sphere_points",
             "radii",
+            "radii_mode",
+            "atom_area",
+            "volume",
+            "residue_area",
             "frame_indices",
             "chunk_frames",
             "device",
@@ -564,12 +933,97 @@ def _build_watershell(system: System, spec: Dict[str, Any]):
     return _CallablePlan(watershell_analysis, kwargs)
 
 
+def _build_drid(system: System, spec: Dict[str, Any]):
+    from .analysis.drid import drid as drid_analysis
+
+    if not spec.get("selection"):
+        raise ValueError("drid.selection is required")
+    kwargs = _pick(spec, ["selection", "exclude_bonds", "frame_indices", "chunk_frames"])
+    return _CallablePlan(drid_analysis, kwargs)
+
+
+def _build_shape_descriptors(system: System, spec: Dict[str, Any]):
+    from .analysis.shape import shape_descriptors as shape_descriptors_analysis
+
+    selection = spec.get("selection")
+    if not selection:
+        raise ValueError("shape_descriptors.selection is required")
+    kwargs = _pick(spec, ["mass", "frame_indices", "chunk_frames"])
+    kwargs["mask"] = selection
+    return _CallablePlan(shape_descriptors_analysis, kwargs)
+
+
+def _build_runningavg(system: System, spec: Dict[str, Any]):
+    from .analysis.runningavg import runningavg as runningavg_analysis
+
+    if not spec.get("selection"):
+        raise ValueError("runningavg.selection is required")
+    kwargs = _pick(spec, ["selection", "window", "frame_indices", "chunk_frames"])
+    return _CallablePlan(runningavg_analysis, kwargs)
+
+
+def _build_lineardensity(system: System, spec: Dict[str, Any]):
+    from .analysis.lineardensity import lineardensity as lineardensity_analysis
+
+    if not spec.get("selection"):
+        raise ValueError("lineardensity.selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "selection",
+            "axis",
+            "bin",
+            "range",
+            "weight",
+            "norm",
+            "charges",
+            "cross_section_area",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(lineardensity_analysis, kwargs)
+
+
+def _build_nematic_order(system: System, spec: Dict[str, Any]):
+    from .analysis.nematic import nematic_order as nematic_order_analysis
+
+    if not spec.get("selection"):
+        raise ValueError("nematic_order.selection is required")
+    kwargs = _pick(
+        spec,
+        [
+            "selection",
+            "reference_axis",
+            "pbc",
+            "length_scale",
+            "frame_indices",
+            "chunk_frames",
+        ],
+    )
+    return _CallablePlan(nematic_order_analysis, kwargs)
+
+
 def _build_tordiff(system: System, spec: Dict[str, Any]):
     from .analysis.diffusion import tordiff as tordiff_analysis
     mask = spec.get("mask", "")
     if not mask:
         raise ValueError("tordiff.mask is required")
-    kwargs = _pick(spec, ["mask", "tstep", "chunk_frames"])
+    kwargs = _pick(
+        spec,
+        [
+            "mask",
+            "mass",
+            "time",
+            "diffout",
+            "return_transitions",
+            "transition_lag",
+            "frame_indices",
+            "chunk_frames",
+            "device",
+        ],
+    )
     return _CallablePlan(tordiff_analysis, kwargs)
 
 
@@ -610,17 +1064,53 @@ def _build_jcoupling(system: System, spec: Dict[str, Any]):
     if not dihedrals:
         raise ValueError("jcoupling.dihedrals is required")
     # map schema 'dihedrals' to 'dihedral_indices'
-    kwargs = _pick(spec, ["dihedrals", "karplus", "kfile", "phase_deg", "length_scale", "pbc", "chunk_frames", "frame_indices", "device"])
+    kwargs = _pick(
+        spec,
+        [
+            "dihedrals",
+            "karplus",
+            "kfile",
+            "phase_deg",
+            "length_scale",
+            "pbc",
+            "chunk_frames",
+            "frame_indices",
+            "device",
+            "return_dihedral",
+        ],
+    )
     if "dihedrals" in kwargs:
         kwargs["dihedral_indices"] = kwargs.pop("dihedrals")
     return _CallablePlan(jcoupling_analysis, kwargs)
 
 
 def _build_gist(system: System, spec: Dict[str, Any]):
-    # The agent runner does not yet construct the OpenMM objects GIST requires.
-    raise NotImplementedError(
-        "GIST analysis requires OpenMM system construction which is not yet supported in the agent runner."
+    from .analysis.gist import GistConfig, gist as gist_analysis
+
+    if spec.get("energy_method", "none") != "none":
+        raise NotImplementedError("CLI GIST currently supports the native grid/no-energy mode only")
+    config = GistConfig(
+        grid_spacing=float(spec.get("grid_spacing", 0.1)),
+        padding=float(spec.get("padding", 0.5)),
+        temperature=float(spec.get("temperature", 300.0)),
+        length_scale=float(spec.get("length_scale", 0.1)),
+        orientation_bins=int(spec.get("orientation_bins", 12)),
+        chunk_frames=spec.get("chunk_frames"),
+        frame_indices=spec.get("frame_indices"),
+        solute_selection=spec.get("solute_selection"),
+        max_frames=spec.get("max_frames"),
+        water_resnames=tuple(spec.get("water_resnames", ("HOH", "WAT", "SOL", "TIP3", "OPC"))),
+        bulk_density=spec.get("bulk_density"),
+        energy_method="none",
     )
+
+    def _run_gist_grid(traj, system, chunk_frames=None, device="auto"):
+        _ = device
+        if chunk_frames is not None and config.chunk_frames is None:
+            config.chunk_frames = chunk_frames
+        return gist_analysis(traj, system, None, None, config=config)
+
+    return _CallablePlan(_run_gist_grid, {})
 
 
 def _lipid_kwargs(spec: Dict[str, Any], names: list[str]):

@@ -8,6 +8,8 @@ from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+import warp_md
+
 from ._chunk_io import read_chunk_fields
 
 PairLike = Union[Tuple[int, int], Sequence[int]]
@@ -32,6 +34,28 @@ def _axis_vector(axis: Union[str, Sequence[float]]) -> np.ndarray:
     if norm == 0.0:
         raise ValueError("axis vector must be non-zero")
     return vec / norm
+
+
+def _lipid_scd_chunk(
+    coords: np.ndarray,
+    idx_a: np.ndarray,
+    idx_b: np.ndarray,
+    axis_vec: np.ndarray,
+    pbc_mode: str,
+    box: Optional[np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray]:
+    fn = getattr(warp_md, "lipid_scd_chunk_array", None)
+    if fn is None or getattr(fn, "__name__", "") != "lipid_scd_chunk_array":
+        raise RuntimeError("lipid_scd_chunk_array native binding unavailable")
+    scd, valid = fn(
+        np.asarray(coords, dtype=np.float64),
+        np.asarray(idx_a, dtype=np.int64),
+        np.asarray(idx_b, dtype=np.int64),
+        np.asarray(axis_vec, dtype=np.float64),
+        pbc_mode,
+        None if box is None else np.asarray(box, dtype=np.float64),
+    )
+    return np.asarray(scd, dtype=np.float32), np.asarray(valid, dtype=np.int64)
 
 
 def _resolve_pairs(
@@ -182,41 +206,28 @@ def lipidscd(
         if box is not None:
             box = np.asarray(box, dtype=np.float64) * length_scale
         frames = coords.shape[0]
-        for f in range(frames):
-            if frame_set is not None and global_frame not in frame_set:
-                global_frame += 1
-                continue
-            pos = coords[f]
-            vec = pos[idx_b] - pos[idx_a]
-            if pbc_mode == "orthorhombic":
-                if box is None:
-                    raise ValueError("pbc='orthorhombic' requires box in trajectory")
-                b = box[f]
-                if np.any(b == 0.0):
-                    raise ValueError("box lengths must be non-zero for pbc")
-                vec = vec - np.round(vec / b) * b
-            norms = np.linalg.norm(vec, axis=1)
-            valid = norms > 0.0
-            if not np.any(valid):
-                if per_frame:
-                    frames_out.append(np.zeros(n_pairs, dtype=np.float32))
-                n_frames += 1
-                continue
-            vec_valid = vec[valid]
-            norms_valid = norms[valid]
-            dot = vec_valid @ axis_vec
-            cos2 = (dot / norms_valid) ** 2
-            scd = 0.5 * (3.0 * cos2 - 1.0)
-            sums[valid] += scd
-            counts[valid] += 1
-            if per_frame:
-                frame_scd = np.zeros(n_pairs, dtype=np.float32)
-                frame_scd[valid] = scd.astype(np.float32)
-                frames_out.append(frame_scd)
-            n_frames += 1
-            if max_frames is not None and n_frames >= max_frames:
+        if frame_set is None:
+            local_indices = np.arange(frames, dtype=np.int64)
+        else:
+            local_indices = np.array(
+                [f for f in range(frames) if global_frame + f in frame_set],
+                dtype=np.int64,
+            )
+        global_frame += frames
+        if max_frames is not None:
+            remaining = max_frames - n_frames
+            if remaining <= 0:
                 break
-            global_frame += 1
+            local_indices = local_indices[:remaining]
+        if local_indices.size > 0:
+            selected_coords = coords[local_indices]
+            selected_box = None if box is None else box[local_indices]
+            scd, valid = _lipid_scd_chunk(selected_coords, idx_a, idx_b, axis_vec, pbc_mode, selected_box)
+            sums += (scd.astype(np.float64) * valid).sum(axis=0)
+            counts += valid.sum(axis=0)
+            if per_frame:
+                frames_out.append(scd.astype(np.float32, copy=False))
+            n_frames += scd.shape[0]
         if max_frames is not None and n_frames >= max_frames:
             break
         chunk = read_chunk_fields(traj, max_chunk, include_box=True)

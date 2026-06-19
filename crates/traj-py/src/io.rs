@@ -2481,17 +2481,19 @@ impl PyRgPlan {
 #[pymethods]
 impl PyRadgyrPlan {
     #[new]
-    #[pyo3(signature = (selection, mass_weighted=true, include_max=false, include_tensor=false))]
+    #[pyo3(signature = (selection, mass_weighted=true, include_max=false, include_axes=false, include_tensor=false))]
     fn new(
         selection: &PySelection,
         mass_weighted: bool,
         include_max: bool,
+        include_axes: bool,
         include_tensor: bool,
     ) -> Self {
         let plan = RadgyrPlan::new(
             selection.selection.clone(),
             mass_weighted,
             include_max,
+            include_axes,
             include_tensor,
         );
         Self {
@@ -2531,12 +2533,55 @@ struct PyRadgyrTensorPlan {
     plan: RefCell<RadgyrTensorPlan>,
 }
 
+#[pyclass]
+struct PyShapeDescriptorsPlan {
+    plan: RefCell<ShapeDescriptorsPlan>,
+}
+
 #[pymethods]
 impl PyRadgyrTensorPlan {
     #[new]
     #[pyo3(signature = (selection, mass_weighted=false))]
     fn new(selection: &PySelection, mass_weighted: bool) -> Self {
         let plan = RadgyrTensorPlan::new(selection.selection.clone(), mass_weighted);
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<&'py PyArray2<f32>> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyShapeDescriptorsPlan {
+    #[new]
+    #[pyo3(signature = (selection, mass_weighted=false))]
+    fn new(selection: &PySelection, mass_weighted: bool) -> Self {
+        let plan = ShapeDescriptorsPlan::new(selection.selection.clone(), mass_weighted);
         Self {
             plan: RefCell::new(plan),
         }
@@ -2621,16 +2666,27 @@ struct PySymmRmsdPlan {
 #[pymethods]
 impl PySymmRmsdPlan {
     #[new]
-    #[pyo3(signature = (selection, reference="topology", align=true))]
-    fn new(selection: &PySelection, reference: &str, align: bool) -> PyResult<Self> {
+    #[pyo3(signature = (selection, reference="topology", align=true, symmetry_groups=None, max_permutations=4096))]
+    fn new(
+        selection: &PySelection,
+        reference: &str,
+        align: bool,
+        symmetry_groups: Option<Vec<Vec<usize>>>,
+        max_permutations: usize,
+    ) -> PyResult<Self> {
         let reference_mode = parse_reference(reference)?;
-        let plan = SymmRmsdPlan::new(selection.selection.clone(), reference_mode, align);
+        let mut plan = SymmRmsdPlan::new(selection.selection.clone(), reference_mode, align);
+        if let Some(groups) = symmetry_groups {
+            plan = plan
+                .with_symmetry_groups(groups, max_permutations)
+                .map_err(to_py_err)?;
+        }
         Ok(Self {
             plan: RefCell::new(plan),
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -2638,15 +2694,17 @@ impl PySymmRmsdPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -2957,6 +3015,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRgPlan>()?;
     m.add_class::<PyRadgyrPlan>()?;
     m.add_class::<PyRadgyrTensorPlan>()?;
+    m.add_class::<PyShapeDescriptorsPlan>()?;
     m.add_class::<PyRmsdPlan>()?;
     m.add_class::<PySymmRmsdPlan>()?;
     m.add_class::<PyDistanceRmsdPlan>()?;

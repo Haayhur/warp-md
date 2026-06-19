@@ -92,6 +92,36 @@ def setup_rg_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mass-weighted", action="store_true", help="Mass-weighted Rg")
 
 
+def setup_gyrate_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Selection string")
+    parser.add_argument(
+        "--mass",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Mass-weighted radius of gyration",
+    )
+    parser.add_argument(
+        "--axes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include x/y/z axis radii",
+    )
+    parser.add_argument(
+        "--max-radius",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include maximum atom radius from selected center",
+    )
+    parser.add_argument(
+        "--tensor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include gyration tensor components",
+    )
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    add_frame_indices_arg(parser)
+
+
 def setup_rmsd_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--selection", required=True, help="Selection string")
     parser.add_argument(
@@ -215,6 +245,24 @@ def setup_dipole_alignment_args(parser: argparse.ArgumentParser) -> None:
     add_group_types_args(parser)
 
 
+def setup_dipole_moments_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Selection string")
+    parser.add_argument(
+        "--charges",
+        required=True,
+        help="Charges: JSON list, table:path, or selections:[{selection,charge},...]",
+    )
+    parser.add_argument(
+        "--group-by",
+        choices=["resid", "chain", "resid_chain"],
+        default="resid",
+        help="Group-by mode",
+    )
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    add_group_types_args(parser)
+    add_frame_indices_arg(parser)
+
+
 def setup_ion_pair_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--selection", required=True, help="Selection string")
     parser.add_argument("--rclust-cat", type=float, required=True, help="Cation cutoff")
@@ -319,6 +367,416 @@ def setup_hbond_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dist-cutoff", type=float, required=True, help="Distance cutoff (A)")
     parser.add_argument("--hydrogens", help="Hydrogen selection")
     parser.add_argument("--angle-cutoff", type=float, help="Angle cutoff (deg)")
+    add_frame_indices_arg(parser)
+
+
+def setup_saltbr_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Charged atom selection")
+    parser.add_argument("--charges", help="Charges: JSON list, table:path, or selections:[...]")
+    parser.add_argument(
+        "--group-by",
+        choices=["atom", "resid", "chain", "resid_chain"],
+        default="atom",
+        help="Group-by mode",
+    )
+    parser.add_argument("--truncate", type=float, help="Maximum pair distance")
+    parser.add_argument("--contact-cutoff", type=float, help="Salt-bridge contact cutoff")
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    add_frame_indices_arg(parser)
+
+
+def setup_h2order_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", help="Water molecule selection")
+    parser.add_argument("--charges", help="Charges: JSON list, table:path, or selections:[...]")
+    parser.add_argument("--axis", choices=["x", "y", "z"], default="z")
+    parser.add_argument("--bin", type=float, default=0.25, help="Profile bin width")
+    parser.add_argument("--n-slices", type=int, help="Number of profile slices")
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    parser.add_argument("--water-resnames", help="Comma-separated water residue names")
+    add_frame_indices_arg(parser)
+
+
+def setup_hydorder_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Central atom selection")
+    parser.add_argument("--axis", choices=["x", "y", "z"], default="z")
+    parser.add_argument("--bin", type=float, default=1.0, help="Grid bin width")
+    parser.add_argument("--tblock", type=int, default=1, help="Temporal block size")
+    parser.add_argument("--sgang1", type=float, help="Lower interface threshold")
+    parser.add_argument("--sgang2", type=float, help="Upper interface threshold")
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    add_frame_indices_arg(parser)
+
+
+def setup_sorient_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--solute-selection", required=True, help="Solute/reference selection")
+    parser.add_argument("--solvent-selection", help="Solvent molecule selection")
+    parser.add_argument("--atom1-indices", help="Comma-separated first solvent atom indices")
+    parser.add_argument("--atom2-indices", help="Comma-separated second solvent atom indices")
+    parser.add_argument("--atom3-indices", help="Comma-separated third solvent atom indices")
+    parser.add_argument("--r-min", type=float, default=0.0)
+    parser.add_argument("--r-max", type=float, default=0.5)
+    parser.add_argument("--cbin", type=float, default=0.02)
+    parser.add_argument("--rbin", type=float, default=0.02)
+    parser.add_argument("--use-com", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-vector23", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--r-profile-max", type=float)
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    parser.add_argument("--water-resnames", help="Comma-separated water residue names")
+    add_frame_indices_arg(parser)
+
+
+def setup_spol_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--solute-selection", required=True, help="Solute/reference selection")
+    parser.add_argument("--solvent-selection", help="Solvent molecule selection")
+    parser.add_argument("--charges", help="Charges: JSON list, table:path, or selections:[...]")
+    parser.add_argument("--atom1-indices", help="Comma-separated first solvent atom indices")
+    parser.add_argument("--atom2-indices", help="Comma-separated second solvent atom indices")
+    parser.add_argument("--atom3-indices", help="Comma-separated third solvent atom indices")
+    parser.add_argument("--r-min", type=float, default=0.0)
+    parser.add_argument("--r-max", type=float, default=0.32)
+    parser.add_argument("--bin", type=float, default=0.01, help="Radial bin width")
+    parser.add_argument("--use-com", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--reference-atom", type=int, default=0)
+    parser.add_argument("--direction-atom-offsets", default="0,1,2")
+    parser.add_argument("--refdip", type=float, default=0.0)
+    parser.add_argument("--r-hist-max", type=float)
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    parser.add_argument("--water-resnames", help="Comma-separated water residue names")
+    add_frame_indices_arg(parser)
+
+
+def setup_rama_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", default="protein", help="Residue/backbone selection")
+    parser.add_argument("--range360", action=argparse.BooleanOptionalAction, default=False)
+    add_frame_indices_arg(parser)
+
+
+def setup_current_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", default="", help="Charged atom selection")
+    parser.add_argument("--charges", help="Charges: JSON list, table:path, or selections:[...]")
+    parser.add_argument("--temperature", type=float, default=300.0, help="Temperature (K)")
+    parser.add_argument(
+        "--group-by",
+        choices=["atom", "resid", "chain", "resid_chain"],
+        default="resid",
+        help="Group-by mode",
+    )
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    parser.add_argument(
+        "--make-whole",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Make grouped molecules whole before current analysis",
+    )
+    add_group_types_args(parser)
+    add_dynamics_args(parser)
+    add_frame_indices_arg(parser)
+
+
+def setup_bundle_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--top-selection", required=True, help="Top endpoint selection")
+    parser.add_argument("--bottom-selection", required=True, help="Bottom endpoint selection")
+    parser.add_argument("--n-axes", type=int, required=True, help="Number of bundle axes")
+    parser.add_argument("--kink-selection", help="Optional kink-point selection")
+    parser.add_argument(
+        "--use-z-reference",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use z axis as the reference direction",
+    )
+    parser.add_argument(
+        "--mass-weighted",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Mass-weight endpoint centers",
+    )
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    add_frame_indices_arg(parser)
+
+
+def setup_helix_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", default="protein and backbone", help="Helix atom selection")
+    parser.add_argument("--fit", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--check-each-frame",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--residue-start", type=int)
+    parser.add_argument("--residue-end", type=int)
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    add_frame_indices_arg(parser)
+
+
+def setup_helixorient_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--ca-selection", required=True, help="C-alpha/backbone selection")
+    parser.add_argument("--sidechain-selection", help="Optional sidechain vector selection")
+    parser.add_argument("--incremental", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    add_frame_indices_arg(parser)
+
+
+def setup_mdmat_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", default="", help="Residue selection")
+    parser.add_argument("--truncate", type=float, default=1.5)
+    parser.add_argument(
+        "--include-contacts",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--include-frames",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--frames-mode", choices=["auto", "memory", "artifact"], default="auto")
+    parser.add_argument("--frames-out", help="NPZ output path for per-frame matrices")
+    parser.add_argument("--memory-budget-bytes", type=int, default=536870912)
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    add_frame_indices_arg(parser)
+
+
+def setup_docking_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--receptor-mask", required=True, help="Receptor atom selection")
+    parser.add_argument("--ligand-mask", required=True, help="Ligand atom selection")
+    parser.add_argument("--close-contact-cutoff", type=float, default=4.0)
+    parser.add_argument("--hydrophobic-cutoff", type=float, default=4.0)
+    parser.add_argument("--hydrogen-bond-cutoff", type=float, default=3.5)
+    parser.add_argument("--clash-cutoff", type=float, default=2.5)
+    parser.add_argument("--salt-bridge-cutoff", type=float, default=5.5)
+    parser.add_argument("--halogen-bond-cutoff", type=float, default=5.5)
+    parser.add_argument("--metal-coordination-cutoff", type=float, default=3.5)
+    parser.add_argument("--cation-pi-cutoff", type=float, default=6.0)
+    parser.add_argument("--pi-pi-cutoff", type=float, default=7.5)
+    parser.add_argument("--hbond-min-angle-deg", type=float, default=120.0)
+    parser.add_argument("--donor-hydrogen-cutoff", type=float, default=1.25)
+    parser.add_argument("--allow-missing-hydrogen", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--length-scale", type=float, default=1.0)
+    parser.add_argument("--max-events-per-frame", type=int, default=20_000)
+    add_frame_indices_arg(parser)
+
+
+def setup_dssp_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mask", default="protein", help="Protein/residue selection")
+    parser.add_argument("--simplified", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--dtype",
+        choices=["tuple", "dict", "full", "dataset", "integer", "codes"],
+        default="tuple",
+    )
+    add_frame_indices_arg(parser)
+
+
+def setup_diffusion_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mask", default="", help="Atom selection")
+    parser.add_argument("--tstep", type=float, default=1.0)
+    parser.add_argument("--individual", action=argparse.BooleanOptionalAction, default=False)
+    add_frame_indices_arg(parser)
+
+
+def setup_rmsf_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mask", default="", help="Atom selection")
+    parser.add_argument("--byres", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--bymask", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--calcadp", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--length-scale", type=float, default=1.0)
+    add_frame_indices_arg(parser)
+
+
+def setup_native_contacts_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mask", required=True, help="First atom selection")
+    parser.add_argument("--mask2", default="", help="Second atom selection")
+    parser.add_argument("--ref", default="0", help="Reference frame index or topology")
+    parser.add_argument("--distance", type=float, default=4.5, help="Native contact cutoff")
+    parser.add_argument("--mindist", type=float, help="Minimum accepted reference distance")
+    parser.add_argument("--maxdist", type=float, help="Alias for distance cutoff")
+    parser.add_argument("--image", action=argparse.BooleanOptionalAction, default=False)
+    add_frame_indices_arg(parser)
+
+
+def setup_pca_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mask", required=True, help="Atom selection")
+    parser.add_argument("--n-vecs", type=int, default=2, help="Number of principal components")
+    parser.add_argument("--fit", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--ref", help="Reference frame index, topology, frame0, or omitted mean reference")
+    parser.add_argument("--ref-mask", help="Alignment/reference atom selection")
+    parser.add_argument("--dtype", choices=["ndarray", "tuple"], default="ndarray")
+
+
+def setup_projection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mask", required=True, help="Atom selection")
+    parser.add_argument("--eigenvectors", required=True, help="JSON array or .npy/.npz path")
+    parser.add_argument("--eigenvalues", help="JSON array or .npy/.npz path")
+    parser.add_argument(
+        "--scalar-type",
+        choices=["covar", "mwcovar"],
+        default="covar",
+        help="Projection scalar type",
+    )
+    parser.add_argument("--average-coords", help="JSON array or .npy/.npz path")
+    parser.add_argument("--dtype", choices=["ndarray"], default="ndarray")
+    add_frame_indices_arg(parser)
+
+
+def setup_tordiff_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mask", required=True, help="Torsion atom selection")
+    parser.add_argument("--mass", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--time", type=float, default=1.0, help="Time step for output axis")
+    parser.add_argument("--diffout", help="Optional derivative table path")
+    parser.add_argument("--return-transitions", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--transition-lag", type=int, default=1)
+    add_frame_indices_arg(parser)
+
+
+def setup_nmr_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Vector atom selection")
+    parser.add_argument("--vector-pairs", help="JSON pair list or 'sequential'")
+    parser.add_argument("--method", choices=["tensor", "timecorr_fit"], default="tensor")
+    parser.add_argument("--order", type=int, default=2)
+    parser.add_argument("--tstep", type=float, default=1.0)
+    parser.add_argument("--tcorr", type=float, default=10000.0)
+    parser.add_argument("--length-scale", type=float, default=0.1)
+    parser.add_argument("--pbc", choices=["none", "orthorhombic"], default="none")
+    add_frame_indices_arg(parser)
+
+
+def setup_jcoupling_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dihedrals", required=True, help="JSON list of atom-index quartets")
+    parser.add_argument("--karplus", default="6.4,-1.4,1.9", help="Karplus A,B,C parameters")
+    parser.add_argument("--kfile", help="Karplus parameter file")
+    parser.add_argument("--phase-deg", type=float, default=0.0)
+    parser.add_argument("--length-scale", type=float, default=0.1)
+    parser.add_argument("--pbc", choices=["none", "orthorhombic"], default="none")
+    parser.add_argument("--return-dihedral", action=argparse.BooleanOptionalAction, default=False)
+    add_frame_indices_arg(parser)
+
+
+def setup_gist_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--energy-method", choices=["none"], default="none")
+    parser.add_argument("--grid-spacing", type=float, default=0.1)
+    parser.add_argument("--padding", type=float, default=0.5)
+    parser.add_argument("--temperature", type=float, default=300.0)
+    parser.add_argument("--length-scale", type=float, default=0.1)
+    parser.add_argument("--orientation-bins", type=int, default=12)
+    parser.add_argument("--solute-selection", help="Optional solute atom selection")
+    parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--water-resnames", default="HOH,WAT,SOL,TIP3,OPC")
+    parser.add_argument("--bulk-density", type=float)
+    add_frame_indices_arg(parser)
+
+
+def _setup_grid_map_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Mapped atom selection")
+    parser.add_argument("--center-selection", required=True, help="Grid center selection")
+    parser.add_argument("--box-unit", required=True, help="Grid spacing (x,y,z)")
+    parser.add_argument("--region-size", required=True, help="Region size (x,y,z)")
+    parser.add_argument("--shift", help="Grid shift (x,y,z)")
+    parser.add_argument("--length-scale", type=float, help="Length scale")
+    add_frame_indices_arg(parser)
+
+
+def setup_density_args(parser: argparse.ArgumentParser) -> None:
+    _setup_grid_map_args(parser)
+
+
+def setup_volmap_args(parser: argparse.ArgumentParser) -> None:
+    _setup_grid_map_args(parser)
+
+
+def _setup_surface_args(parser: argparse.ArgumentParser, *, molsurf: bool = False) -> None:
+    parser.add_argument("--mask", default="", help="Surface atom selection")
+    parser.add_argument(
+        "--algorithm",
+        choices=["lcpo", "sasa", "bbox", "auto"] if not molsurf else ["sasa", "bbox", "auto"],
+        default="lcpo" if not molsurf else "sasa",
+    )
+    parser.add_argument("--probe-radius", type=float, help="Probe radius")
+    if molsurf:
+        parser.add_argument("--probe", type=float, help="Molecule surface probe radius")
+    parser.add_argument("--offset", type=float, help="Surface offset")
+    if not molsurf:
+        parser.add_argument("--nbrcut", type=float, help="LCPO neighbor cutoff")
+    parser.add_argument("--solutemask", default="", help="Optional solute selection")
+    parser.add_argument("--n-sphere-points", type=int, default=64)
+    parser.add_argument("--radii", help="Comma-separated radii or radii mode")
+    parser.add_argument("--radii-mode", choices=["gb", "parse", "vdw"], default="gb")
+    parser.add_argument(
+        "--atom-area",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Return atom-level area when supported",
+    )
+    parser.add_argument(
+        "--volume",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Return volume when supported",
+    )
+    parser.add_argument(
+        "--residue-area",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Return residue-level area when supported",
+    )
+    add_frame_indices_arg(parser)
+
+
+def setup_surf_args(parser: argparse.ArgumentParser) -> None:
+    _setup_surface_args(parser, molsurf=False)
+
+
+def setup_molsurf_args(parser: argparse.ArgumentParser) -> None:
+    _setup_surface_args(parser, molsurf=True)
+
+
+def setup_watershell_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--solute-mask", required=True, help="Solute selection")
+    parser.add_argument("--solvent-mask", default=":WAT", help="Solvent selection")
+    parser.add_argument("--lower", type=float, default=3.4)
+    parser.add_argument("--upper", type=float, default=5.0)
+    parser.add_argument("--image", action=argparse.BooleanOptionalAction, default=True)
+    add_frame_indices_arg(parser)
+
+
+def setup_pairdist_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mask", default="*", help="First atom selection")
+    parser.add_argument("--mask2", default="", help="Second atom selection")
+    parser.add_argument("--delta", type=float, default=0.1, help="Distance bin width")
+    parser.add_argument("--maxdist", type=float, help="Maximum distance cutoff")
+    parser.add_argument(
+        "--mode",
+        choices=["hist", "min", "max"],
+        default="hist",
+        help="Histogram or per-frame distance extrema",
+    )
+    parser.add_argument(
+        "--image",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Apply orthorhombic periodic imaging",
+    )
+    parser.add_argument("--frame-indices", help="Comma-separated frame indices")
+
+
+def _setup_dist_extrema_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mask", default="*", help="First atom selection")
+    parser.add_argument("--mask2", default="", help="Second atom selection")
+    parser.add_argument("--maxdist", type=float, help="Distance cutoff/fill value")
+    parser.add_argument(
+        "--image",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Apply orthorhombic periodic imaging",
+    )
+    parser.add_argument("--frame-indices", help="Comma-separated frame indices")
+
+
+def setup_mindist_args(parser: argparse.ArgumentParser) -> None:
+    _setup_dist_extrema_args(parser)
+
+
+def setup_maxdist_args(parser: argparse.ArgumentParser) -> None:
+    _setup_dist_extrema_args(parser)
 
 
 def setup_rdf_args(parser: argparse.ArgumentParser) -> None:
@@ -332,6 +790,85 @@ def setup_rdf_args(parser: argparse.ArgumentParser) -> None:
         default="orthorhombic",
         help="PBC mode",
     )
+
+
+def add_frame_indices_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--frame-indices", help="Comma-separated frame indices")
+
+
+def setup_drid_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Atom selection")
+    parser.add_argument(
+        "--exclude-bonds",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Exclude directly bonded selected atom pairs",
+    )
+    add_frame_indices_arg(parser)
+
+
+def setup_shape_descriptors_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Atom selection")
+    parser.add_argument(
+        "--mass",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Mass-weight gyration tensor",
+    )
+    add_frame_indices_arg(parser)
+
+
+def setup_runningavg_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Atom selection")
+    parser.add_argument(
+        "--window",
+        type=int,
+        help="Fixed running-average window; omit for cumulative average",
+    )
+    add_frame_indices_arg(parser)
+
+
+def setup_lineardensity_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Atom selection")
+    parser.add_argument("--axis", choices=["x", "y", "z"], default="z")
+    parser.add_argument("--bin", type=float, default=1.0, help="Bin width")
+    parser.add_argument("--range", help="Lower,upper coordinate range")
+    parser.add_argument(
+        "--weight",
+        choices=["number", "mass", "charge"],
+        default="number",
+    )
+    parser.add_argument(
+        "--norm",
+        choices=["count", "density"],
+        default="count",
+    )
+    parser.add_argument(
+        "--charges",
+        help="Charges for charge weighting: JSON list, table:path, or selections:[...]",
+    )
+    parser.add_argument("--cross-section-area", type=float, help="Density normalization area")
+    parser.add_argument("--length-scale", type=float, help="Length scale applied before binning")
+    add_frame_indices_arg(parser)
+
+
+def setup_nematic_order_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", required=True, help="Even atom selection interpreted as adjacent tail/head pairs")
+    parser.add_argument("--reference-axis", help="Reference axis x,y,z")
+    parser.add_argument(
+        "--pbc",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use orthorhombic minimum-image vectors",
+    )
+    parser.add_argument("--length-scale", type=float, help="Length scale applied before vector math")
+    add_frame_indices_arg(parser)
+
+
+def setup_kabsch_sander_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--selection", default="protein", help="Protein/backbone selection")
+    parser.add_argument("--energy-cutoff", type=float, default=-0.5, help="Hydrogen-bond energy cutoff")
+    add_frame_indices_arg(parser)
 
 
 def setup_end_to_end_args(parser: argparse.ArgumentParser) -> None:

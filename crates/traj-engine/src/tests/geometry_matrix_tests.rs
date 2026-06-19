@@ -73,6 +73,33 @@ fn multidihedral_plan_basic() {
 }
 
 #[test]
+fn multi_angle_plan_outputs_frame_by_command_matrix() {
+    let mut system = build_four_resid_system();
+    let sel_a = system.select("resid 1").unwrap();
+    let sel_b = system.select("resid 2").unwrap();
+    let sel_c = system.select("resid 3").unwrap();
+    let sel_d = system.select("resid 4").unwrap();
+    let defs = vec![
+        (sel_a.clone(), sel_b.clone(), sel_c.clone()),
+        (sel_b, sel_c, sel_d),
+    ];
+    let mut plan = MultiAnglePlan::new(defs, false, PbcMode::None, true);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 2);
+            assert!((data[0] - 90.0).abs() < 1e-4);
+            assert!((data[1] - 90.0).abs() < 1e-4);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn multidihedral_selected_io_path() {
     struct SelectedOnlyTraj {
         n_atoms: usize,
@@ -575,6 +602,140 @@ fn vector_plan_basic() {
             assert!((data[0] - 1.0).abs() < 1e-6);
             assert!((data[1] - 2.0).abs() < 1e-6);
             assert!((data[2] - 3.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn multi_vector_plan_batches_mask_and_center_commands() {
+    let mut system = build_two_resid_system();
+    let sel_a = system.select("resid 1").unwrap();
+    let sel_b = system.select("resid 2").unwrap();
+    let commands = vec![
+        MultiVectorCommand::Between {
+            sel_a: sel_a.clone(),
+            sel_b: sel_b.clone(),
+            mass_weighted: false,
+            pbc: PbcMode::None,
+        },
+        MultiVectorCommand::Center {
+            selection: sel_a.clone(),
+            mass_weighted: false,
+        },
+        MultiVectorCommand::Center {
+            selection: sel_b,
+            mass_weighted: false,
+        },
+    ];
+    let mut plan = MultiVectorPlan::new(commands);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 2.0, 3.0, 1.0]],
+        vec![[2.0, 0.0, 0.0, 1.0], [5.0, 0.0, 1.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 9);
+            let expected = vec![
+                1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 3.0, 0.0, 1.0, 2.0, 0.0,
+                0.0, 5.0, 0.0, 1.0,
+            ];
+            assert_eq!(data, expected);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn vector_plan_uses_selected_chunks() {
+    struct SelectedOnlyTraj {
+        frames: Vec<Vec<[f32; 4]>>,
+        cursor: usize,
+        selected_reads: usize,
+    }
+
+    impl TrajReader for SelectedOnlyTraj {
+        fn n_atoms(&self) -> usize {
+            self.frames.first().map(|frame| frame.len()).unwrap_or(0)
+        }
+
+        fn n_frames_hint(&self) -> Option<usize> {
+            Some(self.frames.len())
+        }
+
+        fn read_chunk(
+            &mut self,
+            _max_frames: usize,
+            _out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            Err(traj_core::error::TrajError::Unsupported(
+                "selected path expected".into(),
+            ))
+        }
+
+        fn read_chunk_selected(
+            &mut self,
+            max_frames: usize,
+            selection: &[u32],
+            out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            assert_eq!(selection, &[0, 3]);
+            out.reset(selection.len(), max_frames);
+            let mut count = 0usize;
+            while self.cursor < self.frames.len() && count < max_frames {
+                let src = &self.frames[self.cursor];
+                let dst = out.start_frame(Box3::None, None);
+                for (dst_atom, &src_idx) in dst.iter_mut().zip(selection.iter()) {
+                    *dst_atom = src[src_idx as usize];
+                }
+                self.cursor += 1;
+                self.selected_reads += 1;
+                count += 1;
+            }
+            Ok(count)
+        }
+    }
+
+    let mut system = build_four_resid_system();
+    let sel_a = system.select("resid 1").unwrap();
+    let sel_b = system.select("resid 4").unwrap();
+    let mut plan = VectorPlan::new(sel_a, sel_b, false, PbcMode::None);
+    let frames = vec![
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [10.0, 0.0, 0.0, 1.0],
+            [20.0, 0.0, 0.0, 1.0],
+            [1.0, 2.0, 3.0, 1.0],
+        ],
+        vec![
+            [1.0, 1.0, 1.0, 1.0],
+            [10.0, 0.0, 0.0, 1.0],
+            [20.0, 0.0, 0.0, 1.0],
+            [4.0, 5.0, 6.0, 1.0],
+        ],
+    ];
+    let mut traj = SelectedOnlyTraj {
+        frames,
+        cursor: 0,
+        selected_reads: 0,
+    };
+    let mut exec = Executor::new(system).with_chunk_frames(1);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 3);
+            assert_eq!(traj.selected_reads, 2);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!((data[1] - 2.0).abs() < 1e-6);
+            assert!((data[2] - 3.0).abs() < 1e-6);
+            assert!((data[3] - 3.0).abs() < 1e-6);
+            assert!((data[4] - 4.0).abs() < 1e-6);
+            assert!((data[5] - 5.0).abs() < 1e-6);
         }
         _ => panic!("unexpected output"),
     }
@@ -1427,7 +1588,7 @@ fn radgyr_tensor_plan_basic() {
 fn radgyr_plan_reports_max_and_tensor() {
     let mut system = build_system();
     let sel = system.select("resid 1").unwrap();
-    let mut plan = RadgyrPlan::new(sel, false, true, true);
+    let mut plan = RadgyrPlan::new(sel, false, true, false, true);
     let frames = vec![vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]]];
     let mut traj = InMemoryTraj::new(frames);
     let mut exec = Executor::new(system);
@@ -1441,6 +1602,199 @@ fn radgyr_plan_reports_max_and_tensor() {
             assert!((data[2] - 1.0).abs() < 1e-6);
             assert!(data[3].abs() < 1e-6);
             assert!(data[4].abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn radgyr_plan_reports_axis_radii() {
+    let mut system = build_system();
+    let sel = system.select("resid 1").unwrap();
+    let mut plan = RadgyrPlan::new(sel, false, false, true, false);
+    let frames = vec![vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]]];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 4);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!(data[1].abs() < 1e-6);
+            assert!((data[2] - 1.0).abs() < 1e-6);
+            assert!((data[3] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn shape_descriptors_plan_reports_principal_moments() {
+    let mut system = build_system();
+    let sel = system.select("resid 1").unwrap();
+    let mut plan = ShapeDescriptorsPlan::new(sel, false);
+    let frames = vec![vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]]];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 7);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!(data[1].abs() < 1e-6);
+            assert!(data[2].abs() < 1e-6);
+            assert!((data[3] - 1.0).abs() < 1e-6);
+            assert!((data[4] - 1.0).abs() < 1e-6);
+            assert!(data[5].abs() < 1e-6);
+            assert!((data[6] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn drid_plan_basic_and_bond_exclusion() {
+    let mut system = build_plane_system();
+    let sel = system.select("resid 1").unwrap();
+    let frame = vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [3.0, 0.0, 0.0, 1.0],
+    ];
+
+    let mut plan = DridPlan::new(sel.clone()).with_exclude_bonds(false);
+    let mut traj = InMemoryTraj::new(vec![frame.clone()]);
+    let mut exec = Executor::new(system.clone());
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 9);
+            assert!((data[0] - (2.0 / 3.0)).abs() < 1e-6);
+            assert!((data[1] - (1.0 / 3.0)).abs() < 1e-6);
+            assert!(data[2].abs() < 1e-6);
+            assert!((data[3] - 0.75).abs() < 1e-6);
+            assert!((data[4] - 0.25).abs() < 1e-6);
+            assert!((data[6] - (5.0 / 12.0)).abs() < 1e-6);
+            assert!((data[7] - (1.0 / 12.0)).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+
+    system.set_topology_metadata(vec![(0, 1)], Vec::new()).unwrap();
+    let mut plan = DridPlan::new(sel).with_exclude_bonds(true);
+    let mut traj = InMemoryTraj::new(vec![frame]);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 9);
+            assert!((data[0] - (1.0 / 3.0)).abs() < 1e-6);
+            assert!(data[1].abs() < 1e-6);
+            assert!((data[3] - 0.5).abs() < 1e-6);
+            assert!(data[4].abs() < 1e-6);
+            assert!((data[6] - (5.0 / 12.0)).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn running_average_plan_cumulative_and_windowed() {
+    let mut system = build_system();
+    let sel = system.select("resid 1").unwrap();
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+        vec![[2.0, 0.0, 0.0, 1.0], [4.0, 0.0, 0.0, 1.0]],
+        vec![[4.0, 0.0, 0.0, 1.0], [8.0, 0.0, 0.0, 1.0]],
+    ];
+
+    let mut plan = RunningAveragePlan::new(sel.clone(), 0);
+    let mut traj = InMemoryTraj::new(frames.clone());
+    let mut exec = Executor::new(system.clone());
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 3);
+            assert_eq!(cols, 6);
+            let expected: Vec<f32> = vec![
+                0.0,
+                0.0,
+                0.0,
+                2.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                3.0,
+                0.0,
+                0.0,
+                2.0,
+                0.0,
+                0.0,
+                14.0 / 3.0,
+                0.0,
+                0.0,
+            ];
+            for (got, want) in data.iter().zip(expected.iter()) {
+                assert!((*got - *want).abs() < 1e-6);
+            }
+        }
+        _ => panic!("unexpected output"),
+    }
+
+    let mut plan = RunningAveragePlan::new(sel, 2);
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 3);
+            assert_eq!(cols, 6);
+            let expected: Vec<f32> = vec![
+                0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 3.0, 0.0, 0.0, 3.0, 0.0,
+                0.0, 6.0, 0.0, 0.0,
+            ];
+            for (got, want) in data.iter().zip(expected.iter()) {
+                assert!((*got - *want).abs() < 1e-6);
+            }
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn running_average_trajectory_plan_preserves_box() {
+    let mut system = build_system();
+    let sel = system.select("resid 1").unwrap();
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+        vec![[2.0, 0.0, 0.0, 1.0], [4.0, 0.0, 0.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 11.0,
+        lz: 12.0,
+    };
+    let mut plan = RunningAverageTrajectoryPlan::new(sel, 0);
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.atoms, 2);
+            assert_eq!(out.coords.len(), 12);
+            assert_eq!(out.box_, vec![box_, box_]);
+            assert!(out.time.is_empty());
+            let expected = [0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 3.0, 0.0, 0.0];
+            for (got, want) in out.coords.iter().zip(expected.iter()) {
+                assert!((*got - *want).abs() < 1e-6);
+            }
         }
         _ => panic!("unexpected output"),
     }
@@ -1515,7 +1869,7 @@ fn radgyr_plans_use_selected_chunks() {
         [1.0, 0.0, 0.0, 1.0],
     ]];
 
-    let mut plan = RadgyrPlan::new(sel.clone(), true, true, true);
+    let mut plan = RadgyrPlan::new(sel.clone(), true, true, false, true);
     let mut traj = SelectedOnlyTraj::new(system.n_atoms(), frames.clone(), selection.clone());
     let mut exec = Executor::new(system.clone());
     let out = exec.run_plan(&mut plan, &mut traj).unwrap();
@@ -1531,9 +1885,9 @@ fn radgyr_plans_use_selected_chunks() {
         _ => panic!("unexpected output"),
     }
 
-    let mut plan = RadgyrTensorPlan::new(sel, true);
-    let mut traj = SelectedOnlyTraj::new(system.n_atoms(), frames, selection);
-    let mut exec = Executor::new(system);
+    let mut plan = RadgyrTensorPlan::new(sel.clone(), true);
+    let mut traj = SelectedOnlyTraj::new(system.n_atoms(), frames.clone(), selection.clone());
+    let mut exec = Executor::new(system.clone());
     let out = exec.run_plan(&mut plan, &mut traj).unwrap();
     assert_eq!(traj.selected_reads, 1);
     match out {
@@ -1542,6 +1896,22 @@ fn radgyr_plans_use_selected_chunks() {
             assert_eq!(cols, 7);
             assert!((data[0] - 1.0).abs() < 1e-6);
             assert!((data[1] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+
+    let mut plan = ShapeDescriptorsPlan::new(sel, true);
+    let mut traj = SelectedOnlyTraj::new(system.n_atoms(), frames.clone(), selection.clone());
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    assert_eq!(traj.selected_reads, 1);
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 7);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!((data[3] - 1.0).abs() < 1e-6);
+            assert!((data[6] - 1.0).abs() < 1e-6);
         }
         _ => panic!("unexpected output"),
     }

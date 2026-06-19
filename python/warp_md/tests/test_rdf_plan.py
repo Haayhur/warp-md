@@ -127,6 +127,7 @@ def test_rdf_wrapper_passes_native_trajectory_to_rust(monkeypatch):
     assert seen["kwargs"]["density"] == 1.0
     assert seen["kwargs"]["volume"] is False
     assert seen["kwargs"]["raw_rdf"] is True
+    assert seen["kwargs"]["number_density"] is False
     assert seen["kwargs"]["intrdf"] is True
     assert seen["kwargs"]["dimension"] == "xy"
     assert traj.count_calls == []
@@ -135,8 +136,162 @@ def test_rdf_wrapper_passes_native_trajectory_to_rust(monkeypatch):
     assert out["integral_rdf"].tolist() == [1.0, 1.0]
 
 
+def test_rdf_norm_number_density_maps_to_native_mode(monkeypatch):
+    seen = {}
+
+    class _DummyPlan:
+        def __init__(self, _sel_a, _sel_b, **kwargs):
+            seen["kwargs"] = kwargs
+
+        def run(self, *_args, **_kwargs):
+            return (
+                np.array([0.5], dtype=np.float32),
+                np.array([2.0], dtype=np.float32),
+                np.array([4], dtype=np.uint64),
+            )
+
+    traj = _DummyTraj()
+    system = _DummySystem()
+    monkeypatch.setattr(rdf_mod, "load_native_symbol", lambda _name: _DummyPlan)
+    monkeypatch.setattr(rdf_mod, "is_native_traj", lambda got: got is traj)
+    monkeypatch.setattr(rdf_mod, "coerce_native_system", lambda got: got)
+
+    out = rdf_mod.rdf(
+        traj,
+        system,
+        solvent_mask="all",
+        solute_mask="all",
+        maximum=1.0,
+        bin_spacing=1.0,
+        image=False,
+        density=1.0,
+        raw_rdf=True,
+        volume=True,
+        norm="number_density",
+        dtype="dict",
+    )
+
+    assert seen["kwargs"]["raw_rdf"] is False
+    assert seen["kwargs"]["volume"] is False
+    assert seen["kwargs"]["number_density"] is True
+    np.testing.assert_array_equal(out["rdf"], np.array([2.0], dtype=np.float32))
+
+
+def test_rdf_norm_rejects_unknown_mode(monkeypatch):
+    monkeypatch.setattr(rdf_mod, "load_native_symbol", lambda _name: object)
+    monkeypatch.setattr(rdf_mod, "is_native_traj", lambda _traj: True)
+    with pytest.raises(ValueError, match="norm must be"):
+        rdf_mod.rdf(_DummyTraj(), _DummySystem(), norm="bad")
+
+
+def test_rdf_full_dtype_returns_counts_and_integral(monkeypatch):
+    class _DummyPlan:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, *_args, **_kwargs):
+            return (
+                np.array([0.5, 1.5], dtype=np.float32),
+                np.array([2.0, 3.0], dtype=np.float32),
+                np.array([4, 5], dtype=np.uint64),
+                np.array([0.25, 0.75], dtype=np.float32),
+            )
+
+    traj = _DummyTraj()
+    system = _DummySystem()
+    monkeypatch.setattr(rdf_mod, "load_native_symbol", lambda _name: _DummyPlan)
+    monkeypatch.setattr(rdf_mod, "is_native_traj", lambda got: got is traj)
+    monkeypatch.setattr(rdf_mod, "coerce_native_system", lambda got: got)
+
+    centers, values, counts, integral = rdf_mod.rdf(
+        traj,
+        system,
+        solvent_mask="all",
+        solute_mask="all",
+        maximum=2.0,
+        bin_spacing=1.0,
+        image=False,
+        density=1.0,
+        intrdf=True,
+        dtype="full",
+    )
+
+    np.testing.assert_array_equal(centers, np.array([0.5, 1.5], dtype=np.float32))
+    np.testing.assert_array_equal(values, np.array([2.0, 3.0], dtype=np.float32))
+    np.testing.assert_array_equal(counts, np.array([4, 5], dtype=np.uint64))
+    np.testing.assert_array_equal(integral, np.array([0.25, 0.75], dtype=np.float32))
+    assert traj.count_calls == []
+
+
+def test_rdf_full_dtype_omits_integral_when_not_requested(monkeypatch):
+    class _DummyPlan:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, *_args, **_kwargs):
+            return (
+                np.array([0.5], dtype=np.float32),
+                np.array([2.0], dtype=np.float32),
+                np.array([4], dtype=np.uint64),
+            )
+
+    traj = _DummyTraj()
+    system = _DummySystem()
+    monkeypatch.setattr(rdf_mod, "load_native_symbol", lambda _name: _DummyPlan)
+    monkeypatch.setattr(rdf_mod, "is_native_traj", lambda got: got is traj)
+    monkeypatch.setattr(rdf_mod, "coerce_native_system", lambda got: got)
+
+    out = rdf_mod.rdf(
+        traj,
+        system,
+        solvent_mask="all",
+        solute_mask="all",
+        maximum=1.0,
+        bin_spacing=1.0,
+        image=False,
+        density=1.0,
+        dtype="tuple_full",
+    )
+
+    assert len(out) == 3
+    np.testing.assert_array_equal(out[2], np.array([4], dtype=np.uint64))
+
+
 def test_rdf_wrapper_rejects_non_native_trajectory(monkeypatch):
     monkeypatch.setattr(rdf_mod, "load_native_symbol", lambda _name: object)
     monkeypatch.setattr(rdf_mod, "is_native_traj", lambda _traj: False)
     with pytest.raises(RuntimeError, match="Rust-backed trajectory"):
         rdf_mod.rdf(_DummyTraj(), _DummySystem(), image=False)
+
+
+def test_rdf_wrapper_accepts_atom_index_masks():
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    system = wmd.System.from_arrays(
+        {
+            "name": ["A", "B"],
+            "resname": ["RES", "RES"],
+            "resid": [1, 2],
+            "chain_id": [0, 0],
+            "mass": [1.0, 1.0],
+        },
+        positions0=coords[0],
+    )
+    out = rdf_mod.rdf(
+        wmd.Trajectory.from_numpy(coords),
+        system,
+        solvent_mask="@1",
+        solute_mask="@2",
+        maximum=2.0,
+        bin_spacing=1.0,
+        image=False,
+        density=1.0,
+        raw_rdf=True,
+        dtype="dict",
+    )
+
+    np.testing.assert_array_equal(out["counts"], np.array([1, 0], dtype=np.uint64))

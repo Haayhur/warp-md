@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 import warp_md
-from warp_md.analysis.diffusion import tordiff
+from warp_md.analysis.diffusion import _transition_stats, tordiff
 
 
 class _DummySelection:
@@ -31,6 +31,32 @@ class _DummyTraj:
             return None
         self._used = True
         return {"coords": self._coords}
+
+
+def test_transition_stats_counts_and_probabilities():
+    codes = np.array([[0, 1], [1, 2], [1, 3]], dtype=np.int64)
+    counts, probs = _transition_stats(codes, 1)
+    assert counts[0, 1] == 1.0
+    assert counts[1, 1] == 1.0
+    assert counts[1, 2] == 1.0
+    assert counts[2, 3] == 1.0
+    np.testing.assert_allclose(probs[1], np.array([0.0, 0.5, 0.5, 0.0], dtype=np.float64))
+
+
+def test_transition_stats_uses_native_array_kernel_when_available(monkeypatch):
+    called = {}
+
+    def fake_native(codes, lag):
+        called["shape"] = codes.shape
+        called["dtype"] = codes.dtype
+        called["lag"] = lag
+        return np.ones((4, 4), dtype=np.float64), np.eye(4, dtype=np.float64)
+
+    monkeypatch.setattr(warp_md, "transition_stats_array", fake_native, raising=False)
+    counts, probs = _transition_stats(np.array([[0, 1]], dtype=np.int32), 0)
+    np.testing.assert_allclose(counts, np.ones((4, 4), dtype=np.float64))
+    np.testing.assert_allclose(probs, np.eye(4, dtype=np.float64))
+    assert called == {"shape": (1, 2), "dtype": np.dtype("int64"), "lag": 1}
 
 
 def test_tordiff_uses_torsion_plan(monkeypatch):

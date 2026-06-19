@@ -26,6 +26,8 @@ pub struct RmsdPlan {
 
 pub struct SymmRmsdPlan {
     pub(crate) inner: RmsdPlan,
+    pub(crate) symmetry_groups: Vec<Vec<usize>>,
+    pub(crate) max_permutations: usize,
 }
 
 #[derive(Debug, Clone, Copy)]

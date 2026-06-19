@@ -1,6 +1,7 @@
 import numpy as np
+import warp_md
 
-from warp_md.analysis.wavelet import wavelet
+from warp_md.analysis.wavelet import _haar_details, wavelet
 
 
 class _DummySelection:
@@ -62,3 +63,21 @@ def test_wavelet_details():
     assert details.shape == (2, 2)
     assert np.allclose(details[0], [-1.0, -1.0])
     assert np.allclose(details[1, 0], -2.0)
+
+
+def test_haar_details_native_route(monkeypatch):
+    calls = []
+
+    def fake_native(series):
+        calls.append(series.copy())
+        return np.array([[-1.0, -1.0], [-2.0, 0.0]], dtype=np.float32)
+
+    monkeypatch.setattr(warp_md, "haar_details_array", fake_native, raising=False)
+    fake_native.__name__ = "haar_details_array"
+
+    out = _haar_details(np.array([0.0, 2.0, 4.0, 6.0], dtype=np.float64))
+
+    assert len(calls) == 1
+    assert calls[0].dtype == np.float32
+    assert out.dtype == np.float32
+    assert np.allclose(out, [[-1.0, -1.0], [-2.0, 0.0]])

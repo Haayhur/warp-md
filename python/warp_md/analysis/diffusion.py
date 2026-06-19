@@ -8,6 +8,7 @@ from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+import warp_md
 from ._chunk_io import read_chunk_fields
 
 def _all_resid_mask(system) -> str:
@@ -175,6 +176,17 @@ def diffusion(
 
 
 def _transition_stats(codes: np.ndarray, lag: int) -> Tuple[np.ndarray, np.ndarray]:
+    codes = np.asarray(codes, dtype=np.int64)
+    fn = getattr(warp_md, "transition_stats_array", None)
+    if fn is not None and not (
+        getattr(fn, "__name__", "") == "transition_stats_array"
+        and getattr(warp_md, "traj_py", None) is None
+    ):
+        try:
+            counts, probs = fn(codes, int(max(1, lag)))
+            return np.asarray(counts, dtype=np.float64), np.asarray(probs, dtype=np.float64)
+        except RuntimeError:
+            pass
     counts = np.zeros((4, 4), dtype=np.float64)
     if codes.size == 0:
         return counts, counts.copy()

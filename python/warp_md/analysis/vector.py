@@ -8,11 +8,12 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+import warp_md
 from ._runtime import (
+    coerce_native_system,
+    is_native_traj,
     load_native_symbol,
-    native_inputs,
     native_selection,
-    normalize_frame_indices,
     read_all_frames,
     reset_traj,
     selection_indices,
@@ -20,6 +21,10 @@ from ._runtime import (
 )
 
 CommandLike = Union[str, Sequence[str]]
+
+
+def _frame_indices_arg(frame_indices: Optional[Sequence[int]]):
+    return None if frame_indices is None else [int(value) for value in frame_indices]
 
 
 def _center(coords: np.ndarray, idx: np.ndarray, masses: Optional[np.ndarray], mass: bool) -> np.ndarray:
@@ -39,6 +44,21 @@ def _center(coords: np.ndarray, idx: np.ndarray, masses: Optional[np.ndarray], m
 def _apply_pbc(vec: np.ndarray, box: Optional[np.ndarray]) -> np.ndarray:
     if box is None:
         return vec
+    fn = getattr(warp_md, "apply_orthorhombic_pbc_vectors", None)
+    if fn is not None and not (
+        getattr(fn, "__name__", "") == "apply_orthorhombic_pbc_vectors"
+        and getattr(warp_md, "traj_py", None) is None
+    ):
+        try:
+            return np.asarray(
+                fn(
+                    vec.astype(np.float64, copy=False),
+                    np.asarray(box, dtype=np.float64),
+                ),
+                dtype=np.float64,
+            )
+        except RuntimeError:
+            pass
     out = vec.copy()
     for frame in range(out.shape[0]):
         lx, ly, lz = box[frame]
@@ -59,8 +79,9 @@ def _parse_vector_command(cmd: str) -> Tuple[str, dict]:
     opts = {"mass": False, "pbc": "none"}
     if head == "center":
         opts["mode"] = "center"
-        opts["mask"] = " ".join(tokens[1:]) if len(tokens) > 1 else ""
-        if "mass" in tokens:
+        body = tokens[1:]
+        opts["mask"] = " ".join(token for token in body if token.lower() != "mass")
+        if any(token.lower() == "mass" for token in body):
             opts["mass"] = True
         return head, opts
     if head in ("box", "boxcenter", "ucellx", "ucelly", "ucellz"):
@@ -88,13 +109,10 @@ def _native_mask_vector(
     plan_cls = load_native_symbol("VectorPlan")
     if plan_cls is None:
         return None
-    native_traj, native_system = native_inputs(
-        traj,
-        system,
-        chunk_frames,
-        include_box=opts.get("pbc", "none") == "orthorhombic",
-    )
-    if native_traj is None or native_system is None or not reset_traj(native_traj):
+    if not is_native_traj(traj):
+        return None
+    native_system = coerce_native_system(system)
+    if native_system is None or not reset_traj(traj):
         return None
     try:
         sel_a = native_selection(system, native_system, opts["mask_a"], allow_at_indices=True)
@@ -106,15 +124,136 @@ def _native_mask_vector(
             pbc=opts.get("pbc", "none"),
         )
         vec = np.asarray(
-            plan.run(native_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            plan.run(
+                traj,
+                native_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=_frame_indices_arg(frame_indices),
+            ),
             dtype=np.float32,
         )
-        if frame_indices is not None:
-            selected = normalize_frame_indices(frame_indices, vec.shape[0]) or []
-            vec = vec[selected]
         return vec
     except Exception:
         return None
+
+
+def _native_center_vector(
+    traj,
+    system,
+    opts: dict,
+    frame_indices: Optional[Sequence[int]],
+    chunk_frames: Optional[int],
+):
+    if not is_native_traj(traj):
+        return None
+    native_system = coerce_native_system(system)
+    if native_system is None or not reset_traj(traj):
+        return None
+    plan_name = "CenterOfMassPlan" if opts.get("mass", False) else "CenterOfGeometryPlan"
+    plan_cls = load_native_symbol(plan_name)
+    if plan_cls is None:
+        return None
+    try:
+        selection = native_selection(
+            system,
+            native_system,
+            opts.get("mask", ""),
+            allow_at_indices=True,
+        )
+        plan = plan_cls(selection)
+        return np.asarray(
+            plan.run(
+                traj,
+                native_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=_frame_indices_arg(frame_indices),
+            ),
+            dtype=np.float32,
+        )
+    except Exception:
+        return None
+
+
+def _native_multi_vector(
+    traj,
+    system,
+    parsed_commands,
+    frame_indices: Optional[Sequence[int]],
+    chunk_frames: Optional[int],
+):
+    if not parsed_commands or not is_native_traj(traj):
+        return None
+    plan_cls = load_native_symbol("MultiVectorPlan")
+    if plan_cls is None:
+        return None
+    native_system = coerce_native_system(system)
+    if native_system is None or not reset_traj(traj):
+        return None
+
+    specs = []
+    try:
+        for _head, opts in parsed_commands:
+            mode = opts["mode"]
+            if mode == "mask":
+                sel_a = native_selection(
+                    system,
+                    native_system,
+                    opts["mask_a"],
+                    allow_at_indices=True,
+                )
+                sel_b = native_selection(
+                    system,
+                    native_system,
+                    opts["mask_b"],
+                    allow_at_indices=True,
+                )
+                specs.append(
+                    (
+                        [int(value) for value in sel_a.indices],
+                        [int(value) for value in sel_b.indices],
+                        bool(opts.get("mass", False)),
+                        str(opts.get("pbc", "none")),
+                        False,
+                    )
+                )
+            elif mode == "center":
+                sel = native_selection(
+                    system,
+                    native_system,
+                    opts.get("mask", ""),
+                    allow_at_indices=True,
+                )
+                specs.append(
+                    (
+                        [int(value) for value in sel.indices],
+                        [],
+                        bool(opts.get("mass", False)),
+                        "none",
+                        True,
+                    )
+                )
+            else:
+                return None
+
+        plan = plan_cls(specs)
+        values = np.asarray(
+            plan.run(
+                traj,
+                native_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=_frame_indices_arg(frame_indices),
+            ),
+            dtype=np.float32,
+        )
+    except Exception as exc:
+        raise RuntimeError("native MultiVectorPlan execution failed") from exc
+
+    if values.ndim != 2 or values.shape[1] != len(specs) * 3:
+        raise RuntimeError("native MultiVectorPlan returned unexpected shape")
+    return values.reshape(values.shape[0], len(specs), 3).transpose(1, 0, 2)
 
 
 def vector(
@@ -127,17 +266,34 @@ def vector(
 ):
     """Compute vectors for analysis commands."""
     commands = [command] if isinstance(command, str) else list(command)
+    parsed_commands = [_parse_vector_command(cmd) for cmd in commands]
+    sequence_input = isinstance(command, (list, tuple))
+    if sequence_input:
+        native_stack = _native_multi_vector(
+            traj,
+            system,
+            parsed_commands,
+            frame_indices,
+            chunk_frames,
+        )
+        if native_stack is not None:
+            return native_stack.astype(np.float32, copy=False)
+
     coords = None
     box = None
     masses = None
     results: List[np.ndarray] = []
 
-    for cmd in commands:
-        _head, opts = _parse_vector_command(cmd)
+    for _head, opts in parsed_commands:
         mode = opts["mode"]
 
         if mode == "mask":
             native_vec = _native_mask_vector(traj, system, opts, frame_indices, chunk_frames)
+            if native_vec is not None:
+                results.append(native_vec.astype(np.float32, copy=False))
+                continue
+        elif mode == "center":
+            native_vec = _native_center_vector(traj, system, opts, frame_indices, chunk_frames)
             if native_vec is not None:
                 results.append(native_vec.astype(np.float32, copy=False))
                 continue
@@ -182,7 +338,7 @@ def vector(
         results.append(vec.astype(np.float32))
 
     if len(results) == 1:
-        if dtype == "ndarray" and isinstance(command, (list, tuple)):
+        if dtype == "ndarray" and sequence_input:
             return np.stack(results, axis=0)
         return results[0]
     out = np.stack(results, axis=0)

@@ -1,6 +1,7 @@
 import numpy as np
+import warp_md
 
-from warp_md.analysis.lipidscd import lipidscd
+from warp_md.analysis.lipidscd import _lipid_scd_chunk, lipidscd
 
 
 class _DummySelection:
@@ -75,3 +76,37 @@ def test_lipidscd_frame_indices():
         frame_indices=[1],
     )
     assert out["scd"].shape[0] == 1
+
+
+def test_lipid_scd_chunk_native_route(monkeypatch):
+    calls = []
+
+    def fake_native(coords, idx_a, idx_b, axis, pbc, box):
+        calls.append((coords.copy(), idx_a.copy(), idx_b.copy(), axis.copy(), pbc, box))
+        return (
+            np.array([[1.0, -0.5]], dtype=np.float32),
+            np.array([[1, 1]], dtype=np.int64),
+        )
+
+    monkeypatch.setattr(warp_md, "lipid_scd_chunk_array", fake_native, raising=False)
+    fake_native.__name__ = "lipid_scd_chunk_array"
+
+    coords = np.array(
+        [[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]],
+        dtype=np.float32,
+    )
+    scd, valid = _lipid_scd_chunk(
+        coords,
+        np.array([0, 0], dtype=np.int64),
+        np.array([1, 2], dtype=np.int64),
+        np.array([0.0, 0.0, 1.0], dtype=np.float64),
+        "none",
+        None,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0].dtype == np.float64
+    assert calls[0][1].dtype == np.int64
+    assert scd.dtype == np.float32
+    np.testing.assert_array_equal(valid, np.array([[1, 1]], dtype=np.int64))
+    np.testing.assert_allclose(scd, np.array([[1.0, -0.5]], dtype=np.float32))

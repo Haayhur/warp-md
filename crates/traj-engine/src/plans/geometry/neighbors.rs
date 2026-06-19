@@ -4,7 +4,7 @@ use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use super::geometry_math::*;
-use crate::executor::{Device, Plan, PlanOutput};
+use crate::executor::{Device, NeighborListOutput, Plan, PlanOutput};
 use crate::plans::PbcMode;
 
 #[cfg(feature = "cuda")]
@@ -397,6 +397,101 @@ pub struct SearchNeighborsPlan {
     results: Vec<f32>,
     #[cfg(feature = "cuda")]
     gpu: Option<PairwiseGpuState>,
+}
+
+pub struct SearchNeighborListPlan {
+    target: Selection,
+    probe: Selection,
+    cutoff: f64,
+    pbc: PbcMode,
+    offsets: Vec<u64>,
+    indices: Vec<u32>,
+    counts: Vec<u32>,
+    frames: usize,
+}
+
+impl SearchNeighborListPlan {
+    pub fn new(target: Selection, probe: Selection, cutoff: f64, pbc: PbcMode) -> Self {
+        Self {
+            target,
+            probe,
+            cutoff,
+            pbc,
+            offsets: Vec::new(),
+            indices: Vec::new(),
+            counts: Vec::new(),
+            frames: 0,
+        }
+    }
+}
+
+impl Plan for SearchNeighborListPlan {
+    fn name(&self) -> &'static str {
+        "search_neighbor_list"
+    }
+
+    fn init(&mut self, _system: &System, _device: &Device) -> TrajResult<()> {
+        self.offsets.clear();
+        self.indices.clear();
+        self.counts.clear();
+        self.frames = 0;
+        self.offsets.push(0);
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        let n_atoms = chunk.n_atoms;
+        let cutoff = self.cutoff;
+        for frame in 0..chunk.n_frames {
+            let before = self.indices.len();
+            if !self.target.indices.is_empty() && !self.probe.indices.is_empty() {
+                let (lx, ly, lz) = if matches!(self.pbc, PbcMode::Orthorhombic) {
+                    box_lengths(chunk, frame)?
+                } else {
+                    (0.0, 0.0, 0.0)
+                };
+                for &probe_idx in self.probe.indices.iter() {
+                    let pb = chunk.coords[frame * n_atoms + probe_idx as usize];
+                    let mut min_val = f64::INFINITY;
+                    for &target_idx in self.target.indices.iter() {
+                        let pa = chunk.coords[frame * n_atoms + target_idx as usize];
+                        let mut dx = (pb[0] - pa[0]) as f64;
+                        let mut dy = (pb[1] - pa[1]) as f64;
+                        let mut dz = (pb[2] - pa[2]) as f64;
+                        if matches!(self.pbc, PbcMode::Orthorhombic) {
+                            apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
+                        }
+                        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                        if dist < min_val {
+                            min_val = dist;
+                        }
+                    }
+                    if min_val <= cutoff {
+                        self.indices.push(probe_idx);
+                    }
+                }
+            }
+            let count = self.indices.len() - before;
+            self.counts.push(count as u32);
+            self.offsets.push(self.indices.len() as u64);
+            self.frames += 1;
+        }
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::NeighborList(NeighborListOutput {
+            offsets: std::mem::take(&mut self.offsets),
+            indices: std::mem::take(&mut self.indices),
+            counts: std::mem::take(&mut self.counts),
+            frames: self.frames,
+        }))
+    }
 }
 
 impl SearchNeighborsPlan {

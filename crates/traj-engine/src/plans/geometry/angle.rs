@@ -4,7 +4,7 @@ use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use super::geometry_math::*;
-use crate::executor::{Device, Plan, PlanOutput};
+use crate::executor::{Device, Plan, PlanOutput, PlanRequirements};
 use crate::plans::{PbcMode, ReferenceMode};
 
 #[cfg(feature = "cuda")]

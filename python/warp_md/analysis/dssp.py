@@ -5,6 +5,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 import warp_md
+from ._runtime import coerce_native_system, is_native_traj
 
 
 _DsspPlan = (
@@ -30,19 +31,30 @@ def dssp(
     dtype: str = "tuple",
 ):
     """Return DSSP-like labels via Rust plan path."""
+    if not is_native_traj(traj):
+        raise RuntimeError(
+            "dssp requires a Rust-backed trajectory so frame/atom loops stay in Rust."
+        )
+    native_system = coerce_native_system(system)
+    if native_system is None:
+        raise RuntimeError("failed to prepare native dssp system")
     if _DsspPlan is None:
         raise RuntimeError(
             "PyDsspPlan binding unavailable. Rebuild bindings with `maturin develop`."
         )
-    selection = system.select(mask) if mask else system.select(_all_resid_mask(system))
+    selection = (
+        native_system.select(mask)
+        if mask
+        else native_system.select(_all_resid_mask(native_system))
+    )
     if len(selection.indices) == 0:
-        selection = system.select(_all_resid_mask(system))
+        selection = native_system.select(_all_resid_mask(native_system))
     plan = _DsspPlan(selection)
     frame_indices_arg = None if frame_indices is None else [int(v) for v in frame_indices]
     try:
         result = plan.run(
             traj,
-            system,
+            native_system,
             chunk_frames=chunk_frames,
             device="auto",
             frame_indices=frame_indices_arg,
@@ -59,13 +71,23 @@ def dssp(
     cols = int(cols)
     if codes.size == 0:
         empty = np.empty((0, labels.shape[0]), dtype="U1")
-        if str(dtype).lower() == "dict":
+        key = str(dtype).lower()
+        if key == "full":
+            return {
+                "residues": labels,
+                "ss": empty,
+                "codes": np.empty((0, labels.shape[0]), dtype=np.uint8),
+                "avg": {},
+            }
+        if key == "dict":
             return {"residues": labels, "ss": empty, "avg": {}}
         return labels, empty, {}
     ss = np.asarray(symbols, dtype="U1").reshape((rows, cols))
     key = str(dtype).lower()
     if key in ("dataset", "integer", "codes"):
         return labels, codes, avg
+    if key == "full":
+        return {"residues": labels, "ss": ss, "codes": codes, "avg": avg}
     if key == "dict":
         return {"residues": labels, "ss": ss, "avg": avg}
     return labels, ss, avg

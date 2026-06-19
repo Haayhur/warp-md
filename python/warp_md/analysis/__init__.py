@@ -4,6 +4,7 @@ from .current import current
 from .bundle import bundle
 from .crank import crank
 from .dssp import dssp, dssp_allatoms, dssp_allresidues
+from .kabsch_sander import kabsch_sander
 from .h2order import h2order
 from .helix import helix
 from .helixorient import helixorient
@@ -45,7 +46,23 @@ from .lipid import (
 )
 from .fluct import atomicfluct, bfactors, rmsf
 from .matrix import correl, covar, dist, mwcovar
-from .structure import get_average_frame, mean_structure, make_structure, strip, radgyr, radgyr_tensor
+from .structure import (
+    get_average_frame,
+    gyrate,
+    make_structure,
+    mean_structure,
+    radgyr,
+    radgyr_tensor,
+    strip,
+)
+from .shape import (
+    acylindricity,
+    asphericity,
+    principal_moments,
+    relative_shape_anisotropy,
+    relative_shape_antisotropy,
+    shape_descriptors,
+)
 from .velocity import get_velocity
 from .wavelet import wavelet
 from .rmsd import distance_rmsd
@@ -76,10 +93,14 @@ from .closest import closest, closest_atom
 from .voxel import count_in_voxel
 from .density import density
 from .densmap import densmap
+from .dipole import dipole_moments
+from .lineardensity import linear_density, lineardensity
+from .nematic import compute_directors, compute_nematic_order, nematic_order
 from .volmap import volmap
 from .dihedral_rms import dihedral_rms
 from .watershell import watershell
-from .pairdist import pairdist
+from .hbond import hbond
+from .pairdist import maxdist, mindist, pairdist
 from .diffusion import diffusion, tordiff, toroidal_diffusion
 from .multidihedral import multidihedral
 from .permute_dihedrals import permute_dihedrals
@@ -90,8 +111,10 @@ from .dihedral_tools import rotate_dihedral, set_dihedral
 from .atomiccorr import atomiccorr
 from .fiximagedbonds import fiximagedbonds
 from .rdf import rdf, radial
+from .runningavg import runningavg
 from .surf import surf, molsurf, sasa
 from .docking import docking, docking_ligplot_svg
+from .drid import drid
 from .pucker import pucker
 from .rotdif import rotdif
 from .multipucker import multipucker
@@ -126,6 +149,7 @@ __all__ = [
     "dssp",
     "dssp_allatoms",
     "dssp_allresidues",
+    "kabsch_sander",
     "rama",
     "saltbr",
     "energy_analysis",
@@ -168,6 +192,13 @@ __all__ = [
     "strip",
     "radgyr_tensor",
     "radgyr",
+    "gyrate",
+    "shape_descriptors",
+    "principal_moments",
+    "asphericity",
+    "acylindricity",
+    "relative_shape_anisotropy",
+    "relative_shape_antisotropy",
     "get_velocity",
     "wavelet",
     "distance_rmsd",
@@ -205,10 +236,19 @@ __all__ = [
     "count_in_voxel",
     "density",
     "densmap",
+    "dipole_moments",
+    "lineardensity",
+    "linear_density",
+    "nematic_order",
+    "compute_nematic_order",
+    "compute_directors",
     "volmap",
     "dihedral_rms",
     "watershell",
+    "hbond",
     "pairdist",
+    "mindist",
+    "maxdist",
     "rdf",
     "radial",
     "diffusion",
@@ -223,11 +263,13 @@ __all__ = [
     "set_dihedral",
     "atomiccorr",
     "fiximagedbonds",
+    "runningavg",
     "surf",
     "molsurf",
     "sasa",
     "docking",
     "docking_ligplot_svg",
+    "drid",
     "pucker",
     "rotdif",
     "multipucker",

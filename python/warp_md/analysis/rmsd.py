@@ -8,13 +8,15 @@ from typing import Optional, Sequence
 
 import numpy as np
 
+import warp_md
 from ._runtime import (
+    clone_native_system_with_positions0,
     load_native_symbol,
     native_inputs,
     native_selection,
-    normalize_frame_indices,
     prepend_reference_frame,
     read_all_frames,
+    read_frame_subset,
     reset_traj,
     selection_indices,
 )
@@ -58,6 +60,18 @@ def _rmsd_raw(x: np.ndarray, y: np.ndarray) -> float:
 
 
 def _pair_distances(coords: np.ndarray, pbc: str, box: Optional[np.ndarray]) -> np.ndarray:
+    coords = np.asarray(coords, dtype=np.float64)
+    pbc = str(pbc).lower()
+    fn = getattr(warp_md, "pair_distances_array", None)
+    if fn is not None and not (
+        getattr(fn, "__name__", "") == "pair_distances_array"
+        and getattr(warp_md, "traj_py", None) is None
+    ):
+        try:
+            box_arg = None if box is None else np.asarray(box, dtype=np.float64)
+            return np.asarray(fn(coords, pbc, box_arg), dtype=np.float64)
+        except RuntimeError:
+            pass
     n_atoms = coords.shape[0]
     n_pairs = n_atoms * (n_atoms - 1) // 2
     out = np.empty(n_pairs, dtype=np.float64)
@@ -101,8 +115,22 @@ def _native_distance_rmsd(
         selection = native_selection(system, native_system, mask)
         ref_index = int(ref)
         run_traj = native_traj
+        run_system = native_system
         trim_first = False
         if ref_index == 0:
+            if not reset_traj(run_traj):
+                raise RuntimeError("failed to reset native trajectory")
+        elif pbc == "none":
+            ref_coords, _ref_box, _ref_time, source_indices = read_frame_subset(
+                native_traj,
+                [ref_index],
+                chunk_frames,
+            )
+            if ref_coords is None or ref_coords.shape[0] != 1 or source_indices.size != 1:
+                raise ValueError("ref index out of range")
+            run_system = clone_native_system_with_positions0(native_system, ref_coords[0])
+            if run_system is None:
+                raise RuntimeError("failed to build native topology reference system")
             if not reset_traj(run_traj):
                 raise RuntimeError("failed to reset native trajectory")
         else:
@@ -115,9 +143,10 @@ def _native_distance_rmsd(
             if run_traj is None:
                 raise RuntimeError("failed to build native reference trajectory")
             trim_first = True
-        plan = plan_cls(selection, reference="frame0", pbc=pbc)
+        reference = "topology" if ref_index != 0 and pbc == "none" else "frame0"
+        plan = plan_cls(selection, reference=reference, pbc=pbc)
         values = np.asarray(
-            plan.run(run_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            plan.run(run_traj, run_system, chunk_frames=chunk_frames, device="auto"),
             dtype=np.float32,
         )
         if trim_first:
@@ -156,31 +185,15 @@ def _native_pairwise_rmsd(
             "device": "auto",
         }
         if frame_indices is not None:
-            kwargs["frame_indices"] = list(frame_indices)
-        try:
-            values = np.asarray(
-                plan.run(
-                    native_traj,
-                    native_system,
-                    **kwargs,
-                ),
-                dtype=np.float32,
-            )
-        except TypeError:
-            if frame_indices is not None:
-                values = np.asarray(
-                    plan.run(
-                        native_traj,
-                        native_system,
-                        chunk_frames=chunk_frames,
-                        device="auto",
-                    ),
-                    dtype=np.float32,
-                )
-                selected = normalize_frame_indices(frame_indices, values.shape[0]) or []
-                values = values[np.ix_(selected, selected)]
-            else:
-                raise
+            kwargs["frame_indices"] = [int(value) for value in frame_indices]
+        values = np.asarray(
+            plan.run(
+                native_traj,
+                native_system,
+                **kwargs,
+            ),
+            dtype=np.float32,
+        )
         return values * np.float32(length_scale)
     except Exception as exc:
         raise RuntimeError("native PairwiseRmsdPlan execution failed") from exc
@@ -199,6 +212,17 @@ def distance_rmsd(
     pbc = pbc.lower()
     if pbc not in ("none", "orthorhombic"):
         raise ValueError("pbc must be 'none' or 'orthorhombic'")
+
+    if int(ref) == 0 or pbc == "none":
+        return _native_distance_rmsd(
+            traj,
+            system,
+            mask,
+            ref,
+            pbc,
+            length_scale,
+            chunk_frames,
+        )
 
     coords, box, _time = read_all_frames(traj, chunk_frames, include_box=True)
     if coords is None:
@@ -241,23 +265,14 @@ def pairwise_rmsd(
     if pbc not in ("none", "orthorhombic"):
         raise ValueError("pbc must be 'none' or 'orthorhombic'")
 
-    coords, box, _time = read_all_frames(traj, chunk_frames, include_box=True)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
-    if coords.size == 0:
-        if mat_type == "full":
-            return np.empty((0, 0), dtype=np.float32)
-        return np.empty((0,), dtype=np.float32)
-    source = ArrayTrajectory(coords, box=box)
-    normalized_frames = normalize_frame_indices(frame_indices, coords.shape[0]) if frame_indices is not None else None
     native_values = _native_pairwise_rmsd(
-        source,
+        traj,
         system,
         mask,
         metric,
         pbc,
         length_scale,
-        normalized_frames,
+        frame_indices,
         chunk_frames,
     )
     if mat_type == "full":

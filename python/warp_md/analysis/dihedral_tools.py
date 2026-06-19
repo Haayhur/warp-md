@@ -7,7 +7,9 @@ from __future__ import annotations
 from typing import Optional, Sequence, Union
 
 import numpy as np
+import warp_md
 
+from ._runtime import is_native_traj
 from ._stream import infer_n_atoms
 from .trajectory import ArrayTrajectory
 
@@ -56,6 +58,24 @@ def _reshape_plan_coords(arr: np.ndarray, system, traj, message: str) -> np.ndar
     return arr.reshape((-1, n_atoms, 3))
 
 
+def _resolve_plan(name: str):
+    plan_cls = getattr(warp_md, name, None)
+    if plan_cls is None or getattr(plan_cls, "__name__", "") == "_Missing":
+        return None
+    return plan_cls
+
+
+def _payload_to_array(payload) -> ArrayTrajectory:
+    coords = np.asarray(payload["coords"], dtype=np.float32)
+    box = payload.get("box")
+    time = payload.get("time_ps")
+    return ArrayTrajectory(
+        coords,
+        box=None if box is None else np.asarray(box, dtype=np.float32),
+        time_ps=None if time is None else np.asarray(time, dtype=np.float64),
+    )
+
+
 def rotate_dihedral(
     traj,
     system,
@@ -74,13 +94,9 @@ def rotate_dihedral(
     mass = _as_bool(mass, "mass")
     degrees = _as_bool(degrees, "degrees")
 
-    try:
-        from warp_md import RotateDihedralPlan  # type: ignore
-    except Exception:
-        raise RuntimeError(
-            "RotateDihedralPlan binding unavailable. Rebuild bindings with `maturin develop`."
-        )
-    if getattr(RotateDihedralPlan, "__name__", "") == "_Missing":
+    plan_cls = _resolve_plan("RotateDihedralPlan")
+    traj_plan_cls = _resolve_plan("RotateDihedralTrajectoryPlan")
+    if plan_cls is None and traj_plan_cls is None:
         raise RuntimeError(
             "RotateDihedralPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
         )
@@ -90,7 +106,27 @@ def rotate_dihedral(
     sel_c = _selection_from_item(system, atoms[2])
     sel_d = _selection_from_item(system, atoms[3])
     rotate_sel = sel_d if rotate_mask is None else _selection_from_mask(system, rotate_mask)
-    plan = RotateDihedralPlan(sel_a, sel_b, sel_c, sel_d, rotate_sel, float(angle), mass, degrees)
+    if is_native_traj(traj) and traj_plan_cls is not None:
+        plan = traj_plan_cls(sel_a, sel_b, sel_c, sel_d, rotate_sel, float(angle), mass, degrees)
+        try:
+            payload = plan.run(
+                traj,
+                system,
+                chunk_frames=chunk_frames,
+                device=device,
+                frame_indices=frame_indices,
+            )
+        except TypeError as exc:
+            raise RuntimeError(
+                "rotate_dihedral requires Rust-backed trajectory/system objects when using the Rust plan path."
+            ) from exc
+        return _payload_to_array(payload)
+
+    if plan_cls is None:
+        raise RuntimeError(
+            "RotateDihedralPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
+        )
+    plan = plan_cls(sel_a, sel_b, sel_c, sel_d, rotate_sel, float(angle), mass, degrees)
     try:
         flat = plan.run(
             traj,
@@ -131,13 +167,9 @@ def set_dihedral(
     range360 = _as_bool(range360, "range360")
     pbc = _normalize_pbc(pbc)
 
-    try:
-        from warp_md import SetDihedralPlan  # type: ignore
-    except Exception:
-        raise RuntimeError(
-            "SetDihedralPlan binding unavailable. Rebuild bindings with `maturin develop`."
-        )
-    if getattr(SetDihedralPlan, "__name__", "") == "_Missing":
+    plan_cls = _resolve_plan("SetDihedralPlan")
+    traj_plan_cls = _resolve_plan("SetDihedralTrajectoryPlan")
+    if plan_cls is None and traj_plan_cls is None:
         raise RuntimeError(
             "SetDihedralPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
         )
@@ -147,7 +179,38 @@ def set_dihedral(
     sel_c = _selection_from_item(system, atoms[2])
     sel_d = _selection_from_item(system, atoms[3])
     rotate_sel = sel_d if rotate_mask is None else _selection_from_mask(system, rotate_mask)
-    plan = SetDihedralPlan(
+    if is_native_traj(traj) and traj_plan_cls is not None:
+        plan = traj_plan_cls(
+            sel_a,
+            sel_b,
+            sel_c,
+            sel_d,
+            rotate_sel,
+            float(target),
+            mass,
+            pbc,
+            degrees,
+            range360,
+        )
+        try:
+            payload = plan.run(
+                traj,
+                system,
+                chunk_frames=chunk_frames,
+                device=device,
+                frame_indices=frame_indices,
+            )
+        except TypeError as exc:
+            raise RuntimeError(
+                "set_dihedral requires Rust-backed trajectory/system objects when using the Rust plan path."
+            ) from exc
+        return _payload_to_array(payload)
+
+    if plan_cls is None:
+        raise RuntimeError(
+            "SetDihedralPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
+        )
+    plan = plan_cls(
         sel_a,
         sel_b,
         sel_c,

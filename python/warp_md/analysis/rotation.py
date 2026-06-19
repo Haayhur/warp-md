@@ -9,11 +9,13 @@ from typing import Optional, Sequence, Union
 import numpy as np
 
 from ._runtime import (
+    is_native_traj,
     load_native_symbol,
     native_selection,
     native_reference_inputs,
     normalize_frame_indices,
     read_all_frames,
+    reset_traj,
 )
 from .trajectory import ArrayTrajectory
 
@@ -32,6 +34,7 @@ def _run_native_rotation_matrix(
     plan_cls = load_native_symbol("RotationMatrixPlan")
     if plan_cls is None:
         raise RuntimeError("RotationMatrixPlan binding unavailable")
+    reset_traj(traj)
     native_traj, reference_system = native_reference_inputs(
         traj,
         system,
@@ -70,6 +73,7 @@ def _run_native_rmsd(
     plan_cls = load_native_symbol("RmsdPlan")
     if plan_cls is None:
         raise RuntimeError("RmsdPlan binding unavailable")
+    reset_traj(traj)
     native_traj, reference_system = native_reference_inputs(
         traj,
         system,
@@ -97,6 +101,93 @@ def _run_native_rmsd(
         raise RuntimeError("native RmsdPlan execution failed") from exc
 
 
+def _count_native_frames(traj, chunk_frames: Optional[int]) -> Optional[int]:
+    if not hasattr(traj, "count_frames"):
+        return None
+    try:
+        return int(traj.count_frames(chunk_frames=chunk_frames))
+    except TypeError:
+        try:
+            return int(traj.count_frames(chunk_frames))
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def _rotation_matrix_native(
+    traj,
+    system,
+    mask: str,
+    ref: RefLike,
+    mass: bool,
+    frame_indices: Optional[Sequence[int]],
+    chunk_frames: Optional[int],
+    with_rmsd: bool,
+):
+    if not is_native_traj(traj):
+        return None
+    n_frames = _count_native_frames(traj, chunk_frames)
+    if n_frames is None:
+        return None
+    if n_frames == 0:
+        mats = np.empty((0, 3, 3), dtype=np.float32)
+        if with_rmsd:
+            return mats, np.empty((0,), dtype=np.float32)
+        return mats
+
+    selected = normalize_frame_indices(frame_indices, n_frames)
+    mats = np.broadcast_to(np.eye(3, dtype=np.float32), (n_frames, 3, 3)).copy()
+    rmsd_vals = np.zeros(n_frames, dtype=np.float32) if with_rmsd else None
+
+    if selected is None:
+        native_mats = _run_native_rotation_matrix(
+            traj,
+            system,
+            mask,
+            ref,
+            mass,
+            chunk_frames,
+        )
+        if native_mats.shape[0] != n_frames:
+            raise RuntimeError("native RotationMatrixPlan returned unexpected frame count")
+        mats[:] = native_mats
+        if with_rmsd:
+            native_rmsd = _run_native_rmsd(traj, system, mask, ref, chunk_frames)
+            if native_rmsd.shape[0] != n_frames:
+                raise RuntimeError("native RmsdPlan returned unexpected frame count")
+            rmsd_vals[:] = native_rmsd
+    elif selected:
+        native_mats = _run_native_rotation_matrix(
+            traj,
+            system,
+            mask,
+            ref,
+            mass,
+            chunk_frames,
+            frame_indices=selected,
+        )
+        if native_mats.shape[0] != len(selected):
+            raise RuntimeError("native RotationMatrixPlan returned unexpected frame subset")
+        mats[np.asarray(selected, dtype=np.int64)] = native_mats
+        if with_rmsd:
+            native_rmsd = _run_native_rmsd(
+                traj,
+                system,
+                mask,
+                ref,
+                chunk_frames,
+                frame_indices=selected,
+            )
+            if native_rmsd.shape[0] != len(selected):
+                raise RuntimeError("native RmsdPlan returned unexpected frame subset")
+            rmsd_vals[np.asarray(selected, dtype=np.int64)] = native_rmsd
+
+    if with_rmsd:
+        return mats, rmsd_vals
+    return mats
+
+
 def rotation_matrix(
     traj,
     system,
@@ -108,6 +199,19 @@ def rotation_matrix(
     with_rmsd: bool = False,
 ):
     """Compute rotation matrices to align frames to reference."""
+    native_out = _rotation_matrix_native(
+        traj,
+        system,
+        mask,
+        ref,
+        mass,
+        frame_indices,
+        chunk_frames,
+        with_rmsd,
+    )
+    if native_out is not None:
+        return native_out
+
     coords, _box, _time = read_all_frames(traj, chunk_frames)
     if coords is None:
         raise ValueError("trajectory has no frames")

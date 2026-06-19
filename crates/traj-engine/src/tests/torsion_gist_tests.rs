@@ -543,6 +543,128 @@ fn dssp_plan_basic_shape_and_labels() {
 }
 
 #[test]
+fn dssp_plan_uses_compact_backbone_selected_chunks() {
+    struct DsspSelectedOnlyTraj {
+        n_atoms: usize,
+        frames: Vec<Vec<[f32; 4]>>,
+        expected_selection: Vec<u32>,
+        cursor: usize,
+        selected_reads: usize,
+    }
+
+    impl DsspSelectedOnlyTraj {
+        fn new(
+            n_atoms: usize,
+            frames: Vec<Vec<[f32; 4]>>,
+            expected_selection: Vec<u32>,
+        ) -> Self {
+            Self {
+                n_atoms,
+                frames,
+                expected_selection,
+                cursor: 0,
+                selected_reads: 0,
+            }
+        }
+    }
+
+    impl TrajReader for DsspSelectedOnlyTraj {
+        fn n_atoms(&self) -> usize {
+            self.n_atoms
+        }
+
+        fn n_frames_hint(&self) -> Option<usize> {
+            Some(self.frames.len())
+        }
+
+        fn read_chunk(
+            &mut self,
+            _max_frames: usize,
+            _out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            panic!("dssp plan should use selected trajectory reads")
+        }
+
+        fn read_chunk_selected(
+            &mut self,
+            max_frames: usize,
+            selection: &[u32],
+            out: &mut FrameChunkBuilder,
+        ) -> TrajResult<usize> {
+            assert_eq!(selection, self.expected_selection.as_slice());
+            self.selected_reads += 1;
+            out.reset(selection.len(), max_frames.max(1));
+            if self.cursor >= self.frames.len() {
+                return Ok(0);
+            }
+
+            let mut written = 0usize;
+            while written < max_frames && self.cursor < self.frames.len() {
+                let dst = out.start_frame(Box3::None, None);
+                let frame = &self.frames[self.cursor];
+                for (dst_atom, &src_idx) in dst.iter_mut().zip(selection.iter()) {
+                    *dst_atom = frame[src_idx as usize];
+                }
+                self.cursor += 1;
+                written += 1;
+            }
+            Ok(written)
+        }
+    }
+
+    let mut interner = StringInterner::new();
+    let n = interner.intern_upper("N");
+    let ca = interner.intern_upper("CA");
+    let c = interner.intern_upper("C");
+    let o = interner.intern_upper("O");
+    let h = interner.intern_upper("H");
+    let hn = interner.intern_upper("HN");
+    let cb = interner.intern_upper("CB");
+    let ala = interner.intern_upper("ALA");
+    let gly = interner.intern_upper("GLY");
+    let atoms = AtomTable {
+        name_id: vec![n, ca, c, o, h, cb, n, ca, c, o, hn, cb],
+        resname_id: vec![ala, ala, ala, ala, ala, ala, gly, gly, gly, gly, gly, gly],
+        resid: vec![1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2],
+        chain_id: vec![0; 12],
+        element_id: vec![0; 12],
+        mass: vec![1.0; 12],
+    };
+    let positions0 = Some(vec![[0.0, 0.0, 0.0, 1.0]; 12]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("resid 1:2").unwrap();
+    let mut plan = DsspPlan::new(sel);
+    let frames = vec![vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [2.0, 0.0, 0.0, 1.0],
+        [2.5, 0.0, 0.0, 1.0],
+        [0.2, 0.0, 0.0, 1.0],
+        [1000.0, 1000.0, 1000.0, 1.0],
+        [3.0, 0.0, 0.0, 1.0],
+        [4.0, 0.0, 0.0, 1.0],
+        [5.0, 0.0, 0.0, 1.0],
+        [5.5, 0.0, 0.0, 1.0],
+        [3.2, 0.0, 0.0, 1.0],
+        [-1000.0, -1000.0, -1000.0, 1.0],
+    ]];
+    let expected_selection = vec![0, 1, 2, 3, 4, 6, 7, 8, 9, 10];
+    let mut traj = DsspSelectedOnlyTraj::new(12, frames, expected_selection);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 2);
+            assert_eq!(data.len(), 2);
+        }
+        _ => panic!("unexpected output"),
+    }
+    assert!(traj.selected_reads > 0);
+    assert_eq!(plan.labels(), &["ALA:1".to_string(), "GLY:2".to_string()]);
+}
+
+#[test]
 fn rama_plan_basic_shape_labels_and_termini() {
     let mut interner = StringInterner::new();
     let n = interner.intern_upper("N");
@@ -959,6 +1081,59 @@ fn randomize_ions_plan_basic() {
 }
 
 #[test]
+fn randomize_ions_trajectory_plan_outputs_coords_and_box() {
+    let mut interner = StringInterner::new();
+    let ion = interner.intern_upper("NA");
+    let ow = interner.intern_upper("OW");
+    let hw = interner.intern_upper("HW");
+    let ca = interner.intern_upper("CA");
+    let res_ion = interner.intern_upper("ION");
+    let res_wat = interner.intern_upper("WAT");
+    let res_sol = interner.intern_upper("SOL");
+    let atoms = AtomTable {
+        name_id: vec![ion, ow, hw, ca],
+        resname_id: vec![res_ion, res_wat, res_wat, res_sol],
+        resid: vec![1, 2, 2, 3],
+        chain_id: vec![0, 0, 0, 0],
+        element_id: vec![0, 0, 0, 0],
+        mass: vec![1.0, 1.0, 1.0, 1.0],
+    };
+    let positions0 = Some(vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0],
+        [5.0, 5.0, 5.0, 1.0],
+    ]);
+    let mut system = System::with_atoms(atoms, interner, positions0);
+    let sel = system.select("name NA").unwrap();
+    let mut plan = RandomizeIonsTrajectoryPlan::new(sel, 123);
+    let frames = vec![vec![
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0],
+        [5.0, 5.0, 5.0, 1.0],
+    ]];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 10.0,
+        lz: 10.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 1);
+            assert_eq!(out.atoms, 4);
+            assert_eq!(out.coords.len(), 12);
+            assert_eq!(out.box_, vec![box_]);
+            assert!(out.time.is_empty());
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn randomize_ions_plan_triclinic() {
     let mut interner = StringInterner::new();
     let ion = interner.intern_upper("NA");
@@ -1037,6 +1212,41 @@ fn image_plan_triclinic_selection() {
 }
 
 #[test]
+fn autoimage_trajectory_plan_outputs_coords_and_box() {
+    let mut system = build_two_resid_system();
+    let sel = system.select("all").unwrap();
+    let mut plan = AutoImageTrajectoryPlan::new(sel);
+    let frames = vec![
+        vec![[10.5, -1.0, 2.0, 1.0], [12.0, 7.0, -3.0, 1.0]],
+        vec![[11.0, 0.5, 10.5, 1.0], [1.0, 2.0, 3.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 10.0,
+        lz: 10.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.atoms, 2);
+            assert_eq!(
+                out.coords,
+                vec![
+                    0.5, 9.0, 2.0, 2.0, 7.0, 7.0, 1.0, 0.5, 0.5, 1.0, 2.0, 3.0
+                ]
+            );
+            assert_eq!(out.box_.len(), 2);
+            assert_eq!(out.box_[0], box_);
+            assert!(out.time.is_empty());
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn fiximagedbonds_plan_basic() {
     let mut system = build_system();
     let sel = system.select("name CA").unwrap();
@@ -1055,6 +1265,35 @@ fn fiximagedbonds_plan_basic() {
     match out {
         PlanOutput::Series(vals) => {
             assert_eq!(vals.len(), 6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn fiximagedbonds_trajectory_plan_outputs_coords_and_box() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = FixImageBondsTrajectoryPlan::new(sel);
+    let frames = vec![
+        vec![[2.5, -1.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0]],
+        vec![[4.0, 3.5, 0.0, 1.0], [0.5, 0.5, 0.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 3.0,
+        ly: 3.0,
+        lz: 3.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.atoms, 2);
+            assert_eq!(out.coords.len(), 12);
+            assert_eq!(out.box_, vec![box_, box_]);
+            assert!(out.time.is_empty());
         }
         _ => panic!("unexpected output"),
     }
@@ -1316,6 +1555,36 @@ fn align_plan_translation_only() {
 }
 
 #[test]
+fn superpose_trajectory_plan_outputs_coords_and_box() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = SuperposeTrajectoryPlan::new(sel, ReferenceMode::Topology, false, true);
+    let frames = vec![
+        vec![[10.0, 0.0, 0.0, 1.0], [11.0, 0.0, 0.0, 1.0]],
+        vec![[5.0, 2.0, 0.0, 1.0], [6.0, 2.0, 0.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 11.0,
+        lz: 12.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.atoms, 2);
+            assert_eq!(out.coords, vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+            assert_eq!(out.box_.len(), 2);
+            assert_eq!(out.box_[0], box_);
+            assert!(out.time.is_empty());
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn angle_plan_basic() {
     let mut system = build_four_resid_system();
     let sel_a = system.select("resid 1").unwrap();
@@ -1403,6 +1672,42 @@ fn closest_atom_plan_basic() {
 }
 
 #[test]
+fn closest_coords_plan_outputs_selected_coordinates() {
+    let system = build_system();
+    let target = traj_core::selection::Selection {
+        expr: "@1".into(),
+        indices: std::sync::Arc::new(vec![0]),
+    };
+    let probe = traj_core::selection::Selection {
+        expr: "@2".into(),
+        indices: std::sync::Arc::new(vec![1]),
+    };
+    let mut plan = ClosestCoordsPlan::new(target, probe, 1, PbcMode::None);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0]],
+        vec![[4.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 11.0,
+        lz: 12.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert!(out.time.is_empty());
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.atoms, 1);
+            assert_eq!(out.box_, vec![box_, box_]);
+            assert_eq!(out.coords, vec![3.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn search_neighbors_plan_basic() {
     let mut system = build_system();
     let target = system.select("resid 1").unwrap();
@@ -1416,6 +1721,36 @@ fn search_neighbors_plan_basic() {
         PlanOutput::Series(vals) => {
             assert_eq!(vals.len(), 1);
             assert!((vals[0] - 2.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn search_neighbor_list_plan_outputs_offsets_and_indices() {
+    let system = build_system();
+    let target = traj_core::selection::Selection {
+        expr: "@1".into(),
+        indices: std::sync::Arc::new(vec![0]),
+    };
+    let probe = traj_core::selection::Selection {
+        expr: "@1,2".into(),
+        indices: std::sync::Arc::new(vec![0, 1]),
+    };
+    let mut plan = SearchNeighborListPlan::new(target, probe, 1.5, PbcMode::None);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::NeighborList(values) => {
+            assert_eq!(values.frames, 2);
+            assert_eq!(values.offsets, vec![0, 2, 3]);
+            assert_eq!(values.counts, vec![2, 1]);
+            assert_eq!(values.indices, vec![0, 1, 0]);
         }
         _ => panic!("unexpected output"),
     }
@@ -1445,6 +1780,58 @@ fn native_contacts_plan_basic() {
 }
 
 #[test]
+fn native_contacts_plan_two_selections() {
+    let mut system = build_two_resid_system();
+    let sel_a = system.select("resid 1").unwrap();
+    let sel_b = system.select("resid 2").unwrap();
+    let mut plan =
+        NativeContactsPlan::new(sel_a, sel_b, ReferenceMode::Frame0, 1.5, PbcMode::None);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [1.2, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Series(vals) => {
+            assert_eq!(vals.len(), 3);
+            assert!((vals[0] - 1.0).abs() < 1e-6);
+            assert!(vals[1].abs() < 1e-6);
+            assert!((vals[2] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn native_contacts_plan_respects_min_cutoff() {
+    let mut system = build_two_resid_system();
+    let sel_a = system.select("resid 1").unwrap();
+    let sel_b = system.select("resid 2").unwrap();
+    let mut plan = NativeContactsPlan::new(sel_a, sel_b, ReferenceMode::Frame0, 1.5, PbcMode::None)
+        .with_min_cutoff(Some(0.5));
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [0.2, 0.0, 0.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [1.2, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Series(vals) => {
+            assert_eq!(vals.len(), 3);
+            assert!((vals[0] - 1.0).abs() < 1e-6);
+            assert!(vals[1].abs() < 1e-6);
+            assert!((vals[2] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn strip_plan_basic() {
     let mut system = build_two_resid_system();
     let sel = system.select("resid 1").unwrap();
@@ -1459,6 +1846,106 @@ fn strip_plan_basic() {
             assert!((vals[0] - 1.0).abs() < 1e-6);
             assert!((vals[1] - 2.0).abs() < 1e-6);
             assert!((vals[2] - 3.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn strip_trajectory_plan_outputs_coords_and_box() {
+    let mut system = build_two_resid_system();
+    let sel = system.select("resid 1").unwrap();
+    let mut plan = StripTrajectoryPlan::new(sel);
+    let frames = vec![
+        vec![[1.0, 2.0, 3.0, 1.0], [9.0, 9.0, 9.0, 1.0]],
+        vec![[4.0, 5.0, 6.0, 1.0], [8.0, 8.0, 8.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 11.0,
+        lz: 12.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.atoms, 1);
+            assert_eq!(out.coords, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+            assert_eq!(out.box_.len(), 2);
+            assert_eq!(out.box_[0], box_);
+            assert!(out.time.is_empty());
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn transform_trajectory_plan_outputs_coords_and_box() {
+    let system = build_system();
+    let mut plan = TransformTrajectoryPlan::new(
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        [1.0, 2.0, 3.0],
+    );
+    let frames = vec![
+        vec![[1.0, 2.0, 3.0, 1.0], [4.0, 5.0, 6.0, 1.0]],
+        vec![[0.0, 0.0, 0.0, 1.0], [2.0, 4.0, 6.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 11.0,
+        lz: 12.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.atoms, 2);
+            assert_eq!(
+                out.coords,
+                vec![
+                    2.0, 4.0, 6.0, 5.0, 7.0, 9.0, 1.0, 2.0, 3.0, 3.0, 6.0, 9.0
+                ]
+            );
+            assert_eq!(out.box_.len(), 2);
+            assert_eq!(out.box_[0], box_);
+            assert!(out.time.is_empty());
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn center_trajectory_output_plan_outputs_coords_and_box() {
+    let mut system = build_system();
+    let sel = system.select("all").unwrap();
+    let mut plan = CenterTrajectoryOutputPlan::new(sel, [0.0, 0.0, 0.0], CenterMode::Origin, false);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+        vec![[1.0, 2.0, 3.0, 1.0], [3.0, 2.0, 3.0, 1.0]],
+    ];
+    let box_ = Box3::Orthorhombic {
+        lx: 10.0,
+        ly: 11.0,
+        lz: 12.0,
+    };
+    let mut traj = InMemoryTrajWithBox::new(frames, box_);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Trajectory(out) => {
+            assert_eq!(out.frames, 2);
+            assert_eq!(out.atoms, 2);
+            assert_eq!(
+                out.coords,
+                vec![-1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            );
+            assert_eq!(out.box_.len(), 2);
+            assert_eq!(out.box_[0], box_);
+            assert!(out.time.is_empty());
         }
         _ => panic!("unexpected output"),
     }

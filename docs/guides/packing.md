@@ -334,35 +334,58 @@ Resume packing or reuse placements with Packmol-style restart files:
 <details>
 <summary>Global Options</summary>
 
-| Option | What It Does |
-|--------|--------------|
-| `box` | Box dimensions and shape |
-| `seed` | Random seed for reproducibility |
-| `min_distance` | Hard minimum distance between atoms |
-| `writeout` | Write periodic snapshots (seconds) |
-| `writebad` | Write partial structure on failure |
-| `restart_from` / `restart_to` | Packmol restart files |
-| `relax_steps` / `relax_step` | Post-pack overlap relaxation |
-| `add_box_sides` | Add box dimensions to outputs (default: on) |
-| `pbc_min` / `pbc_max` | Explicit PBC bounds |
+| Option | What It Does | Default |
+|--------|--------------|---------|
+| `box` | Box dimensions and shape | required |
+| `seed` | Random seed for reproducibility | `1234567` |
+| `min_distance` | Hard minimum distance between atoms (angstroms) | `2.0` |
+| `writeout` | Interval in seconds to write periodic snapshots of current progress | `null` |
+| `writebad` | Write the last partial structure on failure and force snapshot output | `false` |
+| `restart_from` / `restart_to` | Read/write Packmol-compatible restart files (Euler angles) | `null` |
+| `relax_steps` / `relax_step` | Run post-pack overlap relaxation (steps and step size in Å) | `0` / `0.5` |
+| `add_box_sides` | Add box dimensions as CRYST1/box metadata to outputs | `true` |
+| `add_box_sides_fix` | Fixed offset adjustment to box sides in outputs | `null` |
+| `pbc` | Enable periodic boundary conditions during optimization | `false` |
+| `pbc_min` / `pbc_max` | Explicit boundaries for PBC constraints | `null` |
+| `avoid_overlap` | Disables checking of overlapping atoms when set to false | `true` |
+| `precision` | Convergence threshold for the GENCAN optimizer | `1.0e-2` |
+| `discale` | Initial GENCAN overlap penalty scaling factor | `1.1` |
+| `fbins` | Spatial hash cell grid size multiplier ($cell = min\_dist \times fbins$) | `√3` |
+| `add_amber_ter` | Append Amber-style TER cards after molecules in PDB output | `false` |
+| `amber_ter_preserve` | Preserve incoming PDB TER cards exactly as read | `false` |
+| `hexadecimal_indices` | Output hexadecimal indices in PDB files for large systems (>99,999 atoms) | `false` |
+| `ignore_conect` | Ignore existing CONECT records from input structure files | `false` |
+| `non_standard_conect` | Allow CONECT records with non-standard bonding topologies | `false` |
+| `gencan_maxit` / `gencan_step` | Maximum optimizer iterations / initial step size | `20` / `null` |
+| `use_short_tol` | Enable a soft penalty zone around `min_distance` | `false` |
+| `short_tol_dist` / `short_tol_scale` | Soft penalty distance threshold / penalty scale | `null` |
 
 </details>
 
 <details>
 <summary>Structure Options</summary>
 
-| Option | What It Does |
-|--------|--------------|
-| `path` | Path to structure file |
-| `count` | Number of copies to place |
-| `rotate` | Allow random rotation |
-| `filetype` | Override file type detection |
-| `constraints` | Placement constraints |
-| `radius` / `fscale` | Per-atom radius defaults |
-| `changechains` | Assign unique chain IDs |
-| `resnumbers` | Residue numbering mode (`3` for unique residue id per packed molecule); repeated structures auto-offset by default |
-| `rot_bounds` | Constrain Euler rotation ranges |
-| `fixed_eulers` | Fix orientation (with positions) |
+| Option | What It Does | Default |
+|--------|--------------|---------|
+| `path` | Path to the template coordinate structure file | required |
+| `count` | Number of copies of this structure to pack in the box | `1` |
+| `rotate` | Allow random rotations when placing | `true` |
+| `fixed` | Fix the structure coordinates exactly as they are in space | `false` |
+| `filetype` / `format` | Override automatic file type detection (e.g. "mol2", "gro") | `null` |
+| `topology` | Path to Amber-style `prmtop` file for atom charge/metadata | `null` |
+| `changechains` | Assign a unique chain ID to each packed copy | `false` |
+| `segid` | Assign a specific segment ID to this structure | `null` |
+| `resnumbers` | Residue numbering mode (`3` for unique resid per copy; repeated structures auto-offset) | `null` |
+| `constraints` | List of global placement constraints (e.g. inside a sphere) | `[]` |
+| `positions` | Explicit coordinate positions list to place molecule centers at | `null` |
+| `translate` | Translation offset vector to apply before packing | `null` |
+| `center` | Translate structure center to origin before applying rotations | `true` |
+| `fixed_eulers` | Coordinate orientations list (Euler angles) to pair with `positions` | `null` |
+| `rot_bounds` | Constraint range limits for Euler rotations per axis (in radians) | `null` |
+| `radius` / `fscale` | Structure-level atomic radii override / radius scaling factor | `null` |
+| `short_radius` / `short_radius_scale` | Structure-level soft penalty radius / scaling factor | `null` |
+| `atom_overrides` | Custom overrides for specific atom indices | `[]` |
+| `atom_constraints` | Placement constraints applied to specific atom indices | `[]` |
 
 </details>
 

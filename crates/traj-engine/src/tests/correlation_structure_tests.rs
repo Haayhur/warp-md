@@ -407,6 +407,93 @@ fn dielectric_plan_constant_dipole_gives_unity() {
 }
 
 #[test]
+fn dipole_moment_plan_reports_group_vectors() {
+    let mut system = build_system();
+    let sel = system.select("resid 1").unwrap();
+    let charges = vec![1.0f64, -1.0f64];
+    let mut plan = DipoleMomentPlan::new(sel, GroupBy::Resid, charges).with_length_scale(2.0);
+    let frames = vec![
+        vec![[0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.0, 1.0]],
+        vec![[1.0, 0.0, 0.0, 1.0], [4.0, 0.0, 0.0, 1.0]],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::TimeSeries {
+            time,
+            data,
+            rows,
+            cols,
+        } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 3);
+            assert_eq!(time, vec![0.0, 1.0]);
+            assert!((data[0] + 4.0).abs() < 1e-6);
+            assert!(data[1].abs() < 1e-6);
+            assert!(data[2].abs() < 1e-6);
+            assert!((data[3] + 6.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn nematic_order_plan_reports_order_director_and_axis_projection() {
+    let system = build_four_resid_system();
+    let mut plan = NematicOrderPlan::new(vec![0, 2], vec![1, 3])
+        .with_reference_axis(Some([0.0, 0.0, 1.0]));
+    let frames = vec![
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0, 1.0],
+        ],
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+        ],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::TimeSeries {
+            time,
+            data,
+            rows,
+            cols,
+        } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 12);
+            assert_eq!(time, vec![0.0, 1.0]);
+            assert!((data[0] - 1.0).abs() < 1e-6);
+            assert!(data[1].abs() < 1e-6);
+            assert!(data[2].abs() < 1e-6);
+            assert!((data[3] - 1.0).abs() < 1e-6);
+            assert!((data[4] + 0.5).abs() < 1e-6);
+            assert!((data[6] - 1.0).abs() < 1e-6);
+            assert!((data[10] - 1.0).abs() < 1e-6);
+            assert!((data[11] - 2.0).abs() < 1e-6);
+
+            let row = 12;
+            assert!((data[row] - 1.0).abs() < 1e-6);
+            assert!((data[row + 1] - 1.0).abs() < 1e-6);
+            assert!(data[row + 2].abs() < 1e-6);
+            assert!(data[row + 3].abs() < 1e-6);
+            assert!((data[row + 4] - 1.0).abs() < 1e-6);
+            assert!((data[row + 6] + 0.5).abs() < 1e-6);
+            assert!((data[row + 10] + 0.5).abs() < 1e-6);
+            assert!((data[row + 11] - 2.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn dielectric_plan_fluctuating_dipole_matches_neumann_formula() {
     let mut system = build_system();
     let sel = system.select("resid 1").unwrap();
@@ -764,6 +851,94 @@ fn densmap_plan_number_density_uses_box_volume_and_filter() {
             assert!(output.matrix[1].abs() < 1e-6);
             assert!(output.matrix[2].abs() < 1e-6);
             assert!(output.matrix[3].abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn lineardensity_plan_counts_and_density_normalization() {
+    let mut system = build_four_resid_system();
+    let sel = system.select("resid 1:4").unwrap();
+    let mut plan = LinearDensityPlan::new(
+        sel,
+        2,
+        1.0,
+        LinearDensityWeight::Number,
+        LinearDensityNorm::Density,
+    )
+    .with_range(Some([0.0, 2.0]))
+    .with_cross_section_area(Some(10.0));
+    let frames = vec![
+        vec![
+            [0.0, 0.0, 0.25, 1.0],
+            [0.0, 0.0, 0.75, 1.0],
+            [0.0, 0.0, 1.25, 1.0],
+            [0.0, 0.0, 1.75, 1.0],
+        ],
+        vec![
+            [0.0, 0.0, 0.25, 1.0],
+            [0.0, 0.0, 1.25, 1.0],
+            [0.0, 0.0, 1.25, 1.0],
+            [0.0, 0.0, 1.75, 1.0],
+        ],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 3);
+            assert_eq!(data[0], 0.5);
+            assert!((data[1] - 0.15).abs() < 1e-6);
+            assert!((data[2] - 1.5).abs() < 1e-6);
+            assert_eq!(data[3], 1.5);
+            assert!((data[4] - 0.25).abs() < 1e-6);
+            assert!((data[5] - 2.5).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn lineardensity_plan_charge_weighting() {
+    let mut system = build_four_resid_system();
+    let sel = system.select("resid 1:4").unwrap();
+    let mut plan = LinearDensityPlan::new(
+        sel,
+        2,
+        1.0,
+        LinearDensityWeight::Charge,
+        LinearDensityNorm::Count,
+    )
+    .with_range(Some([0.0, 2.0]))
+    .with_charges(vec![1.0, -1.0, 2.0, -2.0]);
+    let frames = vec![
+        vec![
+            [0.0, 0.0, 0.25, 1.0],
+            [0.0, 0.0, 0.75, 1.0],
+            [0.0, 0.0, 1.25, 1.0],
+            [0.0, 0.0, 1.75, 1.0],
+        ],
+        vec![
+            [0.0, 0.0, 0.25, 1.0],
+            [0.0, 0.0, 1.25, 1.0],
+            [0.0, 0.0, 1.25, 1.0],
+            [0.0, 0.0, 1.75, 1.0],
+        ],
+    ];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 2);
+            assert_eq!(cols, 3);
+            assert!((data[1] - 0.5).abs() < 1e-6);
+            assert!((data[2] - 0.5).abs() < 1e-6);
+            assert!((data[4] + 0.5).abs() < 1e-6);
+            assert!((data[5] + 0.5).abs() < 1e-6);
         }
         _ => panic!("unexpected output"),
     }
@@ -1436,6 +1611,29 @@ fn helix_plan_reports_fitted_alpha_helix_metrics() {
 }
 
 #[test]
+fn kabsch_sander_plan_reports_backbone_energy_matrix() {
+    let mut system = build_alpha_helix_backbone_system(7);
+    let sel = system.select("resid 1:7").unwrap();
+    let mut plan = KabschSanderPlan::new(sel);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Matrix { data, rows, cols } => {
+            assert_eq!(rows, 1);
+            assert_eq!(cols, 49);
+            assert_eq!(data.len(), 49);
+            let finite_count = data.iter().filter(|value| value.is_finite()).count();
+            assert!(finite_count > 0);
+            assert!(data.iter().any(|value| value.is_finite() && *value < -0.5));
+            assert!(data[0].is_nan());
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
 fn sorient_plan_profiles_orientation_shells() {
     let mut interner = StringInterner::new();
     let ca = interner.intern_upper("CA");
@@ -1729,6 +1927,28 @@ fn rdf_plan_density_normalization_uses_common_count() {
             let shell = (4.0f32 / 3.0) * std::f32::consts::PI * (2.0f32.powi(3) - 1.0);
             assert_eq!(rdf.counts[1], 2);
             assert!((rdf.g_r[1] - (2.0 / shell)).abs() < 1e-6);
+            assert!((rdf.integral[1] - 1.0).abs() < 1e-6);
+        }
+        _ => panic!("unexpected output"),
+    }
+}
+
+#[test]
+fn rdf_plan_number_density_output_normalizes_by_reference_and_shell() {
+    let mut system = build_system();
+    let sel = system.select("name CA").unwrap();
+    let mut plan = RdfPlan::new(sel.clone(), sel, 5, 5.0, PbcMode::None)
+        .with_output_options(1.0, false, false, true)
+        .with_number_density_output(true);
+    let frames = vec![system.positions0.clone().unwrap()];
+    let mut traj = InMemoryTraj::new(frames);
+    let mut exec = Executor::new(system);
+    let out = exec.run_plan(&mut plan, &mut traj).unwrap();
+    match out {
+        PlanOutput::Rdf(rdf) => {
+            let shell = (4.0f32 / 3.0) * std::f32::consts::PI * (2.0f32.powi(3) - 1.0);
+            assert_eq!(rdf.counts[1], 2);
+            assert!((rdf.g_r[1] - (1.0 / shell)).abs() < 1e-6);
             assert!((rdf.integral[1] - 1.0).abs() < 1e-6);
         }
         _ => panic!("unexpected output"),
@@ -2056,6 +2276,23 @@ fn pairdist_extrema_plan_outputs_min_and_max_per_frame() {
         .unwrap();
     match min_out {
         PlanOutput::Series(values) => assert_eq!(values, vec![1.0, 2.0]),
+        _ => panic!("unexpected output"),
+    }
+
+    let mut cutoff_plan = PairDistanceExtremaPlan::new(
+        sel.clone(),
+        sel.clone(),
+        PairDistanceExtremaMode::Min,
+        PbcMode::None,
+    )
+    .with_unique_pairs(true)
+    .with_cutoff(Some(1.5), Some(1.5));
+    let mut cutoff_traj = InMemoryTraj::new(frames.clone());
+    let cutoff_out = Executor::new(system.clone())
+        .run_plan(&mut cutoff_plan, &mut cutoff_traj)
+        .unwrap();
+    match cutoff_out {
+        PlanOutput::Series(values) => assert_eq!(values, vec![1.0, 1.5]),
         _ => panic!("unexpected output"),
     }
 

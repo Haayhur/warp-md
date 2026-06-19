@@ -6,10 +6,10 @@ use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use super::geometry_math::*;
-use crate::executor::{Device, Plan, PlanOutput};
+use crate::executor::{Device, Plan, PlanOutput, PlanRequirements, TrajectoryOutput};
 #[cfg(feature = "cuda")]
 use crate::plans::PbcMode;
-use crate::ImagePlan;
+use crate::{ImagePlan, ImageTrajectoryPlan};
 
 include!("pbc/image_correction.rs");
 include!("pbc/cell_geometry.rs");

@@ -1,5 +1,265 @@
 use super::*;
 
+fn matrix_shape(shape: &[usize], name: &str) -> PyResult<(usize, usize)> {
+    match shape {
+        [frames] => Ok((*frames, 1)),
+        [frames, features] => Ok((*frames, *features)),
+        _ => Err(PyValueError::new_err(format!(
+            "{name} must be a 1D or 2D array"
+        ))),
+    }
+}
+
+fn matrix_value(view: &numpy::ndarray::ArrayViewD<'_, f32>, frame: usize, feature: usize) -> f32 {
+    if view.ndim() == 1 {
+        view[numpy::ndarray::IxDyn(&[frame])]
+    } else {
+        view[numpy::ndarray::IxDyn(&[frame, feature])]
+    }
+}
+
+fn compute_matrix_correlation(
+    a: &numpy::ndarray::ArrayViewD<'_, f32>,
+    b: &numpy::ndarray::ArrayViewD<'_, f32>,
+    normalize: bool,
+) -> PyResult<Vec<f32>> {
+    let (n_frames, n_feat) = matrix_shape(a.shape(), "series_a")?;
+    let b_shape = matrix_shape(b.shape(), "series_b")?;
+    if b_shape != (n_frames, n_feat) {
+        return Err(PyValueError::new_err("input shapes must match"));
+    }
+    if n_frames == 0 {
+        return Ok(Vec::new());
+    }
+    let mut out = vec![0.0f32; n_frames];
+    for lag in 0..n_frames {
+        let mut sum = 0.0f64;
+        let samples = n_frames - lag;
+        for frame in 0..samples {
+            for feat in 0..n_feat {
+                sum += (matrix_value(a, frame + lag, feat) as f64)
+                    * (matrix_value(b, frame, feat) as f64);
+            }
+        }
+        out[lag] = (sum / (samples as f64) / (n_feat.max(1) as f64)) as f32;
+    }
+    if normalize {
+        let zero = out[0];
+        if zero != 0.0 {
+            for value in &mut out {
+                *value /= zero;
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn vector_shape(shape: &[usize]) -> PyResult<(usize, usize)> {
+    match shape {
+        [frames, 3] => Ok((*frames, 1)),
+        [frames, items, 3] => Ok((*frames, *items)),
+        _ => Err(PyValueError::new_err(
+            "vectors must have shape (n_frames, 3) or (n_frames, n_items, 3)",
+        )),
+    }
+}
+
+fn vector_value(
+    view: &numpy::ndarray::ArrayViewD<'_, f32>,
+    frame: usize,
+    item: usize,
+    axis: usize,
+) -> f32 {
+    if view.ndim() == 2 {
+        view[numpy::ndarray::IxDyn(&[frame, axis])]
+    } else {
+        view[numpy::ndarray::IxDyn(&[frame, item, axis])]
+    }
+}
+
+#[pyfunction]
+fn array_cross_correlation<'py>(
+    py: Python<'py>,
+    series_a: PyReadonlyArrayDyn<'_, f32>,
+    series_b: PyReadonlyArrayDyn<'_, f32>,
+    normalize: bool,
+) -> PyResult<&'py PyArray1<f32>> {
+    let a = series_a.as_array();
+    let b = series_b.as_array();
+    let out = compute_matrix_correlation(&a, &b, normalize)?;
+    Ok(PyArray1::from_vec_bound(py, out).into_gil_ref())
+}
+
+#[pyfunction]
+fn array_autocorrelation<'py>(
+    py: Python<'py>,
+    series: PyReadonlyArrayDyn<'_, f32>,
+    normalize: bool,
+) -> PyResult<&'py PyArray1<f32>> {
+    let arr = series.as_array();
+    let out = compute_matrix_correlation(&arr, &arr, normalize)?;
+    Ok(PyArray1::from_vec_bound(py, out).into_gil_ref())
+}
+
+#[pyfunction]
+fn array_time_correlation<'py>(
+    py: Python<'py>,
+    vectors: PyReadonlyArrayDyn<'_, f32>,
+    order: usize,
+    normalize: bool,
+) -> PyResult<&'py PyArray1<f32>> {
+    if order != 1 && order != 2 {
+        return Err(PyValueError::new_err("order must be 1 or 2"));
+    }
+    let arr = vectors.as_array();
+    let (n_frames, n_items) = vector_shape(arr.shape())?;
+    if n_frames == 0 {
+        return Ok(PyArray1::from_vec_bound(py, Vec::<f32>::new()).into_gil_ref());
+    }
+    let mut norms = vec![1.0f32; n_frames * n_items];
+    for frame in 0..n_frames {
+        for item in 0..n_items {
+            let x = vector_value(&arr, frame, item, 0);
+            let y = vector_value(&arr, frame, item, 1);
+            let z = vector_value(&arr, frame, item, 2);
+            let norm = (x * x + y * y + z * z).sqrt();
+            norms[frame * n_items + item] = if norm == 0.0 { 1.0 } else { norm };
+        }
+    }
+    let mut out = vec![0.0f32; n_frames];
+    for lag in 0..n_frames {
+        let samples = n_frames - lag;
+        let mut sum = 0.0f64;
+        for frame in 0..samples {
+            for item in 0..n_items {
+                let norm_a = norms[(frame + lag) * n_items + item];
+                let norm_b = norms[frame * n_items + item];
+                let mut dot = 0.0f32;
+                for axis in 0..3 {
+                    dot += vector_value(&arr, frame + lag, item, axis)
+                        * vector_value(&arr, frame, item, axis)
+                        / (norm_a * norm_b);
+                }
+                let value = if order == 2 {
+                    1.5 * dot * dot - 0.5
+                } else {
+                    dot
+                };
+                sum += value as f64;
+            }
+        }
+        out[lag] = (sum / (samples as f64) / (n_items.max(1) as f64)) as f32;
+    }
+    if normalize {
+        let zero = out[0];
+        if zero != 0.0 {
+            for value in &mut out {
+                *value /= zero;
+            }
+        }
+    }
+    Ok(PyArray1::from_vec_bound(py, out).into_gil_ref())
+}
+
+fn compute_transition_stats(
+    codes: numpy::ndarray::ArrayView2<'_, i64>,
+    lag: usize,
+) -> (Array2<f64>, Array2<f64>) {
+    let mut counts = Array2::<f64>::zeros((4, 4));
+    let lag = lag.max(1);
+    let shape = codes.shape();
+    let n_frames = shape[0];
+    let n_torsions = shape[1];
+    if n_frames <= lag || n_torsions == 0 {
+        return (counts.clone(), counts);
+    }
+    for frame in 0..(n_frames - lag) {
+        for torsion in 0..n_torsions {
+            let src = codes[[frame, torsion]];
+            let dst = codes[[frame + lag, torsion]];
+            if (0..4).contains(&src) && (0..4).contains(&dst) {
+                counts[[src as usize, dst as usize]] += 1.0;
+            }
+        }
+    }
+    let mut probs = counts.clone();
+    for row in 0..4 {
+        let mut row_sum = 0.0f64;
+        for col in 0..4 {
+            row_sum += probs[[row, col]];
+        }
+        if row_sum > 0.0 {
+            for col in 0..4 {
+                probs[[row, col]] /= row_sum;
+            }
+        }
+    }
+    (counts, probs)
+}
+
+#[pyfunction]
+fn transition_stats_array<'py>(
+    py: Python<'py>,
+    codes: PyReadonlyArray2<'_, i64>,
+    lag: usize,
+) -> PyResult<PyObject> {
+    let (counts, probs) = compute_transition_stats(codes.as_array(), lag);
+    Ok((
+        counts.into_pyarray_bound(py).into_py(py),
+        probs.into_pyarray_bound(py).into_py(py),
+    )
+        .into_py(py))
+}
+
+fn compute_velocity_differences(
+    coords: numpy::ndarray::ArrayView3<'_, f64>,
+    dt_steps: numpy::ndarray::ArrayView1<'_, f64>,
+    fallback_dt: f64,
+) -> PyResult<Array3<f64>> {
+    if coords.ndim() != 3 || coords.shape()[2] != 3 {
+        return Err(PyValueError::new_err(
+            "coords must have shape (n_frames, n_atoms, 3)",
+        ));
+    }
+    if !fallback_dt.is_finite() || fallback_dt <= 0.0 {
+        return Err(PyValueError::new_err("fallback_dt must be positive"));
+    }
+    let n_frames = coords.shape()[0];
+    let n_atoms = coords.shape()[1];
+    if n_frames < 2 {
+        return Ok(Array3::<f64>::zeros((0, n_atoms, 3)));
+    }
+    let mut out = Array3::<f64>::zeros((n_frames - 1, n_atoms, 3));
+    for frame in 0..(n_frames - 1) {
+        let mut dt = if frame < dt_steps.len() {
+            dt_steps[frame]
+        } else {
+            fallback_dt
+        };
+        if !dt.is_finite() || dt <= 0.0 {
+            dt = fallback_dt;
+        }
+        for atom in 0..n_atoms {
+            for axis in 0..3 {
+                out[[frame, atom, axis]] =
+                    (coords[[frame + 1, atom, axis]] - coords[[frame, atom, axis]]) / dt;
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[pyfunction]
+fn velocity_differences_array<'py>(
+    py: Python<'py>,
+    coords: PyReadonlyArray3<'_, f64>,
+    dt_steps: PyReadonlyArray1<'_, f64>,
+    fallback_dt: f64,
+) -> PyResult<&'py PyArray3<f64>> {
+    let out = compute_velocity_differences(coords.as_array(), dt_steps.as_array(), fallback_dt)?;
+    Ok(out.into_pyarray_bound(py).into_gil_ref())
+}
+
 #[pyclass]
 struct PySuperposePlan {
     plan: RefCell<SuperposePlan>,
@@ -270,7 +530,7 @@ impl PyAtomicCorrelationPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -278,15 +538,17 @@ impl PyAtomicCorrelationPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<PyObject> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::TimeSeries {
@@ -626,7 +888,7 @@ fn surface_to_py(py: Python<'_>, output: traj_engine::SurfaceOutput) -> PyResult
 #[pymethods]
 impl PySurfPlan {
     #[new]
-    #[pyo3(signature = (selection, algorithm="bbox", probe_radius=1.4, n_sphere_points=64, radii=None, offset=0.0, nbrcut=2.5, solute_selection=None, radii_mode="gb", atom_area=false, volume=false, residue_area=false))]
+    #[pyo3(signature = (selection, algorithm="lcpo", probe_radius=1.4, n_sphere_points=64, radii=None, offset=0.0, nbrcut=2.5, solute_selection=None, radii_mode="gb", atom_area=false, volume=false, residue_area=false))]
     fn new(
         selection: &PySelection,
         algorithm: &str,
@@ -706,7 +968,7 @@ struct PyMolSurfPlan {
 #[pymethods]
 impl PyMolSurfPlan {
     #[new]
-    #[pyo3(signature = (selection, algorithm="sasa", probe_radius=1.4, n_sphere_points=64, radii=None, offset=0.0, radii_mode="gb", atom_area=false, volume=false, residue_area=false))]
+    #[pyo3(signature = (selection, algorithm="sasa", probe_radius=1.4, n_sphere_points=64, radii=None, offset=0.0, radii_mode="gb", atom_area=false, volume=false, residue_area=false, solute_selection=None))]
     fn new(
         selection: &PySelection,
         algorithm: &str,
@@ -718,6 +980,7 @@ impl PyMolSurfPlan {
         atom_area: bool,
         volume: bool,
         residue_area: bool,
+        solute_selection: Option<&PySelection>,
     ) -> PyResult<Self> {
         let algorithm = match algorithm {
             "bbox" => SurfAlgorithm::Bbox,
@@ -739,7 +1002,8 @@ impl PyMolSurfPlan {
             .with_radii_mode(radii_mode)
             .with_atom_area(atom_area)
             .with_volume(volume)
-            .with_residue_area(residue_area);
+            .with_residue_area(residue_area)
+            .with_solute_selection(solute_selection.map(|sel| sel.selection.clone()));
         Ok(Self {
             plan: RefCell::new(plan),
         })
@@ -1541,6 +1805,66 @@ struct PySolventPolarizationPlan {
     plan: RefCell<SolventPolarizationPlan>,
 }
 
+#[pyclass]
+struct PyNematicOrderPlan {
+    plan: RefCell<NematicOrderPlan>,
+}
+
+#[pymethods]
+impl PyNematicOrderPlan {
+    #[new]
+    #[pyo3(signature = (tail_indices, head_indices, reference_axis=None, pbc=false, length_scale=None))]
+    fn new(
+        tail_indices: Vec<u32>,
+        head_indices: Vec<u32>,
+        reference_axis: Option<(f64, f64, f64)>,
+        pbc: bool,
+        length_scale: Option<f64>,
+    ) -> Self {
+        let mut plan = NematicOrderPlan::new(tail_indices, head_indices).with_pbc(pbc);
+        if let Some(axis) = reference_axis {
+            plan = plan.with_reference_axis(Some([axis.0, axis.1, axis.2]));
+        }
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::TimeSeries {
+                time,
+                data,
+                rows,
+                cols,
+            } => timeseries_to_py(py, time, data, rows, cols),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
 #[pymethods]
 impl PyDielectricPlan {
     #[new]
@@ -1597,6 +1921,67 @@ impl PyDielectricPlan {
 #[pyclass]
 struct PyDipoleAlignmentPlan {
     plan: RefCell<DipoleAlignmentPlan>,
+}
+
+#[pyclass]
+struct PyDipoleMomentPlan {
+    plan: RefCell<DipoleMomentPlan>,
+}
+
+#[pymethods]
+impl PyDipoleMomentPlan {
+    #[new]
+    #[pyo3(signature = (selection, charges, group_by="resid", length_scale=None, group_types=None))]
+    fn new(
+        selection: &PySelection,
+        charges: Vec<f64>,
+        group_by: &str,
+        length_scale: Option<f64>,
+        group_types: Option<Vec<usize>>,
+    ) -> PyResult<Self> {
+        let group_by = parse_group_by(group_by)?;
+        let mut plan = DipoleMomentPlan::new(selection.selection.clone(), group_by, charges);
+        if let Some(scale) = length_scale {
+            plan = plan.with_length_scale(scale);
+        }
+        if let Some(types) = group_types {
+            plan = plan.with_group_types(types);
+        }
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::TimeSeries {
+                time,
+                data,
+                rows,
+                cols,
+            } => timeseries_to_py(py, time, data, rows, cols),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
 }
 
 #[pymethods]
@@ -2393,6 +2778,11 @@ struct PyDsspPlan {
 }
 
 #[pyclass]
+struct PyKabschSanderPlan {
+    plan: RefCell<KabschSanderPlan>,
+}
+
+#[pyclass]
 struct PyHelixPlan {
     plan: RefCell<HelixPlan>,
 }
@@ -2755,7 +3145,54 @@ impl PyGistDirectPlan {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transition_stats_counts_and_probs() {
+        let codes = numpy::ndarray::arr2(&[[0_i64, 1], [1, 2], [1, 3]]);
+        let (counts, probs) = compute_transition_stats(codes.view(), 1);
+        assert_eq!(counts[[0, 1]], 1.0);
+        assert_eq!(counts[[1, 1]], 1.0);
+        assert_eq!(counts[[1, 2]], 1.0);
+        assert_eq!(counts[[2, 3]], 1.0);
+        assert!((probs[[0, 1]] - 1.0).abs() < 1e-12);
+        assert!((probs[[1, 1]] - 0.5).abs() < 1e-12);
+        assert!((probs[[1, 2]] - 0.5).abs() < 1e-12);
+        assert!((probs[[2, 3]] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn transition_stats_ignores_out_of_range_codes() {
+        let codes = numpy::ndarray::arr2(&[[0_i64, 4], [3, -1], [2, 1]]);
+        let (counts, probs) = compute_transition_stats(codes.view(), 1);
+        assert_eq!(counts.sum(), 2.0);
+        assert_eq!(counts[[0, 3]], 1.0);
+        assert_eq!(counts[[3, 2]], 1.0);
+        assert_eq!(probs[[0, 3]], 1.0);
+        assert_eq!(probs[[3, 2]], 1.0);
+    }
+
+    #[test]
+    fn velocity_differences_uses_per_step_and_fallback_dt() {
+        let coords =
+            numpy::ndarray::arr3(&[[[0.0_f64, 0.0, 0.0]], [[2.0, 0.0, 0.0]], [[5.0, 0.0, 3.0]]]);
+        let dt = numpy::ndarray::arr1(&[2.0_f64]);
+        let out = compute_velocity_differences(coords.view(), dt.view(), 1.0).unwrap();
+        assert_eq!(out.shape(), &[2, 1, 3]);
+        assert_eq!(out[[0, 0, 0]], 1.0);
+        assert_eq!(out[[1, 0, 0]], 3.0);
+        assert_eq!(out[[1, 0, 2]], 3.0);
+    }
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(array_autocorrelation, m)?)?;
+    m.add_function(wrap_pyfunction!(array_cross_correlation, m)?)?;
+    m.add_function(wrap_pyfunction!(array_time_correlation, m)?)?;
+    m.add_function(wrap_pyfunction!(transition_stats_array, m)?)?;
+    m.add_function(wrap_pyfunction!(velocity_differences_array, m)?)?;
     m.add_class::<PySuperposePlan>()?;
     m.add_class::<PyRotationMatrixPlan>()?;
     m.add_class::<PyAlignPrincipalAxisPlan>()?;
@@ -2781,6 +3218,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHelixOrientationPlan>()?;
     m.add_class::<PySolventOrientationPlan>()?;
     m.add_class::<PySolventPolarizationPlan>()?;
+    m.add_class::<PyNematicOrderPlan>()?;
+    m.add_class::<PyDipoleMomentPlan>()?;
     m.add_class::<PyDipoleAlignmentPlan>()?;
     m.add_class::<PyIonPairCorrelationPlan>()?;
     m.add_class::<PySaltBridgePlan>()?;
@@ -2789,6 +3228,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWaterCountPlan>()?;
     m.add_class::<PyRamaPlan>()?;
     m.add_class::<PyDsspPlan>()?;
+    m.add_class::<PyKabschSanderPlan>()?;
     m.add_class::<PyHelixPlan>()?;
     m.add_class::<PyMdmatPlan>()?;
     m.add_class::<PyGistGridPlan>()?;
@@ -2914,6 +3354,58 @@ impl PyDsspPlan {
             avg,
         )
             .into_py(py))
+    }
+}
+
+#[pymethods]
+impl PyKabschSanderPlan {
+    #[new]
+    fn new(selection: &PySelection) -> Self {
+        let plan = KabschSanderPlan::new(selection.selection.clone());
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        let (data, rows, cols) = match output {
+            PlanOutput::Matrix { data, rows, cols } => (data, rows, cols),
+            _ => return Err(PyRuntimeError::new_err("unexpected output")),
+        };
+        let labels = plan.labels().to_vec();
+        drop(plan);
+        if rows * cols != data.len() {
+            return Err(PyRuntimeError::new_err(
+                "kabsch_sander output shape mismatch",
+            ));
+        }
+        let arr = Array2::from_shape_vec((rows, cols), data)
+            .map_err(|_| PyRuntimeError::new_err("invalid kabsch_sander matrix shape"))?;
+        let dict = PyDict::new_bound(py);
+        dict.set_item("labels", labels)?;
+        dict.set_item("energies", arr.into_pyarray_bound(py))?;
+        dict.set_item("rows", rows)?;
+        dict.set_item("cols", cols)?;
+        Ok(dict.into_py(py))
     }
 }
 

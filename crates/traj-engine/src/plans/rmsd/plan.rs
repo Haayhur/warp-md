@@ -39,7 +39,27 @@ impl SymmRmsdPlan {
     pub fn new(selection: Selection, reference_mode: ReferenceMode, align: bool) -> Self {
         Self {
             inner: RmsdPlan::new(selection, reference_mode, align),
+            symmetry_groups: Vec::new(),
+            max_permutations: 4096,
         }
+    }
+
+    pub fn with_symmetry_groups(
+        mut self,
+        symmetry_groups: Vec<Vec<usize>>,
+        max_permutations: usize,
+    ) -> TrajResult<Self> {
+        self.symmetry_groups = normalize_symmetry_groups(
+            symmetry_groups,
+            self.inner.selection.indices.len(),
+            max_permutations,
+        )?;
+        self.max_permutations = max_permutations;
+        Ok(self)
+    }
+
+    fn has_remap(&self) -> bool {
+        !self.symmetry_groups.is_empty()
     }
 }
 
@@ -66,6 +86,60 @@ impl DistanceRmsdPlan {
             results: Vec::new(),
         }
     }
+}
+
+fn checked_factorial(n: usize) -> TrajResult<usize> {
+    let mut out = 1usize;
+    for value in 2..=n {
+        out = out
+            .checked_mul(value)
+            .ok_or_else(|| TrajError::Parse("symmetry remap permutation count overflow".into()))?;
+    }
+    Ok(out)
+}
+
+fn normalize_symmetry_groups(
+    symmetry_groups: Vec<Vec<usize>>,
+    selection_len: usize,
+    max_permutations: usize,
+) -> TrajResult<Vec<Vec<usize>>> {
+    if max_permutations == 0 {
+        return Err(TrajError::Parse("max_permutations must be positive".into()));
+    }
+
+    let mut used = vec![false; selection_len];
+    let mut total = 1usize;
+    let mut out = Vec::new();
+    for mut group in symmetry_groups {
+        group.sort_unstable();
+        group.dedup();
+        if group.len() < 2 {
+            continue;
+        }
+        for &position in group.iter() {
+            if position >= selection_len {
+                return Err(TrajError::Mismatch(format!(
+                    "symmetry group position {position} out of selection range"
+                )));
+            }
+            if used[position] {
+                return Err(TrajError::Mismatch(format!(
+                    "symmetry group position {position} appears in more than one group"
+                )));
+            }
+            used[position] = true;
+        }
+        total = total
+            .checked_mul(checked_factorial(group.len())?)
+            .ok_or_else(|| TrajError::Parse("symmetry remap permutation count overflow".into()))?;
+        if total > max_permutations {
+            return Err(TrajError::Unsupported(format!(
+                "symmetry remap requires {total} permutations, exceeds max_permutations={max_permutations}"
+            )));
+        }
+        out.push(group);
+    }
+    Ok(out)
 }
 
 fn process_cpu_chunk_out(
@@ -347,13 +421,79 @@ impl Plan for SymmRmsdPlan {
         self.inner.init(system, device)
     }
 
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        self.inner.preferred_selection()
+    }
+
+    fn preferred_selection_hint(&self, system: &System) -> Option<&[u32]> {
+        self.inner.preferred_selection_hint(system)
+    }
+
     fn process_chunk(
         &mut self,
         chunk: &FrameChunk,
         system: &System,
         device: &Device,
     ) -> TrajResult<()> {
-        self.inner.process_chunk(chunk, system, device)
+        if !self.has_remap() {
+            return self.inner.process_chunk(chunk, system, device);
+        }
+        ensure_symm_reference(&mut self.inner, chunk, false)?;
+        let reference = self
+            .inner
+            .reference
+            .as_ref()
+            .ok_or_else(|| TrajError::Mismatch("reference not initialized".into()))?;
+        process_symm_cpu_chunk(
+            chunk,
+            chunk.n_atoms,
+            reference,
+            &self.inner.selection_usize,
+            &self.symmetry_groups,
+            self.inner.align,
+            &mut self.inner.results,
+        );
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        source_selection: &[u32],
+        system: &System,
+        device: &Device,
+    ) -> TrajResult<()> {
+        if !self.has_remap() {
+            return self
+                .inner
+                .process_chunk_selected(chunk, source_selection, system, device);
+        }
+        if source_selection != self.inner.selection.indices.as_slice() {
+            return Err(TrajError::Mismatch(
+                "symmrmsd selected chunk does not match expected IO selection".into(),
+            ));
+        }
+        if chunk.n_atoms != self.inner.selection.indices.len() {
+            return Err(TrajError::Mismatch(
+                "symmrmsd selected chunk atom count does not match selection".into(),
+            ));
+        }
+        ensure_symm_reference(&mut self.inner, chunk, true)?;
+        let reference = self
+            .inner
+            .reference
+            .as_ref()
+            .ok_or_else(|| TrajError::Mismatch("reference not initialized".into()))?;
+        process_symm_cpu_chunk(
+            chunk,
+            chunk.n_atoms,
+            reference,
+            &self.inner.dense_selection_usize,
+            &self.symmetry_groups,
+            self.inner.align,
+            &mut self.inner.results,
+        );
+        Ok(())
     }
 
     fn finalize(&mut self) -> TrajResult<PlanOutput> {
@@ -634,6 +774,308 @@ impl Plan for DistanceRmsdPlan {
     fn finalize(&mut self) -> TrajResult<PlanOutput> {
         Ok(PlanOutput::Series(std::mem::take(&mut self.results)))
     }
+}
+
+fn ensure_symm_reference(
+    inner: &mut RmsdPlan,
+    chunk: &FrameChunk,
+    selected_input: bool,
+) -> TrajResult<()> {
+    if inner.reference.is_some() || !matches!(inner.reference_mode, ReferenceMode::Frame0) {
+        return Ok(());
+    }
+    if chunk.n_frames == 0 {
+        return Ok(());
+    }
+    if selected_input {
+        let end = chunk.n_atoms.min(chunk.coords.len());
+        inner.reference = Some(chunk.coords[..end].to_vec());
+        return Ok(());
+    }
+
+    let mut reference = Vec::with_capacity(inner.selection_usize.len());
+    for &idx in inner.selection_usize.iter() {
+        if idx >= chunk.n_atoms {
+            return Err(TrajError::Mismatch(
+                "symmrmsd reference selection index out of frame bounds".into(),
+            ));
+        }
+        reference.push(chunk.coords[idx]);
+    }
+    inner.reference = Some(reference);
+    Ok(())
+}
+
+fn process_symm_cpu_chunk(
+    chunk: &FrameChunk,
+    n_atoms: usize,
+    reference: &[[f32; 4]],
+    selection: &[usize],
+    groups: &[Vec<usize>],
+    align: bool,
+    out: &mut Vec<f32>,
+) {
+    for frame in 0..chunk.n_frames {
+        let frame_coords = &chunk.coords[frame * n_atoms..(frame + 1) * n_atoms];
+        out.push(best_remapped_rmsd(
+            frame_coords,
+            reference,
+            selection,
+            groups,
+            align,
+        ));
+    }
+}
+
+fn best_remapped_rmsd(
+    frame: &[[f32; 4]],
+    reference: &[[f32; 4]],
+    selection: &[usize],
+    groups: &[Vec<usize>],
+    align: bool,
+) -> f32 {
+    let n = selection.len().min(reference.len());
+    if n == 0 {
+        return 0.0;
+    }
+    if groups.iter().any(|group| group.iter().any(|&pos| pos >= n)) {
+        return 0.0;
+    }
+    let mut mapping: Vec<usize> = (0..n).collect();
+    let mut best = f32::INFINITY;
+    enumerate_symm_groups(
+        0,
+        groups,
+        &mut mapping,
+        frame,
+        reference,
+        selection,
+        align,
+        &mut best,
+    );
+    if best.is_finite() {
+        best
+    } else {
+        0.0
+    }
+}
+
+fn enumerate_symm_groups(
+    group_index: usize,
+    groups: &[Vec<usize>],
+    mapping: &mut [usize],
+    frame: &[[f32; 4]],
+    reference: &[[f32; 4]],
+    selection: &[usize],
+    align: bool,
+    best: &mut f32,
+) {
+    if group_index == groups.len() {
+        let value = if align {
+            rmsd_aligned_mapped(frame, reference, selection, mapping)
+        } else {
+            rmsd_raw_mapped(frame, reference, selection, mapping)
+        };
+        if value < *best {
+            *best = value;
+        }
+        return;
+    }
+
+    let group = &groups[group_index];
+    let mut values = group.clone();
+    enumerate_group_values(
+        0,
+        group,
+        &mut values,
+        group_index,
+        groups,
+        mapping,
+        frame,
+        reference,
+        selection,
+        align,
+        best,
+    );
+}
+
+fn enumerate_group_values(
+    value_index: usize,
+    group: &[usize],
+    values: &mut [usize],
+    group_index: usize,
+    groups: &[Vec<usize>],
+    mapping: &mut [usize],
+    frame: &[[f32; 4]],
+    reference: &[[f32; 4]],
+    selection: &[usize],
+    align: bool,
+    best: &mut f32,
+) {
+    if value_index == values.len() {
+        for (slot, source_pos) in group.iter().zip(values.iter()) {
+            mapping[*slot] = *source_pos;
+        }
+        enumerate_symm_groups(
+            group_index + 1,
+            groups,
+            mapping,
+            frame,
+            reference,
+            selection,
+            align,
+            best,
+        );
+        return;
+    }
+
+    for swap_index in value_index..values.len() {
+        values.swap(value_index, swap_index);
+        enumerate_group_values(
+            value_index + 1,
+            group,
+            values,
+            group_index,
+            groups,
+            mapping,
+            frame,
+            reference,
+            selection,
+            align,
+            best,
+        );
+        values.swap(value_index, swap_index);
+    }
+}
+
+fn rmsd_raw_mapped(
+    frame: &[[f32; 4]],
+    reference: &[[f32; 4]],
+    selection: &[usize],
+    mapping: &[usize],
+) -> f32 {
+    let n = selection.len().min(reference.len()).min(mapping.len());
+    if n == 0 {
+        return 0.0;
+    }
+    let mut sum = 0.0f64;
+    for ref_pos in 0..n {
+        let source_pos = mapping[ref_pos];
+        if source_pos >= selection.len() {
+            return 0.0;
+        }
+        let atom_idx = selection[source_pos];
+        if atom_idx >= frame.len() {
+            return 0.0;
+        }
+        let p = frame[atom_idx];
+        let q = reference[ref_pos];
+        let dx = p[0] as f64 - q[0] as f64;
+        let dy = p[1] as f64 - q[1] as f64;
+        let dz = p[2] as f64 - q[2] as f64;
+        sum += dx * dx + dy * dy + dz * dz;
+    }
+    ((sum / n as f64).sqrt()) as f32
+}
+
+fn rmsd_aligned_mapped(
+    frame: &[[f32; 4]],
+    reference: &[[f32; 4]],
+    selection: &[usize],
+    mapping: &[usize],
+) -> f32 {
+    let n = selection.len().min(reference.len()).min(mapping.len());
+    if n == 0 {
+        return 0.0;
+    }
+
+    let mut cx = [0.0f64; 3];
+    let mut cy = [0.0f64; 3];
+    for ref_pos in 0..n {
+        let source_pos = mapping[ref_pos];
+        if source_pos >= selection.len() {
+            return 0.0;
+        }
+        let atom_idx = selection[source_pos];
+        if atom_idx >= frame.len() {
+            return 0.0;
+        }
+        let p = frame[atom_idx];
+        let q = reference[ref_pos];
+        cx[0] += p[0] as f64;
+        cx[1] += p[1] as f64;
+        cx[2] += p[2] as f64;
+        cy[0] += q[0] as f64;
+        cy[1] += q[1] as f64;
+        cy[2] += q[2] as f64;
+    }
+    let inv_n = 1.0 / n as f64;
+    cx[0] *= inv_n;
+    cx[1] *= inv_n;
+    cx[2] *= inv_n;
+    cy[0] *= inv_n;
+    cy[1] *= inv_n;
+    cy[2] *= inv_n;
+
+    let mut h: Matrix3<f64> = Matrix3::zeros();
+    for ref_pos in 0..n {
+        let source_pos = mapping[ref_pos];
+        let atom_idx = selection[source_pos];
+        let p = frame[atom_idx];
+        let q = reference[ref_pos];
+        let px = p[0] as f64 - cx[0];
+        let py = p[1] as f64 - cx[1];
+        let pz = p[2] as f64 - cx[2];
+        let qx = q[0] as f64 - cy[0];
+        let qy = q[1] as f64 - cy[1];
+        let qz = q[2] as f64 - cy[2];
+
+        h[(0, 0)] += px * qx;
+        h[(0, 1)] += px * qy;
+        h[(0, 2)] += px * qz;
+        h[(1, 0)] += py * qx;
+        h[(1, 1)] += py * qy;
+        h[(1, 2)] += py * qz;
+        h[(2, 0)] += pz * qx;
+        h[(2, 1)] += pz * qy;
+        h[(2, 2)] += pz * qz;
+    }
+
+    let svd = h.svd(true, true);
+    let (u, v_t) = match (svd.u, svd.v_t) {
+        (Some(u), Some(v_t)) => (u, v_t),
+        _ => return rmsd_raw_mapped(frame, reference, selection, mapping),
+    };
+    let mut r: Matrix3<f64> = v_t.transpose() * u.transpose();
+    if r.determinant() < 0.0 {
+        let mut v_t_adj = v_t;
+        v_t_adj.row_mut(2).neg_mut();
+        r = v_t_adj.transpose() * u.transpose();
+    }
+
+    let mut sum = 0.0f64;
+    for ref_pos in 0..n {
+        let source_pos = mapping[ref_pos];
+        let atom_idx = selection[source_pos];
+        let p = frame[atom_idx];
+        let q = reference[ref_pos];
+        let px = p[0] as f64 - cx[0];
+        let py = p[1] as f64 - cx[1];
+        let pz = p[2] as f64 - cx[2];
+        let qx = q[0] as f64 - cy[0];
+        let qy = q[1] as f64 - cy[1];
+        let qz = q[2] as f64 - cy[2];
+
+        let ax = r[(0, 0)] * px + r[(0, 1)] * py + r[(0, 2)] * pz;
+        let ay = r[(1, 0)] * px + r[(1, 1)] * py + r[(1, 2)] * pz;
+        let az = r[(2, 0)] * px + r[(2, 1)] * py + r[(2, 2)] * pz;
+
+        let dx = ax - qx;
+        let dy = ay - qy;
+        let dz = az - qz;
+        sum += dx * dx + dy * dy + dz * dz;
+    }
+    ((sum * inv_n).sqrt()) as f32
 }
 
 fn rmsd_raw(frame: &[[f32; 4]], reference: &[[f32; 4]]) -> f32 {

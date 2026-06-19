@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from ._chunk_io import read_chunk_fields
+from ._runtime import coerce_native_system, is_native_traj, load_native_symbol, native_selection
 
 
 def _all_resid_mask(system) -> str:
@@ -42,6 +43,18 @@ def set_velocity(
 
     Returns velocity array shape (n_frames, n_sel, 3).
     """
+    native_out = _native_set_velocity(
+        traj,
+        system,
+        temperature,
+        ig,
+        mask,
+        frame_indices,
+        chunk_frames,
+    )
+    if native_out is not None:
+        return native_out
+
     coords = _read_all(traj, chunk_frames)
     if coords is None:
         raise ValueError("trajectory has no frames")
@@ -78,6 +91,41 @@ def set_velocity(
         sigma = np.sqrt(temp / mass) if mass > 0.0 else 0.0
         vel[:, i, :] = rng.normal(0.0, sigma, size=(n_frames, 3))
     return vel.astype(np.float32)
+
+
+def _native_set_velocity(
+    traj,
+    system,
+    temperature: float,
+    ig: int,
+    mask: str,
+    frame_indices: Optional[Sequence[int]],
+    chunk_frames: Optional[int],
+):
+    if not is_native_traj(traj):
+        return None
+    native_system = coerce_native_system(system)
+    if native_system is None:
+        return None
+    plan_cls = load_native_symbol("SetVelocityPlan")
+    if plan_cls is None:
+        return None
+    selection = native_selection(system, native_system, mask)
+    plan = plan_cls(selection, temperature=float(temperature), seed=int(ig))
+    values = np.asarray(
+        plan.run(
+            traj,
+            native_system,
+            chunk_frames=chunk_frames,
+            device="auto",
+            frame_indices=None if frame_indices is None else [int(v) for v in frame_indices],
+        ),
+        dtype=np.float32,
+    )
+    n_sel = len(list(selection.indices))
+    if values.size == 0:
+        return np.empty((0, n_sel, 3), dtype=np.float32)
+    return values.reshape(values.shape[0], n_sel, 3)
 
 
 def _read_all(traj, chunk_frames: Optional[int]):

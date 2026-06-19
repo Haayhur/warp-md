@@ -10,6 +10,7 @@ from typing import Optional, Sequence, Union
 import numpy as np
 
 from ._runtime import (
+    is_native_traj,
     load_native_symbol,
     native_inputs,
     native_selection,
@@ -46,6 +47,58 @@ def _apply_transform_rows(
             row[9:12],
         )
     return aligned
+
+
+def _trajectory_payload_to_array(payload):
+    coords = np.asarray(payload["coords"], dtype=np.float32)
+    box = payload.get("box")
+    time = payload.get("time_ps")
+    return ArrayTrajectory(
+        coords,
+        box=None if box is None else np.asarray(box, dtype=np.float32),
+        time_ps=None if time is None else np.asarray(time, dtype=np.float64),
+    )
+
+
+def _run_native_superpose_trajectory(
+    traj,
+    system,
+    mask: str,
+    ref: RefLike,
+    ref_mask: str,
+    mass: bool,
+    chunk_frames: Optional[int],
+):
+    if not is_native_traj(traj):
+        return None
+    plan_cls = load_native_symbol("SuperposeTrajectoryPlan")
+    if plan_cls is None:
+        return None
+    native_traj, reference_system = native_reference_inputs(
+        traj,
+        system,
+        mask,
+        ref,
+        ref_mask,
+        chunk_frames,
+        include_box=True,
+        include_time=True,
+    )
+    if native_traj is None or reference_system is None or not reset_traj(native_traj):
+        return None
+    try:
+        selection = native_selection(system, reference_system, mask)
+        plan = plan_cls(selection, reference="topology", mass=mass, norotate=False)
+        payload = plan.run(
+            native_traj,
+            reference_system,
+            chunk_frames=chunk_frames,
+            device="auto",
+        )
+    except Exception as exc:
+        raise RuntimeError("native SuperposeTrajectoryPlan execution failed") from exc
+    reset_traj(native_traj)
+    return _trajectory_payload_to_array(payload)
 
 
 def _run_native_align_transforms(
@@ -127,6 +180,18 @@ def align(
 ):
     """Align trajectory frames to a reference via Kabsch."""
     ref_mask = mask if ref_mask is None else ref_mask
+    if not return_transforms:
+        native = _run_native_superpose_trajectory(
+            traj,
+            system,
+            mask,
+            ref,
+            ref_mask,
+            mass,
+            chunk_frames,
+        )
+        if native is not None:
+            return native
     coords, box, time = read_all_frames(traj, chunk_frames, include_box=True, include_time=True)
     if coords is None:
         raise ValueError("trajectory has no frames")
@@ -169,6 +234,18 @@ def superpose(
 ):
     """Superpose trajectory frames to a reference (returns aligned coords)."""
     ref_mask = mask if (ref_mask is None or ref_mask == "") else ref_mask
+    if frame_indices is None:
+        native = _run_native_superpose_trajectory(
+            traj,
+            system,
+            mask,
+            ref,
+            ref_mask,
+            mass,
+            chunk_frames,
+        )
+        if native is not None:
+            return native
     coords, box, time = read_all_frames(traj, chunk_frames, include_box=True, include_time=True)
     if coords is None:
         raise ValueError("trajectory has no frames")

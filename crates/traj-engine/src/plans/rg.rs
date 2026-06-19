@@ -1,3 +1,4 @@
+use nalgebra::{Matrix3, SymmetricEigen};
 use traj_core::error::TrajResult;
 use traj_core::frame::FrameChunk;
 use traj_core::selection::Selection;
@@ -31,7 +32,17 @@ pub struct RadgyrPlan {
     selection: Selection,
     mass_weighted: bool,
     include_max: bool,
+    include_axes: bool,
     include_tensor: bool,
+    selected_masses: Vec<f32>,
+    use_selected_input: bool,
+    results: Vec<f32>,
+    frames: usize,
+}
+
+pub struct ShapeDescriptorsPlan {
+    selection: Selection,
+    mass_weighted: bool,
     selected_masses: Vec<f32>,
     use_selected_input: bool,
     results: Vec<f32>,
@@ -75,12 +86,14 @@ impl RadgyrPlan {
         selection: Selection,
         mass_weighted: bool,
         include_max: bool,
+        include_axes: bool,
         include_tensor: bool,
     ) -> Self {
         Self {
             selection,
             mass_weighted,
             include_max,
+            include_axes,
             include_tensor,
             selected_masses: Vec::new(),
             use_selected_input: true,
@@ -90,7 +103,22 @@ impl RadgyrPlan {
     }
 
     fn cols(&self) -> usize {
-        1 + usize::from(self.include_max) + if self.include_tensor { 6 } else { 0 }
+        1 + usize::from(self.include_max)
+            + if self.include_axes { 3 } else { 0 }
+            + if self.include_tensor { 6 } else { 0 }
+    }
+}
+
+impl ShapeDescriptorsPlan {
+    pub fn new(selection: Selection, mass_weighted: bool) -> Self {
+        Self {
+            selection,
+            mass_weighted,
+            selected_masses: Vec::new(),
+            use_selected_input: true,
+            results: Vec::new(),
+            frames: 0,
+        }
     }
 }
 
@@ -479,6 +507,101 @@ impl Plan for RadgyrPlan {
     }
 }
 
+impl Plan for ShapeDescriptorsPlan {
+    fn name(&self) -> &'static str {
+        "shape_descriptors"
+    }
+
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.selected_masses.clear();
+        if self.mass_weighted {
+            self.selected_masses.extend(
+                self.selection
+                    .indices
+                    .iter()
+                    .map(|idx| system.atoms.mass[*idx as usize]),
+            );
+        }
+        self.use_selected_input = true;
+        self.frames = 0;
+        Ok(())
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        if self.use_selected_input {
+            Some(&self.selection.indices)
+        } else {
+            None
+        }
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        let n_atoms = chunk.n_atoms;
+        for frame in 0..chunk.n_frames {
+            let frame_base = frame * n_atoms;
+            let stats = {
+                let sel = &self.selection.indices;
+                let mass_weighted = self.mass_weighted;
+                compute_gyration_stats(
+                    sel.len(),
+                    |i| chunk.coords[frame_base + sel[i] as usize],
+                    |i| {
+                        if mass_weighted {
+                            system.atoms.mass[sel[i] as usize] as f64
+                        } else {
+                            1.0
+                        }
+                    },
+                )
+            };
+            self.push_shape_stats(stats);
+            self.frames += 1;
+        }
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        _source_selection: &[u32],
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        for frame in 0..chunk.n_frames {
+            let frame_base = frame * chunk.n_atoms;
+            let frame_coords = &chunk.coords[frame_base..frame_base + chunk.n_atoms];
+            let stats = compute_gyration_stats(
+                frame_coords.len(),
+                |i| frame_coords[i],
+                |i| {
+                    if self.mass_weighted {
+                        self.selected_masses[i] as f64
+                    } else {
+                        1.0
+                    }
+                },
+            );
+            self.push_shape_stats(stats);
+            self.frames += 1;
+        }
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Matrix {
+            data: std::mem::take(&mut self.results),
+            rows: self.frames,
+            cols: 7,
+        })
+    }
+}
+
 impl RadgyrTensorPlan {
     fn push_tensor_stats(&mut self, stats: GyrationStats) {
         self.results.push(stats.rg);
@@ -492,9 +615,23 @@ impl RadgyrPlan {
         if self.include_max {
             self.results.push(stats.max_radius);
         }
+        if self.include_axes {
+            self.results.extend_from_slice(&stats.axes);
+        }
         if self.include_tensor {
             self.results.extend_from_slice(&stats.tensor);
         }
+    }
+}
+
+impl ShapeDescriptorsPlan {
+    fn push_shape_stats(&mut self, stats: GyrationStats) {
+        let shape = compute_shape_descriptors(stats);
+        self.results.push(shape.rg);
+        self.results.extend_from_slice(&shape.principal_moments);
+        self.results.push(shape.asphericity);
+        self.results.push(shape.acylindricity);
+        self.results.push(shape.relative_shape_anisotropy);
     }
 }
 
@@ -502,14 +639,65 @@ impl RadgyrPlan {
 struct GyrationStats {
     rg: f32,
     max_radius: f32,
+    axes: [f32; 3],
     tensor: [f32; 6],
+}
+
+#[derive(Clone, Copy)]
+struct ShapeStats {
+    rg: f32,
+    principal_moments: [f32; 3],
+    asphericity: f32,
+    acylindricity: f32,
+    relative_shape_anisotropy: f32,
 }
 
 fn zero_gyration_stats() -> GyrationStats {
     GyrationStats {
         rg: 0.0,
         max_radius: 0.0,
+        axes: [0.0; 3],
         tensor: [0.0; 6],
+    }
+}
+
+fn compute_shape_descriptors(stats: GyrationStats) -> ShapeStats {
+    let tensor = Matrix3::new(
+        stats.tensor[0] as f64,
+        stats.tensor[3] as f64,
+        stats.tensor[4] as f64,
+        stats.tensor[3] as f64,
+        stats.tensor[1] as f64,
+        stats.tensor[5] as f64,
+        stats.tensor[4] as f64,
+        stats.tensor[5] as f64,
+        stats.tensor[2] as f64,
+    );
+    let eigen = SymmetricEigen::new(tensor);
+    let mut moments = [
+        eigen.eigenvalues[0],
+        eigen.eigenvalues[1],
+        eigen.eigenvalues[2],
+    ];
+    moments.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let rg2 = moments[0] + moments[1] + moments[2];
+    let asphericity = moments[2] - 0.5 * (moments[0] + moments[1]);
+    let acylindricity = moments[1] - moments[0];
+    let relative_shape_anisotropy = if rg2.abs() > f64::EPSILON {
+        1.5 * (moments[0] * moments[0] + moments[1] * moments[1] + moments[2] * moments[2])
+            / (rg2 * rg2)
+            - 0.5
+    } else {
+        0.0
+    };
+
+    ShapeStats {
+        rg: rg2.max(0.0).sqrt() as f32,
+        principal_moments: [moments[0] as f32, moments[1] as f32, moments[2] as f32],
+        asphericity: asphericity as f32,
+        acylindricity: acylindricity as f32,
+        relative_shape_anisotropy: relative_shape_anisotropy as f32,
     }
 }
 
@@ -568,6 +756,11 @@ where
     GyrationStats {
         rg: (g_xx + g_yy + g_zz).sqrt() as f32,
         max_radius: max_radius2.sqrt() as f32,
+        axes: [
+            (g_yy + g_zz).sqrt() as f32,
+            (g_xx + g_zz).sqrt() as f32,
+            (g_xx + g_yy).sqrt() as f32,
+        ],
         tensor: [
             g_xx as f32,
             g_yy as f32,

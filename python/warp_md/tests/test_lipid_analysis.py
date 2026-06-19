@@ -1,6 +1,7 @@
 import numpy as np
 
 import warp_md
+from warp_md.analysis.lipid import _binned_statistic_2d, _nearest_fill_grid
 
 
 def _bilayer_system():
@@ -45,6 +46,87 @@ def _bilayer_system():
 
 def _traj(coords, box):
     return warp_md.Trajectory.from_numpy(coords, box=box)
+
+
+def test_binned_statistic_2d_mean_and_median():
+    x = np.array([0.0, 0.2, 0.9, 1.0], dtype=np.float64)
+    y = np.array([0.0, 0.2, 0.9, 1.0], dtype=np.float64)
+    values = np.array([1.0, 3.0, 5.0, 7.0], dtype=np.float64)
+    bins = np.array([0.0, 0.5, 1.0], dtype=np.float64)
+
+    mean, x_edges, y_edges, counts = _binned_statistic_2d(x, y, values, bins, "mean")
+    np.testing.assert_allclose(mean, np.array([[2.0, np.nan], [np.nan, 6.0]], dtype=np.float32))
+    np.testing.assert_array_equal(counts, np.array([[2, 0], [0, 2]], dtype=np.int64))
+    np.testing.assert_allclose(x_edges, bins)
+    np.testing.assert_allclose(y_edges, bins)
+
+    median, _, _, _ = _binned_statistic_2d(x, y, values, bins, "median")
+    np.testing.assert_allclose(median, np.array([[2.0, np.nan], [np.nan, 6.0]], dtype=np.float32))
+
+
+def test_binned_statistic_2d_uses_native_array_kernel_when_available(monkeypatch):
+    called = {}
+
+    def fake_native(x, y, values, x_edges, y_edges, statistic):
+        called["x_shape"] = x.shape
+        called["edges"] = (x_edges.shape, y_edges.shape)
+        called["statistic"] = statistic
+        return np.array([[4.0]], dtype=np.float32), np.array([[2]], dtype=np.int64)
+
+    monkeypatch.setattr(warp_md, "binned_statistic_2d_array", fake_native, raising=False)
+    grid, x_edges, y_edges, counts = _binned_statistic_2d(
+        [0.0, 0.1],
+        [0.0, 0.1],
+        [1.0, 2.0],
+        np.array([0.0, 1.0], dtype=np.float64),
+        "sum",
+    )
+    np.testing.assert_allclose(grid, np.array([[4.0]], dtype=np.float32))
+    np.testing.assert_array_equal(counts, np.array([[2]], dtype=np.int64))
+    np.testing.assert_allclose(x_edges, [0.0, 1.0])
+    np.testing.assert_allclose(y_edges, [0.0, 1.0])
+    assert called == {"x_shape": (2,), "edges": ((2,), (2,)), "statistic": "sum"}
+
+
+def test_nearest_fill_grid_matches_expected_fill():
+    grid = np.array([[1.0, np.nan], [np.nan, 4.0]], dtype=np.float32)
+    filled = _nearest_fill_grid(grid, tile=False)
+    np.testing.assert_allclose(filled, np.array([[1.0, 1.0], [1.0, 4.0]], dtype=np.float32))
+
+
+def test_nearest_fill_grid_uses_native_array_kernel_when_available(monkeypatch):
+    called = {}
+
+    def fake_native(grid, tile):
+        called["shape"] = grid.shape
+        called["dtype"] = grid.dtype
+        called["tile"] = tile
+        return np.array([[2.0]], dtype=np.float32)
+
+    monkeypatch.setattr(warp_md, "nearest_fill_grid_array", fake_native, raising=False)
+    out = _nearest_fill_grid(np.array([[np.nan]], dtype=np.float64), tile=True)
+    np.testing.assert_allclose(out, np.array([[2.0]], dtype=np.float32))
+    assert called == {"shape": (1, 1), "dtype": np.dtype("float32"), "tile": True}
+
+
+def test_lipid_neighbour_composition_uses_native_array_kernel_when_available(monkeypatch):
+    called = {}
+
+    def fake_native(matrix, labels, label_values):
+        called["matrix_shape"] = matrix.shape
+        called["labels_shape"] = labels.shape
+        called["label_values"] = label_values.tolist()
+        return np.array([[[2, 1], [0, 3]]], dtype=np.int32)
+
+    monkeypatch.setattr(warp_md, "lipid_neighbour_composition_array", fake_native, raising=False)
+    out = warp_md.lipid_neighbour_composition(
+        np.ones((1, 2, 2), dtype=np.int8),
+        np.array([0, 1], dtype=np.int8),
+        label_names={"zero": 0, "one": 1},
+    )
+    np.testing.assert_array_equal(out["counts"], np.array([[[2, 1], [0, 3]]], dtype=np.int32))
+    np.testing.assert_array_equal(out["labels"], np.array(["zero", "one"], dtype=object))
+    assert called == {"matrix_shape": (1, 2, 2), "labels_shape": (2, 1), "label_values": [0, 1]}
 
 
 def test_lipid_leaflets_positions_thickness_and_angles():

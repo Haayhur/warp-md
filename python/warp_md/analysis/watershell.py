@@ -12,7 +12,6 @@ from ._runtime import (
     load_native_symbol,
     native_inputs,
     native_selection,
-    normalize_frame_indices,
     reset_traj,
 )
 
@@ -28,10 +27,18 @@ def _native_watershell(
     frame_indices: Optional[Sequence[int]],
     chunk_frames: Optional[int],
 ):
+    frame_indices_arg = None if frame_indices is None else [int(value) for value in frame_indices]
+
     def _run_counts(pbc: str) -> np.ndarray:
         upper_plan = plan_cls(solute, solvent, float(upper), pbc=pbc)
         upper_counts = np.asarray(
-            upper_plan.run(native_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            upper_plan.run(
+                native_traj,
+                native_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=frame_indices_arg,
+            ),
             dtype=np.float32,
         )
         if lower <= 0.0:
@@ -46,6 +53,7 @@ def _native_watershell(
                 native_system,
                 chunk_frames=chunk_frames,
                 device="auto",
+                frame_indices=frame_indices_arg,
             ),
             dtype=np.float32,
         )
@@ -73,9 +81,6 @@ def _native_watershell(
             if not reset_traj(native_traj):
                 raise RuntimeError("failed to reset native trajectory for non-PBC watershell retry") from exc
             counts = _run_counts("none")
-        if frame_indices is not None:
-            selected = normalize_frame_indices(frame_indices, counts.shape[0]) or []
-            counts = counts[selected]
         return counts.astype(np.float32, copy=False)
     except Exception as exc:
         raise RuntimeError("native watershell execution failed") from exc

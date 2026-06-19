@@ -8,19 +8,41 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
-from ._chunk_io import read_chunk_fields
+from ._runtime import (
+    coerce_native_system,
+    is_native_traj,
+    load_native_symbol,
+    native_selection,
+    native_system_from_atom_count,
+)
 
 
-def _read_all(traj, chunk_frames: Optional[int]):
-    max_chunk = chunk_frames or 128
-    coords_list = []
-    chunk = read_chunk_fields(traj, max_chunk)
-    if chunk is None:
+_MASK_SENTINELS = ("", "*", "all", None)
+
+
+def _frame_indices_arg(frame_indices: Optional[Sequence[int]]):
+    return None if frame_indices is None else [int(value) for value in frame_indices]
+
+
+def _native_system_for_check(traj, system):
+    native_system = coerce_native_system(system)
+    if native_system is not None:
+        return native_system
+    if not hasattr(traj, "n_atoms"):
         return None
-    while chunk is not None:
-        coords_list.append(np.asarray(chunk["coords"], dtype=np.float64))
-        chunk = read_chunk_fields(traj, max_chunk)
-    return np.concatenate(coords_list, axis=0) if coords_list else np.empty((0, 0, 3))
+    try:
+        n_atoms = int(traj.n_atoms())
+    except Exception:
+        return None
+    return native_system_from_atom_count(n_atoms)
+
+
+def _selection_for_check(system, native_system, mask):
+    if system is None:
+        if mask not in _MASK_SENTINELS:
+            raise ValueError("mask requires a system")
+        return native_system.select_indices(list(range(int(native_system.n_atoms()))))
+    return native_selection(system, native_system, mask, allow_at_indices=True)
 
 
 def check_structure(
@@ -33,34 +55,39 @@ def check_structure(
     dtype: str = "ndarray",
 ) -> Tuple[np.ndarray, str]:
     """Basic structure checks (NaN/inf)."""
-    del system, mask, options
-    coords = _read_all(traj, chunk_frames)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
-    if coords.size == 0:
-        return np.empty((0,), dtype=np.int64), ""
-
-    n_frames = coords.shape[0]
-    if frame_indices is not None:
-        select = []
-        for i in frame_indices:
-            j = int(i)
-            if j < 0:
-                j = n_frames + j
-            if 0 <= j < n_frames:
-                select.append(j)
-        coords = coords[select]
-        n_frames = coords.shape[0]
-
-    counts = np.zeros(n_frames, dtype=np.int64)
-    report_lines = []
-    for i in range(n_frames):
-        frame = coords[i]
-        bad = ~np.isfinite(frame)
-        n_bad = int(np.any(bad, axis=1).sum())
-        counts[i] = n_bad
-        if n_bad > 0:
-            report_lines.append(f"frame {i}: {n_bad} atoms with invalid coords")
+    del options
+    if not is_native_traj(traj):
+        raise RuntimeError(
+            "check_structure requires a Rust-backed trajectory so frame/atom loops stay in Rust."
+        )
+    plan_cls = load_native_symbol("CheckStructurePlan")
+    if plan_cls is None:
+        raise RuntimeError(
+            "CheckStructurePlan binding unavailable. Rebuild bindings with `maturin develop`."
+        )
+    native_system = _native_system_for_check(traj, system)
+    if native_system is None:
+        raise RuntimeError("failed to prepare native system for check_structure")
+    selection = _selection_for_check(system, native_system, mask)
+    try:
+        plan = plan_cls(selection)
+        values = plan.run(
+            traj,
+            native_system,
+            chunk_frames=chunk_frames,
+            device="auto",
+            frame_indices=_frame_indices_arg(frame_indices),
+        )
+    except TypeError as exc:
+        raise RuntimeError(
+            "check_structure requires Rust-backed trajectory/system objects when using the Rust plan path."
+        ) from exc
+    counts = np.asarray(values, dtype=np.float32).round().astype(np.int64, copy=False)
+    report_lines = [
+        f"frame {idx}: {int(count)} atoms with invalid coords"
+        for idx, count in enumerate(counts)
+        if int(count) > 0
+    ]
     report = "\n".join(report_lines)
 
     if dtype == "ndarray":

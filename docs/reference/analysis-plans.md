@@ -8,7 +8,7 @@ icon: chart-simple
 The core 4 trajectory analyses. These are your agent's bread and butter.
 
 {% hint style="info" %}
-This page covers the **foundational 4 Plans**. warp-md ships 96 Plans total — see [Structural Analysis](structural-analysis.md), [Geometry & Distance](geometry-distance.md), [Solvation & Density](solvation-density.md), [Transforms](transforms.md), and [NMR & Spectroscopy](nmr-spectroscopy.md) for the rest.
+This page covers the **foundational 4 Plans**. warp-md ships 164 Plans total — see [Structural Analysis](structural-analysis.md), [Geometry & Distance](geometry-distance.md), [Solvation & Density](solvation-density.md), [Transforms](transforms.md), [NMR & Spectroscopy](nmr-spectroscopy.md), and [Lipid Analysis](lipid-analysis.md) for the rest.
 {% endhint %}
 
 ---

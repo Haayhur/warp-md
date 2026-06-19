@@ -8,6 +8,8 @@ from typing import Sequence
 
 import numpy as np
 
+import warp_md
+
 
 def _as_xy(data: Sequence[Sequence[float]]) -> np.ndarray:
     arr = np.asarray(data, dtype=np.float64)
@@ -18,6 +20,18 @@ def _as_xy(data: Sequence[Sequence[float]]) -> np.ndarray:
     if arr.shape[1] == 2:
         return arr.T
     raise ValueError("data must be 2D array-like with shape (2, N) or (N, 2)")
+
+
+def _native_lowestcurve(xy: np.ndarray, points: int, step: float):
+    fn = getattr(warp_md, "lowestcurve_array", None)
+    if fn is None:
+        return None
+    if getattr(fn, "__name__", "") == "lowestcurve_array" and getattr(warp_md, "traj_py", None) is None:
+        return None
+    try:
+        return np.asarray(fn(xy.astype(np.float64, copy=False), int(points), float(step)), dtype=np.float32)
+    except RuntimeError:
+        return None
 
 
 def lowestcurve(data, points: int = 10, step: float = 0.2) -> np.ndarray:
@@ -35,6 +49,10 @@ def lowestcurve(data, points: int = 10, step: float = 0.2) -> np.ndarray:
     xy = _as_xy(data)
     if xy.size == 0:
         return np.empty((2, 0), dtype=np.float32)
+
+    native = _native_lowestcurve(xy, points, step)
+    if native is not None:
+        return native
 
     x = xy[0]
     y = xy[1]

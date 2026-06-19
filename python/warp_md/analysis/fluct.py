@@ -8,14 +8,13 @@ from typing import Optional, Sequence
 
 import numpy as np
 
+import warp_md
 from ._runtime import (
     load_native_symbol,
     native_inputs,
     native_selection,
-    read_frame_subset,
     selection_indices,
 )
-from .trajectory import ArrayTrajectory
 
 
 def _group_by_resid(system, indices: np.ndarray):
@@ -46,17 +45,34 @@ def _pack_indexed(indices: Sequence[int], values: Sequence[float]) -> np.ndarray
 
 
 def _aggregate(values: np.ndarray, indices: np.ndarray, system, byres: bool, bymask: bool) -> np.ndarray:
+    vals = np.asarray(values, dtype=np.float32).reshape(-1)
+    idx = np.asarray(indices, dtype=np.int64).reshape(-1)
+    mode = "bymask" if bymask else "byres" if byres else "byatom"
+    fn = getattr(warp_md, "fluct_aggregate_array", None)
+    if fn is not None and not (
+        getattr(fn, "__name__", "") == "fluct_aggregate_array"
+        and getattr(warp_md, "traj_py", None) is None
+    ):
+        try:
+            resids = None
+            if byres:
+                atoms = system.atom_table()
+                atom_resids = np.asarray(atoms.get("resid", []), dtype=np.int64) if atoms else np.empty(0, dtype=np.int64)
+                resids = atom_resids[idx]
+            return np.asarray(fn(vals, idx, resids, mode), dtype=np.float32)
+        except (RuntimeError, IndexError):
+            pass
     if bymask:
-        mean_val = float(np.mean(values)) if values.size else 0.0
+        mean_val = float(np.mean(vals)) if vals.size else 0.0
         return _pack_indexed([0], [mean_val])
     if byres:
-        order, groups = _group_by_resid(system, indices)
+        order, groups = _group_by_resid(system, idx)
         out_vals = []
         for resid in order:
             idx = groups.get(resid, [])
-            out_vals.append(float(np.mean(values[idx])) if idx else 0.0)
+            out_vals.append(float(np.mean(vals[idx])) if idx else 0.0)
         return _pack_indexed(order, out_vals)
-    return _pack_indexed(indices, values)
+    return _pack_indexed(idx, vals)
 
 
 def _native_fluct_series(
@@ -82,39 +98,6 @@ def _native_fluct_series(
     try:
         plan = plan_cls(native_selection(system, native_system, mask))
         return np.asarray(plan.run(native_traj, native_system, **run_kwargs), dtype=np.float32)
-    except TypeError as exc:
-        if frame_indices is None or "frame_indices" not in str(exc):
-            raise RuntimeError(f"native {plan_name} execution failed") from exc
-        coords, box, time, _source_indices = read_frame_subset(
-            traj,
-            frame_indices,
-            chunk_frames,
-            include_box=True,
-            include_time=True,
-        )
-        if coords is None:
-            raise RuntimeError(f"failed to prepare native frame subset for {plan_name}") from exc
-        source = ArrayTrajectory(
-            np.asarray(coords, dtype=np.float32),
-            box=None if box is None else np.asarray(box, dtype=np.float32),
-            time_ps=None if time is None else np.asarray(time, dtype=np.float32),
-        )
-        native_traj, native_system = native_inputs(source, system, chunk_frames)
-        if native_traj is None or native_system is None:
-            raise RuntimeError(f"failed to prepare native frame subset for {plan_name}") from exc
-        try:
-            plan = plan_cls(native_selection(system, native_system, mask))
-            return np.asarray(
-                plan.run(
-                    native_traj,
-                    native_system,
-                    chunk_frames=chunk_frames,
-                    device="auto",
-                ),
-                dtype=np.float32,
-            )
-        except Exception as retry_exc:
-            raise RuntimeError(f"native {plan_name} execution failed") from retry_exc
     except Exception as exc:
         raise RuntimeError(f"native {plan_name} execution failed") from exc
 

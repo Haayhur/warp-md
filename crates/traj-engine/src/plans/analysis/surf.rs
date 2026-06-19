@@ -152,8 +152,9 @@ impl Plan for SurfPlan {
         self.sphere_points.clear();
         self.resolved_radii.clear();
         self.lcpo = LcpoWorkspace::default();
-        self.use_selected_input =
-            matches!(_device, Device::Cpu) && !matches!(self.algorithm, SurfAlgorithm::Lcpo);
+        self.use_selected_input = matches!(_device, Device::Cpu)
+            && !matches!(self.algorithm, SurfAlgorithm::Lcpo)
+            && self.solute_selection.is_none();
         if (self.record_atom_area || self.record_volume || self.record_residue_area)
             && !matches!(self.algorithm, SurfAlgorithm::Sasa)
         {
@@ -163,9 +164,17 @@ impl Plan for SurfPlan {
         }
         if matches!(self.algorithm, SurfAlgorithm::Sasa) {
             self.sphere_points = fibonacci_sphere(self.n_sphere_points);
+            let radius_selection = self
+                .solute_selection
+                .as_ref()
+                .map(|sel| sel.indices.as_slice())
+                .unwrap_or_else(|| self.selection.indices.as_slice());
+            if self.solute_selection.is_some() {
+                surface_report_slots(&self.selection.indices, radius_selection)?;
+            }
             self.resolved_radii = resolve_radii_with_offset(
                 system,
-                &self.selection.indices,
+                radius_selection,
                 self.radii.as_ref(),
                 self.radii_mode,
                 self.radius_offset as f64,
@@ -353,10 +362,20 @@ impl Plan for SurfPlan {
                 process_lcpo_chunk(chunk, &self.lcpo, &mut self.results);
             }
             SurfAlgorithm::Sasa => {
-                if self.resolved_radii.len() != sel.len() {
+                let occluder_sel = self
+                    .solute_selection
+                    .as_ref()
+                    .map(|selection| selection.indices.as_slice())
+                    .unwrap_or_else(|| sel.as_slice());
+                let report_slots = if self.solute_selection.is_some() {
+                    surface_report_slots(sel, occluder_sel)?
+                } else {
+                    (0..sel.len()).collect()
+                };
+                if self.resolved_radii.len() != occluder_sel.len() {
                     self.resolved_radii = resolve_radii_with_offset(
                         system,
-                        sel,
+                        occluder_sel,
                         self.radii.as_ref(),
                         self.radii_mode,
                         self.radius_offset as f64,
@@ -371,18 +390,20 @@ impl Plan for SurfPlan {
                     .collect();
                 let cutoff2: Vec<f64> = expanded.iter().map(|r| r * r).collect();
                 let area_const: Vec<f64> = expanded.iter().map(|r| 4.0 * PI * r * r).collect();
-                let mut coords_sel = vec![[0.0f64; 3]; sel.len()];
+                let mut coords_solute = vec![[0.0f64; 3]; occluder_sel.len()];
                 for frame in 0..chunk.n_frames {
                     let frame_offset = frame * n_atoms;
                     let mut center_sum = [0.0f64; 3];
-                    for (i, &idx) in sel.iter().enumerate() {
+                    for (i, &idx) in occluder_sel.iter().enumerate() {
                         let p = chunk.coords[frame_offset + idx as usize];
-                        coords_sel[i] = [p[0] as f64, p[1] as f64, p[2] as f64];
-                        center_sum[0] += coords_sel[i][0];
-                        center_sum[1] += coords_sel[i][1];
-                        center_sum[2] += coords_sel[i][2];
+                        coords_solute[i] = [p[0] as f64, p[1] as f64, p[2] as f64];
                     }
-                    let inv_atoms = 1.0 / coords_sel.len() as f64;
+                    for &slot in report_slots.iter() {
+                        center_sum[0] += coords_solute[slot][0];
+                        center_sum[1] += coords_solute[slot][1];
+                        center_sum[2] += coords_solute[slot][2];
+                    }
+                    let inv_atoms = 1.0 / report_slots.len() as f64;
                     let volume_center = [
                         center_sum[0] * inv_atoms,
                         center_sum[1] * inv_atoms,
@@ -395,24 +416,24 @@ impl Plan for SurfPlan {
                     } else {
                         Vec::new()
                     };
-                    for i in 0..coords_sel.len() {
+                    for (report_i, &i) in report_slots.iter().enumerate() {
                         let radius = expanded[i];
                         let (atom_area, atom_volume_raw) = if radius <= 0.0 {
                             (0.0, 0.0)
                         } else {
                             let mut exposed = 0usize;
                             let mut exposed_dir_sum = [0.0f64; 3];
-                            let center = coords_sel[i];
+                            let center = coords_solute[i];
                             for dir in self.sphere_points.iter() {
                                 let px = center[0] + dir[0] * radius;
                                 let py = center[1] + dir[1] * radius;
                                 let pz = center[2] + dir[2] * radius;
                                 let mut occluded = false;
-                                for j in 0..coords_sel.len() {
+                                for j in 0..coords_solute.len() {
                                     if j == i {
                                         continue;
                                     }
-                                    let other = coords_sel[j];
+                                    let other = coords_solute[j];
                                     let dx = px - other[0];
                                     let dy = py - other[1];
                                     let dz = pz - other[2];
@@ -444,7 +465,7 @@ impl Plan for SurfPlan {
                             self.atom_area_results.push(atom_area as f32);
                         }
                         if self.record_residue_area {
-                            let slot = self.residue_slot_by_selected_atom[i];
+                            let slot = self.residue_slot_by_selected_atom[report_i];
                             if let Some(value) = frame_residue_area.get_mut(slot) {
                                 *value += atom_area as f32;
                             }
@@ -753,6 +774,11 @@ impl MolSurfPlan {
         self.inner = self.inner.with_residue_area(enabled);
         self
     }
+
+    pub fn with_solute_selection(mut self, selection: Option<Selection>) -> Self {
+        self.inner = self.inner.with_solute_selection(selection);
+        self
+    }
 }
 
 impl Plan for MolSurfPlan {
@@ -920,6 +946,22 @@ fn build_residue_area_map(
         slots.push(slot);
     }
     Ok((residue_ids, slots))
+}
+
+fn surface_report_slots(selection: &[u32], solute_selection: &[u32]) -> TrajResult<Vec<usize>> {
+    let mut slots = Vec::with_capacity(selection.len());
+    for &idx in selection.iter() {
+        let Some(slot) = solute_selection
+            .iter()
+            .position(|&solute_idx| solute_idx == idx)
+        else {
+            return Err(TrajError::Mismatch(
+                "surface selection must be contained in solutemask".into(),
+            ));
+        };
+        slots.push(slot);
+    }
+    Ok(slots)
 }
 
 fn process_lcpo_chunk(chunk: &FrameChunk, workspace: &LcpoWorkspace, results: &mut Vec<f32>) {

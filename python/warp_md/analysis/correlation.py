@@ -8,6 +8,7 @@ from typing import Iterable, Optional, Tuple, Union
 
 import numpy as np
 
+import warp_md
 from .. import VelocityAutoCorrPlan
 
 
@@ -41,6 +42,42 @@ def _corr_series(
     return out
 
 
+def _native_corr_series(a: np.ndarray, b: np.ndarray, normalize: bool) -> Optional[np.ndarray]:
+    fn = getattr(warp_md, "array_cross_correlation", None)
+    if fn is None:
+        return None
+    if (
+        getattr(fn, "__name__", "") == "array_cross_correlation"
+        and getattr(warp_md, "traj_py", None) is None
+    ):
+        return None
+    try:
+        return np.asarray(
+            fn(a.astype(np.float32, copy=False), b.astype(np.float32, copy=False), normalize),
+            dtype=np.float32,
+        )
+    except RuntimeError:
+        return None
+
+
+def _native_timecorr(arr: np.ndarray, order: int, normalize: bool) -> Optional[np.ndarray]:
+    fn = getattr(warp_md, "array_time_correlation", None)
+    if fn is None:
+        return None
+    if (
+        getattr(fn, "__name__", "") == "array_time_correlation"
+        and getattr(warp_md, "traj_py", None) is None
+    ):
+        return None
+    try:
+        return np.asarray(
+            fn(arr.astype(np.float32, copy=False), int(order), normalize),
+            dtype=np.float32,
+        )
+    except RuntimeError:
+        return None
+
+
 def acorr(
     series: Iterable[float],
     normalize: bool = True,
@@ -49,7 +86,9 @@ def acorr(
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Autocorrelation of a scalar or vector series."""
     arr = _as_float_array(series)
-    data = _corr_series(arr, arr, normalize)
+    data = _native_corr_series(arr, arr, normalize)
+    if data is None:
+        data = _corr_series(arr, arr, normalize)
     if return_time:
         time = np.arange(data.shape[0], dtype=np.float32) * float(dt)
         return time, data
@@ -66,7 +105,9 @@ def xcorr(
     """Cross-correlation of two scalar or vector series."""
     arr_a = _as_float_array(series_a)
     arr_b = _as_float_array(series_b)
-    data = _corr_series(arr_a, arr_b, normalize)
+    data = _native_corr_series(arr_a, arr_b, normalize)
+    if data is None:
+        data = _corr_series(arr_a, arr_b, normalize)
     if return_time:
         time = np.arange(data.shape[0], dtype=np.float32) * float(dt)
         return time, data
@@ -90,6 +131,12 @@ def timecorr(
         raise ValueError("vectors must have shape (n_frames, 3) or (n_frames, n_items, 3)")
     if order not in (1, 2):
         raise ValueError("order must be 1 or 2")
+    native = _native_timecorr(arr, order, normalize)
+    if native is not None:
+        if return_time:
+            time = np.arange(native.shape[0], dtype=np.float32) * float(dt)
+            return time, native
+        return native
     n_frames, n_items, _ = arr.shape
     if n_frames == 0:
         return np.empty(0, dtype=np.float32)

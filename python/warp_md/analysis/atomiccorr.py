@@ -12,10 +12,8 @@ from ._runtime import (
     load_native_symbol,
     native_inputs,
     native_selection,
-    read_all_frames,
-    subset_frames,
 )
-from .trajectory import ArrayTrajectory
+from ._stream import normalize_frame_indices
 
 
 MaskLike = Union[str, Sequence[int], np.ndarray]
@@ -40,24 +38,30 @@ def atomiccorr(
     plan_cls = load_native_symbol("AtomicCorrelationPlan")
     if plan_cls is None:
         raise RuntimeError("AtomicCorrelationPlan binding unavailable")
-    source = traj
-    if frame_indices is not None:
-        coords, _box, _time = read_all_frames(traj, chunk_frames)
-        if coords is None:
-            raise ValueError("trajectory has no frames")
-        coords, _box, _time = subset_frames(coords, frame_indices)
-        coords = np.asarray(coords, dtype=np.float32)
-        if coords.size == 0 or coords.shape[0] < 2:
-            return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
-        source = ArrayTrajectory(coords)
-    native_traj, native_system = native_inputs(source, system, chunk_frames)
+    native_traj, native_system = native_inputs(traj, system, chunk_frames)
     if native_traj is None or native_system is None:
         raise RuntimeError("failed to prepare native atomiccorr inputs")
-    if max_lag is None and hasattr(native_traj, "count_frames"):
+    frame_indices_arg = None
+    selected_n_frames = None
+    if frame_indices is not None:
+        if not hasattr(native_traj, "count_frames"):
+            raise RuntimeError("native trajectory frame counting unavailable")
         try:
-            n_frames = int(native_traj.count_frames(chunk_frames))
-        except Exception:
-            n_frames = 0
+            total_frames = int(native_traj.count_frames(chunk_frames))
+        except Exception as exc:
+            raise RuntimeError("failed to count native trajectory frames") from exc
+        frame_indices_arg = [int(v) for v in normalize_frame_indices(frame_indices, total_frames)]
+        selected_n_frames = len(frame_indices_arg)
+        if selected_n_frames < 2:
+            return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
+    if max_lag is None and hasattr(native_traj, "count_frames"):
+        if selected_n_frames is None:
+            try:
+                n_frames = int(native_traj.count_frames(chunk_frames))
+            except Exception:
+                n_frames = 0
+        else:
+            n_frames = selected_n_frames
         if n_frames < 2:
             return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32)
         max_lag = n_frames - 1
@@ -85,6 +89,7 @@ def atomiccorr(
             native_system,
             chunk_frames=chunk_frames,
             device=device,
+            frame_indices=frame_indices_arg,
         )
         time = np.asarray(time, dtype=np.float32).reshape(-1)
         data = np.asarray(data, dtype=np.float32).reshape(-1)

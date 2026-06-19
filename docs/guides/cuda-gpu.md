@@ -94,6 +94,27 @@ rg = plan.run(traj, system, device="cuda")
 rg = plan.run(traj, system, device="cuda:0")
 ```
 
+### The `auto` Selection Logic
+
+When you set `device="auto"`, the execution engine:
+1. Checks if the `cuda` build feature is compiled in the Rust binary.
+2. Queries the driver for CUDA-enabled device availability.
+3. If a device is found, it dynamically initializes the CUDA context; otherwise, it seamlessly falls back to CPU threads.
+
+To force CPU mode for testing or profiling on a GPU-enabled node without changing your configuration payloads, hide the GPU using the standard environment variable:
+
+```bash
+export CUDA_VISIBLE_DEVICES=""
+```
+
+### NVRTC Runtime Kernel Compilation
+
+`warp-md` does not ship pre-compiled GPU binaries (`.cubin` or `.ptx`). Instead, it uses **NVIDIA RunTime Compilation (NVRTC)** to compile CUDA kernels from source (in `traj-kernels`) the very first time an analysis plan is run on a GPU. 
+
+- This ensures optimal machine code compiled specifically for your GPU architecture (e.g. Ampere, Hopper, Ada Lovelace).
+- The compiled kernels are cached in memory for subsequent analyses.
+- **Note**: Ensure `nvrtc` is visible on your system path or inside `LD_LIBRARY_PATH`.
+
 ---
 
 ## What Gets Accelerated?

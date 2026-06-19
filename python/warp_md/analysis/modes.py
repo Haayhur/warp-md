@@ -8,6 +8,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+import warp_md
+
 from .trajectory import ArrayTrajectory
 
 
@@ -246,22 +248,11 @@ def _corr(vecs: np.ndarray, average_coords: np.ndarray, pairs: List[Tuple[int, i
     avg = np.asarray(average_coords, dtype=np.float64)
     if avg.ndim != 2 or avg.shape[1] != 3:
         raise ValueError("average_coords must be (n_atoms, 3)")
-    n_modes = vecs.shape[0]
-    n_pairs = len(pairs)
-    out = np.zeros((n_pairs, n_modes), dtype=np.float32)
-    for p_idx, (a, b) in enumerate(pairs):
-        if a >= avg.shape[0] or b >= avg.shape[0]:
-            continue
-        base = avg[b] - avg[a]
-        norm = np.linalg.norm(base)
-        if norm == 0.0:
-            continue
-        u = base / norm
-        for m in range(n_modes):
-            v = vecs[m].reshape(-1, 3)
-            disp = v[b] - v[a]
-            out[p_idx, m] = float(np.dot(disp, u))
-    return out
+    fn = getattr(warp_md, "mode_corr_array", None)
+    if fn is None or getattr(fn, "__name__", "") != "mode_corr_array":
+        raise RuntimeError("mode_corr_array native binding unavailable")
+    pair_arr = np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+    return np.asarray(fn(np.asarray(vecs, dtype=np.float64), avg, pair_arr), dtype=np.float32)
 
 
 def _trajout(
@@ -275,13 +266,13 @@ def _trajout(
     avg = np.asarray(average_coords, dtype=np.float64)
     if avg.ndim != 2 or avg.shape[1] != 3:
         raise ValueError("average_coords must be (n_atoms, 3)")
-    mode = mode_vec.reshape(avg.shape[0], 3)
-    nframes = max(2, int(nframes))
-    amps = np.linspace(pcmin, pcmax, nframes)
-    coords = np.empty((nframes, avg.shape[0], 3), dtype=np.float64)
-    for i, amp in enumerate(amps):
-        coords[i] = avg + factor * amp * mode
-    return coords
+    fn = getattr(warp_md, "mode_trajout_array", None)
+    if fn is None or getattr(fn, "__name__", "") != "mode_trajout_array":
+        raise RuntimeError("mode_trajout_array native binding unavailable")
+    return np.asarray(
+        fn(avg, np.asarray(mode_vec, dtype=np.float64), pcmin, pcmax, max(2, int(nframes)), factor),
+        dtype=np.float64,
+    )
 
 
 __all__ = ["analyze_modes"]

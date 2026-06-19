@@ -254,6 +254,7 @@ fn output_checksum(out: &PlanOutput) -> f64 {
         PlanOutput::Series(v) => v.iter().map(|&x| x as f64).sum(),
         PlanOutput::Matrix { data, .. } => data.iter().map(|&x| x as f64).sum(),
         PlanOutput::TimeSeries { data, .. } => data.iter().map(|&x| x as f64).sum(),
+        PlanOutput::Trajectory(t) => t.coords.iter().map(|&x| x as f64).sum(),
         PlanOutput::Rdf(r) => r.counts.iter().map(|&v| v as f64).sum(),
         PlanOutput::Persistence(p) => p.bond_autocorrelation.iter().map(|&x| x as f64).sum(),
         PlanOutput::Dielectric(d) => d.rot_sq.iter().map(|&x| x as f64).sum(),
@@ -316,6 +317,7 @@ fn output_checksum(out: &PlanOutput) -> f64 {
         PlanOutput::LipidMatrix(l) => l.values.iter().map(|&x| x as f64).sum(),
         PlanOutput::LipidFlipFlop(f) => f.events.iter().map(|&x| x as f64).sum(),
         PlanOutput::PairDistribution(p) => p.probability.iter().map(|&x| x as f64).sum(),
+        PlanOutput::NeighborList(n) => n.indices.iter().map(|&x| x as f64).sum(),
         PlanOutput::Surface(s) => {
             s.total.iter().map(|&x| x as f64).sum::<f64>()
                 + s.atom_area.iter().map(|&x| x as f64).sum::<f64>()

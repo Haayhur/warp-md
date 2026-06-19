@@ -36,6 +36,7 @@ pub struct RdfPlan {
     density: f64,
     use_volume: bool,
     raw_output: bool,
+    number_density_output: bool,
     integral_output: bool,
     dimension: RdfDimension,
     common_count: usize,
@@ -121,6 +122,8 @@ pub struct PairDistanceExtremaPlan {
     sel_b_local: Vec<usize>,
     mode: PairDistanceExtremaMode,
     pbc: PbcMode,
+    cutoff: Option<f32>,
+    empty_value: Option<f32>,
     unique_pairs: bool,
     use_selected_input: bool,
     results: Vec<f32>,
@@ -162,6 +165,7 @@ impl RdfPlan {
             density: 0.033456,
             use_volume: false,
             raw_output: false,
+            number_density_output: false,
             integral_output: false,
             dimension: RdfDimension::ThreeD,
             common_count: 0,
@@ -218,6 +222,11 @@ impl RdfPlan {
         self.use_volume = use_volume;
         self.raw_output = raw_output;
         self.integral_output = integral_output;
+        self
+    }
+
+    pub fn with_number_density_output(mut self, enabled: bool) -> Self {
+        self.number_density_output = enabled;
         self
     }
 
@@ -585,6 +594,8 @@ impl PairDistanceExtremaPlan {
             sel_b_local,
             mode,
             pbc,
+            cutoff: None,
+            empty_value: None,
             unique_pairs: false,
             use_selected_input: true,
             results: Vec::new(),
@@ -593,6 +604,12 @@ impl PairDistanceExtremaPlan {
 
     pub fn with_unique_pairs(mut self, unique_pairs: bool) -> Self {
         self.unique_pairs = unique_pairs;
+        self
+    }
+
+    pub fn with_cutoff(mut self, cutoff: Option<f32>, empty_value: Option<f32>) -> Self {
+        self.cutoff = cutoff;
+        self.empty_value = empty_value;
         self
     }
 }
@@ -967,13 +984,27 @@ impl Plan for RdfPlan {
             r.push(r_inner + 0.5 * bin_width);
             let count = self.counts[i] as f64;
             let normalized = if norm > 0.0 { count / norm } else { 0.0 };
+            let number_density_norm = frames * n_a * shell_measure;
+            let number_density = if number_density_norm > 0.0 {
+                count / number_density_norm
+            } else {
+                0.0
+            };
             if self.integral_output {
-                if n_b > 0.0 {
+                if self.number_density_output {
+                    integral_sum += number_density * shell_measure;
+                } else if n_b > 0.0 {
                     integral_sum += normalized * expected / n_b;
                 }
                 integral.push(integral_sum as f32);
             }
-            let value = if self.raw_output { count } else { normalized };
+            let value = if self.raw_output {
+                count
+            } else if self.number_density_output {
+                number_density
+            } else {
+                normalized
+            };
             g_r.push(value as f32);
         }
         Ok(PlanOutput::Rdf(RdfOutput {
@@ -1263,6 +1294,20 @@ impl Plan for PairDistanceExtremaPlan {
     fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
         self.results.clear();
         self.use_selected_input = matches!(_device, Device::Cpu);
+        if let Some(cutoff) = self.cutoff {
+            if !cutoff.is_finite() || cutoff <= 0.0 {
+                return Err(TrajError::Mismatch(
+                    "pairdist cutoff must be finite and positive".into(),
+                ));
+            }
+        }
+        if let Some(empty_value) = self.empty_value {
+            if !empty_value.is_finite() {
+                return Err(TrajError::Mismatch(
+                    "pairdist empty value must be finite".into(),
+                ));
+            }
+        }
         let n_atoms = system.n_atoms() as u32;
         for &idx in self.sel_a.indices.iter().chain(self.sel_b.indices.iter()) {
             if idx >= n_atoms {
@@ -1335,7 +1380,7 @@ impl Plan for PairDistanceExtremaPlan {
                         dz -= (dz / lz).round() * lz;
                     }
                     let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                    if dist.is_finite() {
+                    if dist.is_finite() && self.cutoff.map_or(true, |cutoff| dist <= cutoff) {
                         best = match self.mode {
                             PairDistanceExtremaMode::Min => best.min(dist),
                             PairDistanceExtremaMode::Max => best.max(dist),
@@ -1344,7 +1389,11 @@ impl Plan for PairDistanceExtremaPlan {
                     }
                 }
             }
-            self.results.push(if seen { best } else { f32::NAN });
+            self.results.push(if seen {
+                best
+            } else {
+                self.empty_value.unwrap_or(f32::NAN)
+            });
         }
         Ok(())
     }
@@ -1396,7 +1445,7 @@ impl Plan for PairDistanceExtremaPlan {
                         dz -= (dz / lz).round() * lz;
                     }
                     let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                    if dist.is_finite() {
+                    if dist.is_finite() && self.cutoff.map_or(true, |cutoff| dist <= cutoff) {
                         best = match self.mode {
                             PairDistanceExtremaMode::Min => best.min(dist),
                             PairDistanceExtremaMode::Max => best.max(dist),
@@ -1405,7 +1454,11 @@ impl Plan for PairDistanceExtremaPlan {
                     }
                 }
             }
-            self.results.push(if seen { best } else { f32::NAN });
+            self.results.push(if seen {
+                best
+            } else {
+                self.empty_value.unwrap_or(f32::NAN)
+            });
         }
         Ok(())
     }

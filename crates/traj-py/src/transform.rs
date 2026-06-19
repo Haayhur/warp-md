@@ -43,6 +43,48 @@ impl PyFixImageBondsPlan {
 }
 
 #[pyclass]
+struct PyFixImageBondsTrajectoryPlan {
+    plan: RefCell<FixImageBondsTrajectoryPlan>,
+}
+
+#[pymethods]
+impl PyFixImageBondsTrajectoryPlan {
+    #[new]
+    fn new(selection: &PySelection) -> Self {
+        let plan = FixImageBondsTrajectoryPlan::new(selection.selection.clone());
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Trajectory(output) => trajectory_output_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
 struct PyRandomizeIonsPlan {
     plan: RefCell<RandomizeIonsPlan>,
 }
@@ -98,6 +140,61 @@ impl PyRandomizeIonsPlan {
 }
 
 #[pyclass]
+struct PyRandomizeIonsTrajectoryPlan {
+    plan: RefCell<RandomizeIonsTrajectoryPlan>,
+}
+
+#[pymethods]
+impl PyRandomizeIonsTrajectoryPlan {
+    #[new]
+    #[pyo3(signature = (selection, seed=None, around=None, by=0.0, overlap=0.0, noimage=false, max_attempts=1000))]
+    fn new(
+        selection: &PySelection,
+        seed: Option<u64>,
+        around: Option<&PySelection>,
+        by: f64,
+        overlap: f64,
+        noimage: bool,
+        max_attempts: usize,
+    ) -> Self {
+        let seed = seed.unwrap_or(0);
+        let mut plan = RandomizeIonsTrajectoryPlan::new(selection.selection.clone(), seed);
+        let around_sel = around.map(|sel| sel.selection.clone());
+        plan = plan.with_around(around_sel, by, overlap, noimage);
+        plan = plan.with_max_attempts(max_attempts);
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Trajectory(output) => trajectory_output_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
 struct PyClosestAtomPlan {
     plan: RefCell<ClosestAtomPlan>,
 }
@@ -118,7 +215,7 @@ impl PyClosestAtomPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -126,15 +223,17 @@ impl PyClosestAtomPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -165,7 +264,7 @@ impl PySearchNeighborsPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -173,18 +272,76 @@ impl PySearchNeighborsPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PySearchNeighborListPlan {
+    plan: RefCell<SearchNeighborListPlan>,
+}
+
+#[pymethods]
+impl PySearchNeighborListPlan {
+    #[new]
+    #[pyo3(signature = (target, probe, cutoff, pbc="none"))]
+    fn new(target: &PySelection, probe: &PySelection, cutoff: f64, pbc: &str) -> PyResult<Self> {
+        let pbc = parse_pbc(pbc)?;
+        let plan = SearchNeighborListPlan::new(
+            target.selection.clone(),
+            probe.selection.clone(),
+            cutoff,
+            pbc,
+        );
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run(
+        &self,
+        py: Python<'_>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::NeighborList(output) => {
+                let dict = PyDict::new_bound(py);
+                dict.set_item("offsets", PyArray1::from_vec_bound(py, output.offsets))?;
+                dict.set_item("indices", PyArray1::from_vec_bound(py, output.indices))?;
+                dict.set_item("counts", PyArray1::from_vec_bound(py, output.counts))?;
+                dict.set_item("frames", output.frames)?;
+                Ok(dict.into_py(py))
+            }
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }
@@ -212,7 +369,7 @@ impl PyWatershellPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -220,15 +377,17 @@ impl PyWatershellPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -264,7 +423,7 @@ impl PyClosestPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -272,18 +431,111 @@ impl PyClosestPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray2<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyClosestCoordsPlan {
+    plan: RefCell<ClosestCoordsPlan>,
+}
+
+#[pymethods]
+impl PyClosestCoordsPlan {
+    #[new]
+    #[pyo3(signature = (target, probe, n_solvents, pbc="none"))]
+    fn new(
+        target: &PySelection,
+        probe: &PySelection,
+        n_solvents: usize,
+        pbc: &str,
+    ) -> PyResult<Self> {
+        let pbc = parse_pbc(pbc)?;
+        let plan = ClosestCoordsPlan::new(
+            target.selection.clone(),
+            probe.selection.clone(),
+            n_solvents,
+            pbc,
+        );
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Trajectory(output) => {
+                let rows = output.frames;
+                let cols = output.atoms * 3;
+                let coords = Array2::from_shape_vec((rows, cols), output.coords)
+                    .map_err(|_| PyRuntimeError::new_err("failed to build closest coords"))?;
+                let dict = PyDict::new_bound(py);
+                dict.set_item("coords", coords.into_pyarray_bound(py))?;
+
+                let mut box_data = Vec::with_capacity(rows * 3);
+                let mut box_ok = output.box_.len() == rows && rows > 0;
+                if box_ok {
+                    for box_ in output.box_.iter() {
+                        match *box_ {
+                            Box3::Orthorhombic { lx, ly, lz } => {
+                                box_data.extend_from_slice(&[lx, ly, lz]);
+                            }
+                            Box3::None | Box3::Triclinic { .. } => {
+                                box_ok = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if box_ok {
+                    let box_arr = Array2::from_shape_vec((rows, 3), box_data)
+                        .map_err(|_| PyRuntimeError::new_err("failed to build closest box"))?;
+                    dict.set_item("box", box_arr.into_pyarray_bound(py))?;
+                } else {
+                    dict.set_item("box", py.None())?;
+                }
+
+                if output.time.len() == rows {
+                    dict.set_item("time_ps", PyArray1::from_vec_bound(py, output.time))?;
+                } else {
+                    dict.set_item("time_ps", py.None())?;
+                }
+                Ok(dict.into_py(py))
+            }
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }
@@ -297,13 +549,14 @@ struct PyNativeContactsPlan {
 #[pymethods]
 impl PyNativeContactsPlan {
     #[new]
-    #[pyo3(signature = (sel_a, sel_b=None, reference="frame0", cutoff=7.0, pbc="none"))]
+    #[pyo3(signature = (sel_a, sel_b=None, reference="frame0", cutoff=7.0, pbc="none", min_cutoff=None))]
     fn new(
         sel_a: &PySelection,
         sel_b: Option<&PySelection>,
         reference: &str,
         cutoff: f64,
         pbc: &str,
+        min_cutoff: Option<f64>,
     ) -> PyResult<Self> {
         let reference_mode = parse_reference(reference)?;
         let pbc = parse_pbc(pbc)?;
@@ -311,13 +564,14 @@ impl PyNativeContactsPlan {
             .map(|s| s.selection.clone())
             .unwrap_or_else(|| sel_a.selection.clone());
         let plan =
-            NativeContactsPlan::new(sel_a.selection.clone(), sel_b, reference_mode, cutoff, pbc);
+            NativeContactsPlan::new(sel_a.selection.clone(), sel_b, reference_mode, cutoff, pbc)
+                .with_min_cutoff(min_cutoff);
         Ok(Self {
             plan: RefCell::new(plan),
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -325,15 +579,17 @@ impl PyNativeContactsPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -347,6 +603,24 @@ struct PyCenterTrajectoryPlan {
     plan: RefCell<CenterTrajectoryPlan>,
 }
 
+fn parse_center_mode(
+    mode: &str,
+    point: Option<(f64, f64, f64)>,
+) -> PyResult<(CenterMode, [f64; 3])> {
+    match mode.to_ascii_lowercase().as_str() {
+        "origin" => Ok((CenterMode::Origin, [0.0, 0.0, 0.0])),
+        "point" => {
+            let p =
+                point.ok_or_else(|| PyRuntimeError::new_err("point required for mode=point"))?;
+            Ok((CenterMode::Point, [p.0, p.1, p.2]))
+        }
+        "box" => Ok((CenterMode::Box, [0.0, 0.0, 0.0])),
+        _ => Err(PyRuntimeError::new_err(
+            "mode must be one of: 'box', 'origin', 'point'",
+        )),
+    }
+}
+
 #[pymethods]
 impl PyCenterTrajectoryPlan {
     #[new]
@@ -357,20 +631,7 @@ impl PyCenterTrajectoryPlan {
         point: Option<(f64, f64, f64)>,
         mass_weighted: bool,
     ) -> PyResult<Self> {
-        let (mode_enum, center) = match mode.to_ascii_lowercase().as_str() {
-            "origin" => (CenterMode::Origin, [0.0, 0.0, 0.0]),
-            "point" => {
-                let p = point
-                    .ok_or_else(|| PyRuntimeError::new_err("point required for mode=point"))?;
-                (CenterMode::Point, [p.0, p.1, p.2])
-            }
-            "box" => (CenterMode::Box, [0.0, 0.0, 0.0]),
-            _ => {
-                return Err(PyRuntimeError::new_err(
-                    "mode must be one of: 'box', 'origin', 'point'",
-                ))
-            }
-        };
+        let (mode_enum, center) = parse_center_mode(mode, point)?;
         let plan = CenterTrajectoryPlan::new(
             selection.selection.clone(),
             center,
@@ -382,7 +643,7 @@ impl PyCenterTrajectoryPlan {
         })
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -390,18 +651,74 @@ impl PyCenterTrajectoryPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyCenterTrajectoryOutputPlan {
+    plan: RefCell<CenterTrajectoryOutputPlan>,
+}
+
+#[pymethods]
+impl PyCenterTrajectoryOutputPlan {
+    #[new]
+    #[pyo3(signature = (selection, mode="box", point=None, mass_weighted=false))]
+    fn new(
+        selection: &PySelection,
+        mode: &str,
+        point: Option<(f64, f64, f64)>,
+        mass_weighted: bool,
+    ) -> PyResult<Self> {
+        let (mode_enum, center) = parse_center_mode(mode, point)?;
+        let plan = CenterTrajectoryOutputPlan::new(
+            selection.selection.clone(),
+            center,
+            mode_enum,
+            mass_weighted,
+        );
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Trajectory(output) => trajectory_output_to_py(py, output),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }
@@ -422,7 +739,7 @@ impl PyTranslatePlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -430,15 +747,17 @@ impl PyTranslatePlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -469,7 +788,7 @@ impl PyTransformPlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -477,18 +796,69 @@ impl PyTransformPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyTransformTrajectoryPlan {
+    plan: RefCell<TransformTrajectoryPlan>,
+}
+
+#[pymethods]
+impl PyTransformTrajectoryPlan {
+    #[new]
+    fn new(
+        rotation: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+        translation: (f64, f64, f64),
+    ) -> Self {
+        let rot = [
+            rotation.0, rotation.1, rotation.2, rotation.3, rotation.4, rotation.5, rotation.6,
+            rotation.7, rotation.8,
+        ];
+        let plan = TransformTrajectoryPlan::new(rot, [translation.0, translation.1, translation.2]);
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Trajectory(output) => trajectory_output_to_py(py, output),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }
@@ -513,7 +883,7 @@ impl PyRotatePlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -521,15 +891,17 @@ impl PyRotatePlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -553,7 +925,7 @@ impl PyScalePlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -561,15 +933,17 @@ impl PyScalePlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -617,6 +991,49 @@ impl PyImagePlan {
         }
     }
 }
+
+#[pyclass]
+struct PyImageTrajectoryPlan {
+    plan: RefCell<ImageTrajectoryPlan>,
+}
+
+#[pymethods]
+impl PyImageTrajectoryPlan {
+    #[new]
+    fn new(selection: &PySelection) -> Self {
+        let plan = ImageTrajectoryPlan::new(selection.selection.clone());
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Trajectory(output) => trajectory_output_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
 #[pyclass]
 struct PyAutoImagePlan {
     plan: RefCell<AutoImagePlan>,
@@ -652,6 +1069,48 @@ impl PyAutoImagePlan {
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
+#[pyclass]
+struct PyAutoImageTrajectoryPlan {
+    plan: RefCell<AutoImageTrajectoryPlan>,
+}
+
+#[pymethods]
+impl PyAutoImageTrajectoryPlan {
+    #[new]
+    fn new(selection: &PySelection) -> Self {
+        let plan = AutoImageTrajectoryPlan::new(selection.selection.clone());
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Trajectory(output) => trajectory_output_to_py(py, output),
             _ => Err(PyRuntimeError::new_err("unexpected output")),
         }
     }
@@ -891,6 +1350,88 @@ impl PyStripPlan {
     }
 }
 
+fn trajectory_output_to_py<'py>(
+    py: Python<'py>,
+    output: traj_engine::TrajectoryOutput,
+) -> PyResult<PyObject> {
+    let coords = Array3::from_shape_vec((output.frames, output.atoms, 3), output.coords)
+        .map_err(|_| PyRuntimeError::new_err("failed to build trajectory coords"))?;
+    let dict = PyDict::new_bound(py);
+    dict.set_item("coords", coords.into_pyarray_bound(py))?;
+
+    let mut box_data = Vec::with_capacity(output.frames * 3);
+    let mut box_ok = output.box_.len() == output.frames && output.frames > 0;
+    if box_ok {
+        for box_ in output.box_.iter() {
+            match *box_ {
+                Box3::Orthorhombic { lx, ly, lz } => {
+                    box_data.extend_from_slice(&[lx, ly, lz]);
+                }
+                Box3::None | Box3::Triclinic { .. } => {
+                    box_ok = false;
+                    break;
+                }
+            }
+        }
+    }
+    if box_ok {
+        let box_arr = Array2::from_shape_vec((output.frames, 3), box_data)
+            .map_err(|_| PyRuntimeError::new_err("failed to build trajectory box"))?;
+        dict.set_item("box", box_arr.into_pyarray_bound(py))?;
+    } else {
+        dict.set_item("box", py.None())?;
+    }
+
+    if output.time.len() == output.frames {
+        dict.set_item("time_ps", PyArray1::from_vec_bound(py, output.time))?;
+    } else {
+        dict.set_item("time_ps", py.None())?;
+    }
+    Ok(dict.into_py(py))
+}
+
+#[pyclass]
+struct PyStripTrajectoryPlan {
+    plan: RefCell<StripTrajectoryPlan>,
+}
+
+#[pymethods]
+impl PyStripTrajectoryPlan {
+    #[new]
+    fn new(selection: &PySelection) -> Self {
+        let plan = StripTrajectoryPlan::new(selection.selection.clone());
+        Self {
+            plan: RefCell::new(plan),
+        }
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Trajectory(output) => trajectory_output_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
 #[pyclass]
 struct PyMeanStructurePlan {
     plan: RefCell<MeanStructurePlan>,
@@ -906,7 +1447,7 @@ impl PyMeanStructurePlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -914,15 +1455,17 @@ impl PyMeanStructurePlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -946,7 +1489,7 @@ impl PyAverageFramePlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -954,15 +1497,17 @@ impl PyAverageFramePlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -986,7 +1531,7 @@ impl PyMakeStructurePlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -994,15 +1539,17 @@ impl PyMakeStructurePlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray1<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Series(values) => Ok(PyArray1::from_vec_bound(py, values).into_gil_ref()),
@@ -1026,7 +1573,7 @@ impl PyCenterOfMassPlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -1034,15 +1581,17 @@ impl PyCenterOfMassPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray2<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
@@ -1066,7 +1615,7 @@ impl PyCenterOfGeometryPlan {
         }
     }
 
-    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto"))]
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
     fn run<'py>(
         &self,
         py: Python<'py>,
@@ -1074,15 +1623,17 @@ impl PyCenterOfGeometryPlan {
         system: &PySystem,
         chunk_frames: Option<usize>,
         device: &str,
+        frame_indices: Option<Vec<i64>>,
     ) -> PyResult<&'py PyArray2<f32>> {
         let mut plan = self.plan.borrow_mut();
         let mut traj_ref = traj.inner.borrow_mut();
-        let output = run_plan(
+        let output = run_plan_with_frame_subset(
             &mut *plan,
             &mut traj_ref,
             &system.system.borrow(),
             chunk_frames,
             device,
+            frame_indices,
         )?;
         match output {
             PlanOutput::Matrix { data, rows, cols } => matrix_to_py(py, data, rows, cols),
@@ -1242,6 +1793,11 @@ struct PyAlignPlan {
     plan: RefCell<AlignPlan>,
 }
 
+#[pyclass]
+struct PySuperposeTrajectoryPlan {
+    plan: RefCell<SuperposeTrajectoryPlan>,
+}
+
 #[pymethods]
 impl PyAlignPlan {
     #[new]
@@ -1279,25 +1835,78 @@ impl PyAlignPlan {
     }
 }
 
+#[pymethods]
+impl PySuperposeTrajectoryPlan {
+    #[new]
+    #[pyo3(signature = (selection, reference="topology", mass=false, norotate=false))]
+    fn new(selection: &PySelection, reference: &str, mass: bool, norotate: bool) -> PyResult<Self> {
+        let reference_mode = parse_reference(reference)?;
+        let plan = SuperposeTrajectoryPlan::new(
+            selection.selection.clone(),
+            reference_mode,
+            mass,
+            norotate,
+        );
+        Ok(Self {
+            plan: RefCell::new(plan),
+        })
+    }
+
+    #[pyo3(signature = (traj, system, chunk_frames=None, device="auto", frame_indices=None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        traj: &PyTrajectory,
+        system: &PySystem,
+        chunk_frames: Option<usize>,
+        device: &str,
+        frame_indices: Option<Vec<i64>>,
+    ) -> PyResult<PyObject> {
+        let mut plan = self.plan.borrow_mut();
+        let mut traj_ref = traj.inner.borrow_mut();
+        let output = run_plan_with_frame_subset(
+            &mut *plan,
+            &mut traj_ref,
+            &system.system.borrow(),
+            chunk_frames,
+            device,
+            frame_indices,
+        )?;
+        match output {
+            PlanOutput::Trajectory(output) => trajectory_output_to_py(py, output),
+            _ => Err(PyRuntimeError::new_err("unexpected output")),
+        }
+    }
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFixImageBondsPlan>()?;
+    m.add_class::<PyFixImageBondsTrajectoryPlan>()?;
     m.add_class::<PyRandomizeIonsPlan>()?;
+    m.add_class::<PyRandomizeIonsTrajectoryPlan>()?;
     m.add_class::<PyClosestAtomPlan>()?;
     m.add_class::<PySearchNeighborsPlan>()?;
+    m.add_class::<PySearchNeighborListPlan>()?;
     m.add_class::<PyWatershellPlan>()?;
     m.add_class::<PyClosestPlan>()?;
+    m.add_class::<PyClosestCoordsPlan>()?;
     m.add_class::<PyNativeContactsPlan>()?;
     m.add_class::<PyCenterTrajectoryPlan>()?;
+    m.add_class::<PyCenterTrajectoryOutputPlan>()?;
     m.add_class::<PyTranslatePlan>()?;
     m.add_class::<PyTransformPlan>()?;
+    m.add_class::<PyTransformTrajectoryPlan>()?;
     m.add_class::<PyRotatePlan>()?;
     m.add_class::<PyScalePlan>()?;
     m.add_class::<PyImagePlan>()?;
+    m.add_class::<PyImageTrajectoryPlan>()?;
     m.add_class::<PyAutoImagePlan>()?;
+    m.add_class::<PyAutoImageTrajectoryPlan>()?;
     m.add_class::<PyReplicateCellPlan>()?;
     m.add_class::<PyVolumePlan>()?;
     m.add_class::<PyXtalSymmPlan>()?;
     m.add_class::<PyStripPlan>()?;
+    m.add_class::<PyStripTrajectoryPlan>()?;
     m.add_class::<PyMeanStructurePlan>()?;
     m.add_class::<PyAverageFramePlan>()?;
     m.add_class::<PyMakeStructurePlan>()?;
@@ -1307,5 +1916,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDistanceToReferencePlan>()?;
     m.add_class::<PyPrincipalAxesPlan>()?;
     m.add_class::<PyAlignPlan>()?;
+    m.add_class::<PySuperposeTrajectoryPlan>()?;
     Ok(())
 }

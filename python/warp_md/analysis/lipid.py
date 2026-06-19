@@ -71,6 +71,29 @@ def _bin_edges(bins, x=None, y=None):
     return edges, edges
 
 
+def _native_binned_statistic_2d(x, y, values, x_edges, y_edges, statistic):
+    fn = getattr(warp_md, "binned_statistic_2d_array", None)
+    if fn is None:
+        return None
+    if (
+        getattr(fn, "__name__", "") == "binned_statistic_2d_array"
+        and getattr(warp_md, "traj_py", None) is None
+    ):
+        return None
+    try:
+        grid, counts = fn(
+            x.astype(np.float64, copy=False),
+            y.astype(np.float64, copy=False),
+            values.astype(np.float64, copy=False),
+            x_edges.astype(np.float64, copy=False),
+            y_edges.astype(np.float64, copy=False),
+            str(statistic),
+        )
+    except RuntimeError:
+        return None
+    return np.asarray(grid, dtype=np.float32), np.asarray(counts, dtype=np.int64)
+
+
 def _binned_statistic_2d(x, y, values, bins, statistic):
     x = np.asarray(x, dtype=np.float64).ravel()
     y = np.asarray(y, dtype=np.float64).ravel()
@@ -80,6 +103,10 @@ def _binned_statistic_2d(x, y, values, bins, statistic):
     x_edges, y_edges = _bin_edges(bins, x, y)
     if x_edges.ndim != 1 or y_edges.ndim != 1 or x_edges.size < 2 or y_edges.size < 2:
         raise ValueError("bins must define at least one bin per dimension")
+    native = _native_binned_statistic_2d(x, y, values, x_edges, y_edges, statistic)
+    if native is not None:
+        grid, counts = native
+        return grid, x_edges, y_edges, counts
     nx = x_edges.size - 1
     ny = y_edges.size - 1
     finite = np.isfinite(x) & np.isfinite(y) & np.isfinite(values)
@@ -133,6 +160,15 @@ def _nearest_fill_grid(values, *, tile=True):
     grid = np.asarray(values, dtype=np.float32)
     if not np.isnan(grid).any():
         return grid
+    fn = getattr(warp_md, "nearest_fill_grid_array", None)
+    if fn is not None and not (
+        getattr(fn, "__name__", "") == "nearest_fill_grid_array"
+        and getattr(warp_md, "traj_py", None) is None
+    ):
+        try:
+            return np.asarray(fn(grid, bool(tile)), dtype=np.float32)
+        except RuntimeError:
+            pass
     work = np.tile(grid, (3, 3)) if tile else grid.copy()
     known = np.argwhere(np.isfinite(work))
     missing = np.argwhere(~np.isfinite(work))
@@ -422,11 +458,30 @@ def lipid_neighbour_composition(neighbour_matrix, labels, *, label_names=None, r
     else:
         names = list(label_names.keys())
         label_values = [label_names[name] for name in names]
-    counts = np.zeros((matrix.shape[0], matrix.shape[1], len(label_values)), dtype=np.int32)
-    for frame in range(matrix.shape[0]):
-        for label_idx, label_value in enumerate(label_values):
-            mask = labels_arr[:, frame] == label_value
-            counts[frame, :, label_idx] = matrix[frame][:, mask].sum(axis=1)
+    fn = getattr(warp_md, "lipid_neighbour_composition_array", None)
+    if fn is not None and not (
+        getattr(fn, "__name__", "") == "lipid_neighbour_composition_array"
+        and getattr(warp_md, "traj_py", None) is None
+    ):
+        try:
+            counts = np.asarray(
+                fn(
+                    matrix.astype(np.int64, copy=False),
+                    labels_arr.astype(np.int64, copy=False),
+                    np.asarray(label_values, dtype=np.int64),
+                ),
+                dtype=np.int32,
+            )
+        except RuntimeError:
+            counts = None
+    else:
+        counts = None
+    if counts is None:
+        counts = np.zeros((matrix.shape[0], matrix.shape[1], len(label_values)), dtype=np.int32)
+        for frame in range(matrix.shape[0]):
+            for label_idx, label_value in enumerate(label_values):
+                mask = labels_arr[:, frame] == label_value
+                counts[frame, :, label_idx] = matrix[frame][:, mask].sum(axis=1)
     out = {
         "counts": counts,
         "labels": np.asarray(names, dtype=object),

@@ -447,6 +447,244 @@ python scripts/validation/validate_warp_cg_bonded_parity.py \
 
 The completion audit stays incomplete until external xTB and scientific parity lanes have real passing status.
 
+---
+
+## Coarse-Grained System Building (`warp-cg build`)
+
+`warp-cg build` is a first-class system building environment for assembling coarse-grained molecular worlds. It supports complex membranes, stacked lipid bilayers, protein boundary foot-prints, mixed solvent/ion registries, phase-separated solvation zones, and outputs Gromacs-compatible topologies and coordinates.
+
+### CLI Workflows
+
+```bash
+# Verify system building capabilities
+warp-cg build capabilities
+
+# Print the build request schema
+warp-cg build schema --kind request
+
+# Dry-run validate a build request
+warp-cg build validate request.json
+
+# Execute a build request
+warp-cg build run request.json --stream ndjson
+```
+
+### Build Request Contract
+
+The build request drives exact-proof deterministic geometry placement, lipid optimization, and solvent/ion filling.
+
+**System Level (`system`)**
+* `force_field`: Target force field for topology emission (e.g., `martini3`).
+* `box_size_angstrom`: Array of `[X, Y, Z]` specifying the simulation box size.
+* `pbc`: Array of `[bool, bool, bool]` declaring periodic boundary axes.
+* `placement`: Global placement settings.
+  * `relaxation`: Enables/disables deterministic coordinate relaxation (`bool`).
+  * `max_steps`: Maximum number of push/pull steps during relaxation.
+  * `push_tolerance_angstrom`: Distance tolerance for resolving overlaps.
+
+**Membranes (`membranes[]`)**
+Each membrane object defines a distinct bilayer or monolayer stack in the Z-axis.
+* `name`: Identifier for the membrane block.
+* `center_z_angstrom`: Absolute Z-coordinate for the bilayer midplane.
+* `protein_boundary`: Controls how lipids adapt around inserted proteins (supports boundary types like convex hulls, concave hulls, alpha shapes, and buffer distances).
+* `solvate_voids`: Policy to flood interior membrane voids with solvent (`bool`).
+* `leaflets[]`: Array of leaflet configurations.
+  * `side`: `"upper"` or `"lower"`.
+  * `apl_angstrom2`: Area per lipid. Directly impacts automated count planning.
+  * `exclusions[]`: Array of `{"name", "center_angstrom", "radius_angstrom"}` defining manual circular holes.
+  * `regions[]`: Defines exact geometrical regions (`circle`, `ellipse`, `rectangle`, `polygon`).
+    * `role`: Determines how the region interacts with placement (`hole` or constrained patch).
+    * `geometry`: Includes shape parameters, `scale_xy`, and `rotate_degrees`.
+  * `composition[]`: Array of `{"lipid": <name>, "count": <int>}` defining stoichiometry.
+
+**Environment (`environment`)**
+* `ions`: Controls bulk ion neutralization.
+  * `neutralize`: Toggles automated counterion insertion (`bool`).
+  * `cation` / `anion`: Standard names (e.g., `"Na+"`, `"Cl-"`).
+  * `salt_molarity_mol_l`: Target bulk salt concentration.
+* `solvent`: Controls solvent flooding.
+  * `enabled`: Toggles solvent placement (`bool`).
+  * `species`: Supports mixed species ratios with coarse-grained mapping limits.
+  * `zones[]`: Allows phase-separated multi-zone solvation (e.g., distinct molarities or solvent types separated by the membrane).
+
+**Outputs (`outputs`)**
+* `coordinates`: Emitted system coordinates (e.g., `.gro`, `.pdb`, `.cif`).
+* `topology`: Generated top-level topology (e.g., `.top`).
+* `manifest`: Output metadata JSON.
+
+### Example Build Request
+
+```json
+{
+  "schema_version": "warp-cg.build.v1",
+  "run_id": "membrane-bilayer-01",
+  "mode": "membrane",
+  "system": {
+    "force_field": "martini3",
+    "box_size_angstrom": [120.0, 120.0, 140.0],
+    "pbc": [true, true, true],
+    "placement": {
+      "relaxation": true,
+      "max_steps": 100,
+      "push_tolerance_angstrom": 0.01
+    }
+  },
+  "membranes": [
+    {
+      "name": "bilayer",
+      "center_z_angstrom": 0.0,
+      "leaflets": [
+        {
+          "name": "upper",
+          "side": "upper",
+          "apl_angstrom2": 64.0,
+          "exclusions": [
+            {
+              "name": "protein-footprint",
+              "center_angstrom": [0.0, 0.0],
+              "radius_angstrom": 10.0
+            }
+          ],
+          "regions": [
+            {
+              "name": "inspection-hole",
+              "role": "hole",
+              "geometry": {
+                "shape": "circle",
+                "center_angstrom": [24.0, 0.0],
+                "radius_angstrom": 8.0
+              }
+            }
+          ],
+          "composition": [
+            {"lipid": "POPC", "count": 64},
+            {"lipid": "POPG", "count": 16}
+          ]
+        },
+        {
+          "name": "lower",
+          "side": "lower",
+          "apl_angstrom2": 64.0,
+          "composition": [
+            {"lipid": "POPC", "count": 80}
+          ]
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "ions": {
+      "neutralize": true,
+      "cation": "Na+",
+      "anion": "Cl-"
+    },
+    "solvent": {
+      "enabled": true
+    }
+  },
+  "outputs": {
+    "coordinates": "outputs/membrane.gro",
+    "topology": "outputs/topol.top",
+    "manifest": "outputs/membrane_manifest.json"
+  }
+}
+```
+
+---
+
+## Simulation Handoff Planning (`warp-cg simulate`)
+
+Once your coarse-grained system is built, `warp-cg simulate` handles MD simulation planning without directly executing the computation. It generates structured step execution directories, MDP templates (Gromacs), or runner scripts (OpenMM), and validates execution handoffs.
+
+### CLI Workflows
+
+```bash
+# Print simulation schema
+warp-cg simulate schema --kind request
+
+# Validate a simulation request
+warp-cg simulate validate request.json
+
+# Generate execution shell scripts and plans
+warp-cg simulate plan request.json --engine gromacs
+
+# Inspect simulation directory checkpoints and status
+warp-cg simulate status runs/cg-gromacs-001
+```
+
+### Simulation Request Contract
+
+The simulate command builds standard artifacts (`SimulationPlan`) containing required inputs, execution steps, expected outputs, and static validation warnings without directly executing the engine.
+
+**Top-Level Configuration**
+* `run_id`: Unique string identifying the run.
+* `engine`: The backend executor. Supported values: `"gromacs"`, `"openmm"`.
+
+**System Integration (`system`)**
+* `coordinates`: Path to input coordinates (`.gro`, `.pdb`).
+* `topology`: Path to input topology (`.top`).
+* `index`: Optional path to an index file (`.ndx`).
+* `parameters[]`: Array of included parameter files (e.g., `"martini_v3.0.0.itp"`, `"martini_v3_openmm.xml"`).
+* `build_manifest`: Path to the upstream `warp-cg build` manifest.
+* `fitting_report`: Path to an upstream parameter tuning report.
+
+**Execution Protocol (`protocol.stages[]`)**
+A protocol consists of sequential stages mapping to specific simulation phases (minimization, equilibration, production).
+* `name`: Identifier for the stage (e.g., `"minimize"`, `"nvt"`).
+* `type`: Stage category (`"energy_minimization"`, `"md"`).
+* `ensemble`: Target statistical ensemble (e.g., `"nvt"`, `"npt"`).
+* `files`: Key-value map of stage-specific control files.
+  * For Gromacs: requires `"mdp"` file paths.
+  * For OpenMM: requires `"runner"` python script paths.
+* `parameters`: Key-value map of direct protocol overrides (e.g., `"dt_ps": 0.02`, `"nsteps": 50000`).
+
+**Execution Orchestration (`execution`)**
+* `mode`: Defines the orchestrator. Supported values: `"external"`, `"local"`, `"slurm"`.
+* `work_dir`: The root directory for generating run scripts and staging files.
+* `resources`: Resource allocation hints (e.g., `"gpu": true`, `"mpi_ranks": 1`, `"omp_threads": 8`).
+
+### Example GROMACS Simulation Request
+
+```json
+{
+  "schema_version": "warp-cg.simulate.v1",
+  "run_id": "cg-gromacs-001",
+  "engine": "gromacs",
+  "system": {
+    "coordinates": "outputs/membrane.gro",
+    "topology": "outputs/topol.top",
+    "index": "outputs/index.ndx",
+    "parameters": ["martini_v3.0.0.itp"],
+    "build_manifest": "outputs/membrane_manifest.json",
+    "fitting_report": "outputs/tuning_report.json"
+  },
+  "protocol": {
+    "stages": [
+      {
+        "name": "minimize",
+        "type": "energy_minimization",
+        "files": {"mdp": "protocol/minimize.mdp"},
+        "parameters": {"integrator": "steep"}
+      },
+      {
+        "name": "nvt",
+        "type": "md",
+        "ensemble": "nvt",
+        "files": {"mdp": "protocol/nvt.mdp"},
+        "parameters": {"integrator": "md", "dt_ps": 0.02, "nsteps": 50000}
+      }
+    ]
+  },
+  "execution": {
+    "mode": "external",
+    "work_dir": "runs/cg-gromacs-001",
+    "resources": {"gpu": true, "mpi_ranks": 1, "omp_threads": 8}
+  }
+}
+```
+
+---
+
 ## Completion evidence
 
 The implementation surface supports native trajectory mapping, xTB initiation,

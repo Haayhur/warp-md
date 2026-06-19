@@ -3,6 +3,7 @@
 ## For AI Agents
 
 * [For Agents](for-agents.md)
+* [MCP Server Integration](guides/mcp-server.md)
 * [Sample Agent Conversations](guides/agent-transcripts.md)
 
 ## Getting Started
@@ -24,9 +25,15 @@
 
 * [Agent Framework Integrations](guides/agent-frameworks.md)
 * [Streaming Progress API](guides/streaming-progress.md)
-* [Molecule Packing](guides/packing.md)
+* [Molecule Packing (warp-pack)](guides/packing.md)
+* [Polymer Building (warp-build)](guides/warp-build.md)
+* [Peptide Building (warp-pep)](guides/peptide-builder.md)
+* [QM Orchestration (warp-qm)](guides/warp-qm.md)
 * [warp-cg](guides/warp-cg.md)
 * [CUDA & GPU Acceleration](guides/cuda-gpu.md)
+* [Structural IO (warp-structure)](guides/warp-structure.md)
+* [Trajectory Formats](guides/trajectory-formats.md)
+* [Multi-Tau Correlators](guides/multi-tau-correlator.md)
 
 ## API Reference
 
@@ -37,6 +44,7 @@
 * [Structural Analysis](reference/structural-analysis.md)
 * [Geometry & Distance](reference/geometry-distance.md)
 * [Solvation & Density](reference/solvation-density.md)
+* [Lipid Analysis](reference/lipid-analysis.md)
 * [Transforms & Imaging](reference/transforms.md)
 * [NMR & Spectroscopy](reference/nmr-spectroscopy.md)
 * [Polymer Plans](reference/polymer-plans.md)

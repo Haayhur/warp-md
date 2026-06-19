@@ -7,18 +7,29 @@ from __future__ import annotations
 from typing import Optional, Sequence
 
 import numpy as np
+import warp_md
 
+from ._runtime import is_native_traj
 from ._stream import infer_n_atoms
 from .trajectory import ArrayTrajectory
 
-def _resolve_randomize_plan():
-    try:
-        from warp_md import RandomizeIonsPlan  # type: ignore
-    except Exception:
+
+def _resolve_randomize_plan(name: str):
+    plan_cls = getattr(warp_md, name, None)
+    if plan_cls is None or getattr(plan_cls, "__name__", "") == "_Missing":
         return None
-    if getattr(RandomizeIonsPlan, "__name__", "") == "_Missing":
-        return None
-    return RandomizeIonsPlan
+    return plan_cls
+
+
+def _payload_to_array(payload) -> ArrayTrajectory:
+    coords = np.asarray(payload["coords"], dtype=np.float32)
+    box = payload.get("box")
+    time = payload.get("time_ps")
+    return ArrayTrajectory(
+        coords,
+        box=None if box is None else np.asarray(box, dtype=np.float32),
+        time_ps=None if time is None else np.asarray(time, dtype=np.float64),
+    )
 
 
 def randomize_ions(
@@ -40,14 +51,32 @@ def randomize_ions(
     sel = system.select(mask)
     around_sel = system.select(around) if around else None
 
-    plan_cls = _resolve_randomize_plan()
-    if plan_cls is None:
+    flat_plan_cls = _resolve_randomize_plan("RandomizeIonsPlan")
+    traj_plan_cls = _resolve_randomize_plan("RandomizeIonsTrajectoryPlan")
+    if flat_plan_cls is None and traj_plan_cls is None:
         raise RuntimeError(
             "RandomizeIonsPlan is unavailable. Build/install warp-md bindings "
             "(e.g. `maturin develop`) before calling randomize_ions."
         )
 
-    plan = plan_cls(sel, seed, around_sel, float(by), float(overlap), bool(noimage))
+    if is_native_traj(traj) and traj_plan_cls is not None:
+        plan = traj_plan_cls(sel, seed, around_sel, float(by), float(overlap), bool(noimage))
+        payload = plan.run(
+            traj,
+            system,
+            chunk_frames=chunk_frames,
+            device=device,
+            frame_indices=frame_indices,
+        )
+        return _payload_to_array(payload)
+
+    if flat_plan_cls is None:
+        raise RuntimeError(
+            "RandomizeIonsPlan is unavailable. Build/install warp-md bindings "
+            "(e.g. `maturin develop`) before calling randomize_ions."
+        )
+
+    plan = flat_plan_cls(sel, seed, around_sel, float(by), float(overlap), bool(noimage))
     flat = plan.run(
         traj,
         system,

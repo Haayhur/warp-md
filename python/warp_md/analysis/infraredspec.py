@@ -8,7 +8,22 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+import warp_md
 from ._chunk_io import read_chunk_fields
+
+
+def _velocity_differences(sel_coords: np.ndarray, dt_steps: np.ndarray, dt_ps: float) -> np.ndarray:
+    fn = getattr(warp_md, "velocity_differences_array", None)
+    if fn is None or getattr(fn, "__name__", "") != "velocity_differences_array":
+        raise RuntimeError("velocity_differences_array native binding unavailable")
+    return np.asarray(
+        fn(
+            np.asarray(sel_coords, dtype=np.float64),
+            np.asarray(dt_steps, dtype=np.float64),
+            float(dt_ps),
+        ),
+        dtype=np.float64,
+    )
 
 
 def infraredspec(
@@ -74,12 +89,7 @@ def infraredspec(
     if n_frames < 2:
         return np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float32)
 
-    vel = np.zeros((n_frames - 1, sel_coords.shape[1], 3), dtype=np.float64)
-    for i in range(n_frames - 1):
-        dt = dt_steps[i] if i < dt_steps.size else dt_ps
-        if not np.isfinite(dt) or dt <= 0.0:
-            dt = dt_ps
-        vel[i] = (sel_coords[i + 1] - sel_coords[i]) / dt
+    vel = _velocity_differences(sel_coords, dt_steps, dt_ps)
 
     n = vel.shape[0]
     if n == 0:

@@ -30,6 +30,7 @@ def test_list_plans_json() -> None:
     payload = json.loads(result.stdout)
     assert "plans" in payload
     assert "rg" in payload["plans"]
+    assert "pairdist" in payload["plans"]
     assert "free_volume" in payload["plans"]
     assert "bondi_ffv" in payload["plans"]
 
@@ -50,6 +51,9 @@ def test_list_plans_json_details() -> None:
     rg_plan = next(item for item in payload["plans"] if item["name"] == "rg")
     assert rg_plan["plan"] == "rg"
     assert any("--selection" in arg["flags"] for arg in rg_plan["arguments"])
+    pairdist_plan = next(item for item in payload["plans"] if item["name"] == "pairdist")
+    assert pairdist_plan["plan"] == "pairdist"
+    assert any("--mask" in arg["flags"] for arg in pairdist_plan["arguments"])
 
 
 def test_water_models_json() -> None:

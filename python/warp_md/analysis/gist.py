@@ -123,8 +123,61 @@ def _water_groups(topology, water_resnames: Iterable[str]):
                 hydrogens.append(atom_indices[atom])
             elif name.startswith("H"):
                 hydrogens.append(atom_indices[atom])
-        waters.append((indices, oxy, hydrogens))
+            waters.append((indices, oxy, hydrogens))
     return waters
+
+
+def _water_groups_from_system(system, water_resnames: Iterable[str]):
+    if system is None or not hasattr(system, "atom_table"):
+        raise ValueError("GIST grid without OpenMM topology requires system.atom_table()")
+    atoms = system.atom_table()
+    n_atoms = len(atoms.get("name", []))
+    resnames = [str(v).upper() for v in atoms.get("resname", [])]
+    resids = [int(v) for v in atoms.get("resid", [])]
+    elements = [str(v).upper() for v in atoms.get("element", [])]
+    names = [str(v).upper() for v in atoms.get("name", [])]
+    chain_ids = atoms.get("chain_id", [0] * n_atoms)
+    if (
+        len(resnames) != n_atoms
+        or len(resids) != n_atoms
+        or len(elements) != n_atoms
+        or len(chain_ids) != n_atoms
+    ):
+        raise ValueError("GIST grid requires atom_table() with name, resname, resid, element, and chain_id")
+
+    allowed = {str(v).upper() for v in water_resnames}
+    residue_atoms: dict[tuple[int, int, str], list[int]] = {}
+    for idx, resname in enumerate(resnames):
+        if resname not in allowed:
+            continue
+        key = (int(chain_ids[idx]), int(resids[idx]), resname)
+        residue_atoms.setdefault(key, []).append(idx)
+
+    waters = []
+    for atom_indices in residue_atoms.values():
+        oxy = None
+        hydrogens = []
+        for idx in atom_indices:
+            element = elements[idx]
+            name = names[idx]
+            if element == "O" or name in {"O", "OW", "OH2"}:
+                oxy = idx
+            elif element == "H" or name.startswith("H"):
+                hydrogens.append(idx)
+        if oxy is not None:
+            waters.append((atom_indices, oxy, hydrogens))
+    return waters
+
+
+def _system_atom_count(system) -> int:
+    if system is None or not hasattr(system, "atom_table"):
+        raise ValueError("system.atom_table() is required")
+    atoms = system.atom_table()
+    for key in ("name", "resname", "resid", "element"):
+        values = atoms.get(key, [])
+        if values:
+            return len(values)
+    raise ValueError("system.atom_table() has no atom fields")
 
 
 def _water_layout(water_atoms):
@@ -620,7 +673,12 @@ def gist(
     if pme_totals_source not in ("openmm", "native", "direct_approx"):
         raise ValueError("pme_totals_source must be 'openmm', 'native', or 'direct_approx'")
 
-    waters = _water_groups(openmm_topology, config.water_resnames)
+    if openmm_topology is not None:
+        waters = _water_groups(openmm_topology, config.water_resnames)
+    elif energy_method == "none":
+        waters = _water_groups_from_system(system, config.water_resnames)
+    else:
+        raise ValueError("openmm_topology is required for GIST direct/PME energy methods")
     if not waters:
         raise ValueError("no water residues found for GIST")
     water_atoms = [w[0] for w in waters]
@@ -638,7 +696,13 @@ def gist(
         if not solute_atoms:
             raise ValueError("solute_selection resolved to empty selection")
     else:
-        solute_atoms = [i for i in range(openmm_system.getNumParticles()) if i not in all_water_atoms]
+        if openmm_system is not None:
+            atom_count = openmm_system.getNumParticles()
+        elif energy_method == "none":
+            atom_count = _system_atom_count(system)
+        else:
+            raise ValueError("openmm_system is required for GIST direct/PME energy methods")
+        solute_atoms = [i for i in range(atom_count) if i not in all_water_atoms]
 
     orient_bins = max(int(config.orientation_bins), 1)
     if energy_method == "none":

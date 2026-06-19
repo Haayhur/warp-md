@@ -233,5 +233,15 @@ struct SuperposeGpuState {
     reference: GpuReference,
 }
 
+pub struct SuperposeTrajectoryPlan {
+    inner: SuperposePlan,
+    n_frames_hint: Option<usize>,
+    box_: Vec<Box3>,
+    time: Vec<f32>,
+    saw_time: bool,
+    frames: usize,
+    atoms: usize,
+}
+
 #[path = "plan_exec.rs"]
 mod plan_exec;

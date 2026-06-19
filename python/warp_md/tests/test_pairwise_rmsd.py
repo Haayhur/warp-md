@@ -1,6 +1,12 @@
-import numpy as np
+import importlib
 
+import numpy as np
+import warp_md
+
+from warp_md.analysis import _runtime as runtime_mod
 from warp_md.analysis.rmsd import pairwise_rmsd
+
+rmsd_mod = importlib.import_module("warp_md.analysis.rmsd")
 
 
 class _DummySelection:
@@ -67,3 +73,31 @@ def test_pairwise_rmsd_dme_zero_for_identical():
     system = _DummySystem(coords.shape[1])
     mat = pairwise_rmsd(traj, system, mask="all", metric="dme", mat_type="full")
     assert np.allclose(mat[0, 1], 0.0)
+
+
+def test_pairwise_rmsd_native_frame_indices_do_not_materialize_in_python(monkeypatch):
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    system = warp_md.System.from_arrays(_DummySystem(coords.shape[1]).atom_table(), positions0=coords[0])
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native pairwise_rmsd frame subset should stream through Rust")
+
+    monkeypatch.setattr(rmsd_mod, "read_all_frames", _fail_read_all)
+    monkeypatch.setattr(runtime_mod, "read_all_frames", _fail_read_all)
+    mat = rmsd_mod.pairwise_rmsd(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        mask="all",
+        metric="nofit",
+        frame_indices=[0, 2],
+        chunk_frames=1,
+    )
+    assert mat.shape == (2, 2)
+    np.testing.assert_allclose(mat[0, 1], np.sqrt(2.0), atol=1e-6)

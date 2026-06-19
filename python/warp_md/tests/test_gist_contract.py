@@ -106,6 +106,55 @@ def test_gist_none_uses_rust_grid_plan(monkeypatch):
     assert np.allclose(out.energy_ww, 0.0)
 
 
+def test_gist_none_infers_waters_from_system_without_openmm_topology(monkeypatch):
+    from warp_md.analysis.gist import GistConfig, gist
+
+    system = warp_md.System.from_arrays(
+        {
+            "name": ["C1", "O", "H1", "H2"],
+            "resname": ["LIG", "HOH", "HOH", "HOH"],
+            "resid": [1, 2, 2, 2],
+            "chain_id": [0, 0, 0, 0],
+            "element": ["C", "O", "H", "H"],
+            "mass": [12.0, 16.0, 1.0, 1.0],
+        },
+        positions0=np.zeros((4, 3), dtype=np.float32),
+    )
+    traj = _FakeTraj(
+        np.array(
+            [
+                [[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.2, 0.05, 0.0], [0.2, -0.05, 0.0]],
+            ],
+            dtype=np.float64,
+        )
+    )
+    called = {}
+
+    class _DummyGistGridPlan:
+        def __init__(self, oxygen_indices, hydrogen1_indices, hydrogen2_indices, orientation_valid, *args, **kwargs):
+            called["oxygen_indices"] = oxygen_indices
+            called["hydrogen1_indices"] = hydrogen1_indices
+            called["hydrogen2_indices"] = hydrogen2_indices
+            called["orientation_valid"] = orientation_valid
+            called["kwargs"] = kwargs
+
+        def run(self, _traj, _system, chunk_frames=None, device="auto"):
+            called["run"] = True
+            counts = np.ones((1, 1, 1), dtype=np.float32)
+            orient = np.ones((1, 1, 1, 2), dtype=np.float32)
+            return counts, orient, (0.0, 0.0, 0.0), 1
+
+    monkeypatch.setattr(warp_md, "GistGridPlan", _DummyGistGridPlan, raising=False)
+    config = GistConfig(length_scale=1.0, energy_method="none", orientation_bins=2)
+    out = gist(traj, system, None, None, config=config)
+    assert called["oxygen_indices"] == [1]
+    assert called["hydrogen1_indices"] == [2]
+    assert called["hydrogen2_indices"] == [3]
+    assert called["orientation_valid"] == [True]
+    assert called["run"] is True
+    assert out.n_frames == 1
+
+
 def test_gist_none_no_python_fallback_when_plan_missing(monkeypatch):
     from warp_md.analysis.gist import GistConfig, gist
 
@@ -205,4 +254,3 @@ def test_gist_direct_rejects_noncanonical_output_arity(monkeypatch):
     config = GistConfig(length_scale=1.0, energy_method="direct", orientation_bins=4)
     with pytest.raises(RuntimeError, match="expected 16"):
         gist(traj, dummy_system, system, top, config=config)
-

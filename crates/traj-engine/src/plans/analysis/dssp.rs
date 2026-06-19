@@ -1,11 +1,12 @@
-use traj_core::error::TrajResult;
+use traj_core::error::{TrajError, TrajResult};
 use traj_core::frame::FrameChunk;
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use crate::executor::{Device, Plan, PlanOutput};
 use crate::plans::analysis::secondary_structure::{
-    build_backbone_model, compute_backbone_frame, BackboneModel,
+    build_backbone_io_selection, build_backbone_model, compute_backbone_frame_into,
+    remap_backbone_model, BackboneFrame, BackboneModel,
 };
 
 pub const DSSP_OUTPUT_AVG_KEYS: [&str; 8] = [
@@ -22,6 +23,9 @@ pub const DSSP_OUTPUT_AVG_KEYS: [&str; 8] = [
 pub struct DsspPlan {
     selection: Selection,
     model: BackboneModel,
+    selected_model: BackboneModel,
+    io_selection: Vec<u32>,
+    frame: BackboneFrame,
     codes: Vec<u8>,
     frames: usize,
 }
@@ -31,6 +35,9 @@ impl DsspPlan {
         Self {
             selection,
             model: BackboneModel::default(),
+            selected_model: BackboneModel::default(),
+            io_selection: Vec::new(),
+            frame: BackboneFrame::default(),
             codes: Vec::new(),
             frames: 0,
         }
@@ -104,7 +111,25 @@ impl Plan for DsspPlan {
         self.codes.clear();
         self.frames = 0;
         self.model = build_backbone_model(system, &self.selection);
+        self.io_selection = build_backbone_io_selection(&self.model);
+        self.selected_model = remap_backbone_model(&self.model, &self.io_selection);
         Ok(())
+    }
+
+    fn preferred_selection_hint(&self, _system: &System) -> Option<&[u32]> {
+        if self.model.residues.is_empty() {
+            None
+        } else {
+            Some(self.io_selection.as_slice())
+        }
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        if self.model.residues.is_empty() {
+            None
+        } else {
+            Some(self.io_selection.as_slice())
+        }
     }
 
     fn process_chunk(
@@ -113,15 +138,43 @@ impl Plan for DsspPlan {
         _system: &System,
         _device: &Device,
     ) -> TrajResult<()> {
-        let n_res = self.model.residues.len();
-        if n_res == 0 {
-            return Ok(());
+        process_dssp_chunk(
+            &self.model,
+            &mut self.frame,
+            chunk,
+            &mut self.codes,
+            &mut self.frames,
+        );
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        source_selection: &[u32],
+        system: &System,
+        device: &Device,
+    ) -> TrajResult<()> {
+        if self.model.residues.is_empty() {
+            return self.process_chunk(chunk, system, device);
         }
-        for frame in 0..chunk.n_frames {
-            let frame_data = compute_backbone_frame(&self.model, chunk, frame);
-            self.codes.extend(frame_data.states.into_iter());
-            self.frames += 1;
+        if source_selection != self.io_selection.as_slice() {
+            return Err(TrajError::Mismatch(
+                "dssp selected chunk does not match expected backbone selection".into(),
+            ));
         }
+        if chunk.n_atoms != self.io_selection.len() {
+            return Err(TrajError::Mismatch(
+                "dssp selected chunk atom count does not match backbone selection".into(),
+            ));
+        }
+        process_dssp_chunk(
+            &self.selected_model,
+            &mut self.frame,
+            chunk,
+            &mut self.codes,
+            &mut self.frames,
+        );
         Ok(())
     }
 
@@ -140,6 +193,24 @@ impl Plan for DsspPlan {
             rows: self.frames,
             cols: n_res,
         })
+    }
+}
+
+fn process_dssp_chunk(
+    model: &BackboneModel,
+    frame_scratch: &mut BackboneFrame,
+    chunk: &FrameChunk,
+    codes: &mut Vec<u8>,
+    frames: &mut usize,
+) {
+    let n_res = model.residues.len();
+    if n_res == 0 {
+        return;
+    }
+    for frame in 0..chunk.n_frames {
+        compute_backbone_frame_into(model, chunk, frame, frame_scratch);
+        codes.extend_from_slice(&frame_scratch.states);
+        *frames += 1;
     }
 }
 

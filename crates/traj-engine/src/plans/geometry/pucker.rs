@@ -1,10 +1,10 @@
 use traj_core::error::{TrajError, TrajResult};
-use traj_core::frame::FrameChunk;
+use traj_core::frame::{Box3, FrameChunk};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use super::geometry_math::*;
-use crate::executor::{Device, Plan, PlanOutput};
+use crate::executor::{Device, Plan, PlanOutput, PlanRequirements, TrajectoryOutput};
 use crate::plans::PbcMode;
 use nalgebra::{Matrix3, SymmetricEigen};
 
@@ -478,6 +478,115 @@ impl Plan for RotateDihedralPlan {
     }
 }
 
+pub struct RotateDihedralTrajectoryPlan {
+    inner: RotateDihedralPlan,
+    box_: Vec<Box3>,
+    time: Vec<f32>,
+    saw_time: bool,
+    frames: usize,
+    atoms: usize,
+}
+
+impl RotateDihedralTrajectoryPlan {
+    pub fn new(
+        sel_a: Selection,
+        sel_b: Selection,
+        sel_c: Selection,
+        sel_d: Selection,
+        rotate_sel: Selection,
+        angle: f64,
+        mass_weighted: bool,
+        degrees: bool,
+    ) -> Self {
+        Self {
+            inner: RotateDihedralPlan::new(
+                sel_a,
+                sel_b,
+                sel_c,
+                sel_d,
+                rotate_sel,
+                angle,
+                mass_weighted,
+                degrees,
+            ),
+            box_: Vec::new(),
+            time: Vec::new(),
+            saw_time: false,
+            frames: 0,
+            atoms: 0,
+        }
+    }
+
+    fn record_metadata(&mut self, chunk: &FrameChunk) {
+        self.box_
+            .extend(chunk.box_.iter().take(chunk.n_frames).copied());
+        if let Some(time) = &chunk.time_ps {
+            self.time.extend(time.iter().take(chunk.n_frames).copied());
+            if !time.is_empty() {
+                self.saw_time = true;
+            }
+        }
+    }
+}
+
+impl Plan for RotateDihedralTrajectoryPlan {
+    fn name(&self) -> &'static str {
+        "rotate_dihedral_trajectory"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        PlanRequirements::new(true, true)
+    }
+
+    fn set_frames_hint(&mut self, n_frames: Option<usize>) {
+        if let Some(frames) = n_frames {
+            if let Some(cap) = frames
+                .checked_mul(self.atoms.max(1))
+                .and_then(|value| value.checked_mul(3))
+            {
+                self.inner.results.reserve(cap);
+            }
+        }
+    }
+
+    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+        self.inner.init(system, device)?;
+        self.box_.clear();
+        self.time.clear();
+        self.saw_time = false;
+        self.frames = 0;
+        self.atoms = system.n_atoms();
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        device: &Device,
+    ) -> TrajResult<()> {
+        self.atoms = chunk.n_atoms;
+        self.inner.process_chunk(chunk, system, device)?;
+        self.record_metadata(chunk);
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Trajectory(TrajectoryOutput {
+            coords: std::mem::take(&mut self.inner.results),
+            frames: self.frames,
+            atoms: self.atoms,
+            box_: std::mem::take(&mut self.box_),
+            time: if self.saw_time {
+                std::mem::take(&mut self.time)
+            } else {
+                Vec::new()
+            },
+        }))
+    }
+}
+
 pub struct SetDihedralPlan {
     sel_a: Selection,
     sel_b: Selection,
@@ -745,5 +854,118 @@ impl Plan for SetDihedralPlan {
 
     fn finalize(&mut self) -> TrajResult<PlanOutput> {
         Ok(PlanOutput::Series(std::mem::take(&mut self.results)))
+    }
+}
+
+pub struct SetDihedralTrajectoryPlan {
+    inner: SetDihedralPlan,
+    box_: Vec<Box3>,
+    time: Vec<f32>,
+    saw_time: bool,
+    frames: usize,
+    atoms: usize,
+}
+
+impl SetDihedralTrajectoryPlan {
+    pub fn new(
+        sel_a: Selection,
+        sel_b: Selection,
+        sel_c: Selection,
+        sel_d: Selection,
+        rotate_sel: Selection,
+        target: f64,
+        mass_weighted: bool,
+        pbc: PbcMode,
+        degrees: bool,
+        range360: bool,
+    ) -> Self {
+        Self {
+            inner: SetDihedralPlan::new(
+                sel_a,
+                sel_b,
+                sel_c,
+                sel_d,
+                rotate_sel,
+                target,
+                mass_weighted,
+                pbc,
+                degrees,
+                range360,
+            ),
+            box_: Vec::new(),
+            time: Vec::new(),
+            saw_time: false,
+            frames: 0,
+            atoms: 0,
+        }
+    }
+
+    fn record_metadata(&mut self, chunk: &FrameChunk) {
+        self.box_
+            .extend(chunk.box_.iter().take(chunk.n_frames).copied());
+        if let Some(time) = &chunk.time_ps {
+            self.time.extend(time.iter().take(chunk.n_frames).copied());
+            if !time.is_empty() {
+                self.saw_time = true;
+            }
+        }
+    }
+}
+
+impl Plan for SetDihedralTrajectoryPlan {
+    fn name(&self) -> &'static str {
+        "set_dihedral_trajectory"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        PlanRequirements::new(true, true)
+    }
+
+    fn set_frames_hint(&mut self, n_frames: Option<usize>) {
+        if let Some(frames) = n_frames {
+            if let Some(cap) = frames
+                .checked_mul(self.atoms.max(1))
+                .and_then(|value| value.checked_mul(3))
+            {
+                self.inner.results.reserve(cap);
+            }
+        }
+    }
+
+    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+        self.inner.init(system, device)?;
+        self.box_.clear();
+        self.time.clear();
+        self.saw_time = false;
+        self.frames = 0;
+        self.atoms = system.n_atoms();
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        device: &Device,
+    ) -> TrajResult<()> {
+        self.atoms = chunk.n_atoms;
+        self.inner.process_chunk(chunk, system, device)?;
+        self.record_metadata(chunk);
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Trajectory(TrajectoryOutput {
+            coords: std::mem::take(&mut self.inner.results),
+            frames: self.frames,
+            atoms: self.atoms,
+            box_: std::mem::take(&mut self.box_),
+            time: if self.saw_time {
+                std::mem::take(&mut self.time)
+            } else {
+                Vec::new()
+            },
+        }))
     }
 }

@@ -9,11 +9,15 @@ from typing import Optional, Sequence, Tuple, Union
 import numpy as np
 
 from ._runtime import (
+    clone_native_system_with_positions0,
+    coerce_native_system,
+    is_native_traj,
     load_native_symbol,
     native_inputs,
     native_selection,
     prepend_reference_frame,
     read_all_frames,
+    read_frame_subset,
     reset_traj,
     selection_indices,
 )
@@ -23,18 +27,199 @@ from .trajectory import ArrayTrajectory
 RefLike = Union[int, str]
 
 
+def _frame_indices_arg(frame_indices: Optional[Sequence[int]]):
+    return None if frame_indices is None else [int(value) for value in frame_indices]
+
+
+def _has_positions0(system) -> bool:
+    if not hasattr(system, "positions0"):
+        return False
+    try:
+        return system.positions0() is not None
+    except Exception:
+        return False
+
+
+def _run_native_contacts_plan(
+    plan_cls,
+    traj,
+    system,
+    native_system,
+    mask: str,
+    mask2: str,
+    reference: str,
+    cutoff: float,
+    mindist: Optional[float],
+    image: bool,
+    chunk_frames: Optional[int],
+    frame_indices: Optional[Sequence[int]],
+):
+    selection = native_selection(system, native_system, mask)
+    selection_b = native_selection(system, native_system, mask2) if mask2 else None
+    pbc_modes = ["orthorhombic", "none"] if image else ["none"]
+    last_exc: Optional[Exception] = None
+    for pbc in pbc_modes:
+        try:
+            if not reset_traj(traj):
+                raise RuntimeError("failed to reset native trajectory")
+            plan = plan_cls(
+                selection,
+                selection_b,
+                reference=reference,
+                cutoff=cutoff,
+                pbc=pbc,
+                min_cutoff=mindist,
+            )
+            return np.asarray(
+                plan.run(
+                    traj,
+                    native_system,
+                    chunk_frames=chunk_frames,
+                    device="auto",
+                    frame_indices=_frame_indices_arg(frame_indices),
+                ),
+                dtype=np.float32,
+            )
+        except Exception as exc:
+            last_exc = exc
+            if pbc == "orthorhombic" and "box" in str(exc).lower():
+                continue
+            break
+    raise RuntimeError("native NativeContactsPlan execution failed") from last_exc
+
+
+def _native_contacts_live(
+    source,
+    system,
+    mask: str,
+    mask2: str,
+    ref: RefLike,
+    cutoff: float,
+    mindist: Optional[float],
+    image: bool,
+    chunk_frames: Optional[int],
+    frame_indices: Optional[Sequence[int]],
+):
+    if not is_native_traj(source):
+        return None
+    plan_cls = load_native_symbol("NativeContactsPlan")
+    if plan_cls is None:
+        raise RuntimeError("NativeContactsPlan binding unavailable")
+
+    native_system = coerce_native_system(system)
+    if native_system is None:
+        raise RuntimeError("failed to prepare native contact system")
+
+    if isinstance(ref, str):
+        key = ref.strip().lower()
+        if key in ("frame0", "first", "0"):
+            return _run_native_contacts_plan(
+                plan_cls,
+                source,
+                system,
+                native_system,
+                mask,
+                mask2,
+                "frame0",
+                cutoff,
+                mindist,
+                image,
+                chunk_frames,
+                frame_indices,
+            )
+        if key in ("topology", "top", "topo") and not image and _has_positions0(native_system):
+            return _run_native_contacts_plan(
+                plan_cls,
+                source,
+                system,
+                native_system,
+                mask,
+                mask2,
+                "topology",
+                cutoff,
+                mindist,
+                False,
+                chunk_frames,
+                frame_indices,
+            )
+        return None
+
+    if isinstance(ref, int) and int(ref) == 0:
+        return _run_native_contacts_plan(
+            plan_cls,
+            source,
+            system,
+            native_system,
+            mask,
+            mask2,
+            "frame0",
+            cutoff,
+            mindist,
+            image,
+            chunk_frames,
+            frame_indices,
+        )
+
+    if not isinstance(ref, int) or image or frame_indices is not None:
+        return None
+
+    ref_coords, _ref_box, _ref_time, source_indices = read_frame_subset(
+        source,
+        [int(ref)],
+        chunk_frames,
+    )
+    if ref_coords is None or ref_coords.shape[0] != 1 or source_indices.size != 1:
+        raise ValueError("ref index out of range")
+    ref_system = clone_native_system_with_positions0(system, ref_coords[0])
+    if ref_system is None:
+        raise RuntimeError("failed to prepare native reference contact system")
+    return _run_native_contacts_plan(
+        plan_cls,
+        source,
+        system,
+        ref_system,
+        mask,
+        mask2,
+        "topology",
+        cutoff,
+        mindist,
+        False,
+        chunk_frames,
+        None,
+    )
+
+
 def _native_contacts(
     source,
     system,
     mask: str,
+    mask2: str,
     ref: int,
     cutoff: float,
+    mindist: Optional[float],
     image: bool,
     chunk_frames: Optional[int],
+    frame_indices: Optional[Sequence[int]] = None,
 ):
     plan_cls = load_native_symbol("NativeContactsPlan")
     if plan_cls is None:
         raise RuntimeError("NativeContactsPlan binding unavailable")
+    if is_native_traj(source):
+        native_out = _native_contacts_live(
+            source,
+            system,
+            mask,
+            mask2,
+            ref,
+            cutoff,
+            mindist,
+            image,
+            chunk_frames,
+            frame_indices,
+        )
+        if native_out is not None:
+            return native_out
+
     coords, box, _time = read_all_frames(source, chunk_frames, include_box=True)
     if coords is None:
         raise ValueError("trajectory has no frames")
@@ -50,6 +235,9 @@ def _native_contacts(
         raise RuntimeError("failed to prepare native contact inputs")
     try:
         selection = native_selection(system, native_system, mask)
+        selection_b = (
+            native_selection(system, native_system, mask2) if mask2 else None
+        )
         run_traj = native_traj
         trim_first = False
         if ref == 0:
@@ -65,9 +253,22 @@ def _native_contacts(
             if run_traj is None:
                 raise RuntimeError("failed to build native reference trajectory")
             trim_first = True
-        plan = plan_cls(selection, reference="frame0", cutoff=cutoff, pbc=pbc)
+        plan = plan_cls(
+            selection,
+            selection_b,
+            reference="frame0",
+            cutoff=cutoff,
+            pbc=pbc,
+            min_cutoff=mindist,
+        )
         values = np.asarray(
-            plan.run(run_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            plan.run(
+                run_traj,
+                native_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=_frame_indices_arg(frame_indices),
+            ),
             dtype=np.float32,
         )
         if trim_first:
@@ -96,25 +297,52 @@ def native_contacts(
 ) -> np.ndarray:
     """Compute native contacts fraction per frame (basic parity)."""
     del include_solvent, byres, series, first
+    cutoff = float(maxdist if maxdist is not None else distance)
+    mindist_val = None if mindist is None else float(mindist)
+    native_out = _native_contacts_live(
+        traj,
+        system,
+        mask,
+        mask2,
+        ref,
+        cutoff,
+        mindist_val,
+        image,
+        chunk_frames,
+        frame_indices,
+    )
+    if native_out is not None:
+        return native_out
+
+    if isinstance(ref, int) and int(ref) == 0:
+        return _native_contacts(
+            traj,
+            system,
+            mask,
+            mask2,
+            int(ref),
+            cutoff,
+            mindist_val,
+            image,
+            chunk_frames,
+            frame_indices=frame_indices,
+        )
+
     coords, box, _time = read_all_frames(traj, chunk_frames, include_box=True)
     if coords is None:
         raise ValueError("trajectory has no frames")
     if coords.size == 0:
         return np.empty((0,), dtype=np.float32)
 
-    cutoff = float(maxdist if maxdist is not None else distance)
-    if (
-        not mask2
-        and mindist is None
-        and isinstance(ref, int)
-        and frame_indices is None
-    ):
+    if isinstance(ref, int) and frame_indices is None:
         return _native_contacts(
             ArrayTrajectory(np.asarray(coords, dtype=np.float32), box=box),
             system,
             mask,
+            mask2,
             int(ref),
             cutoff,
+            mindist_val,
             image,
             chunk_frames,
         )
@@ -163,11 +391,6 @@ def native_contacts(
             ref_coords = coords[0]
     else:
         ref_coords = np.asarray(ref_coords, dtype=np.float64)
-
-    if mindist is None:
-        mindist_val = None
-    else:
-        mindist_val = float(mindist)
 
     ref_pairs = _reference_pairs(ref_coords, idx_a, idx_b, cutoff, mindist_val, image, box[0] if box is not None else None)
     if len(ref_pairs) == 0:

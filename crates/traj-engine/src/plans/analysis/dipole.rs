@@ -25,6 +25,18 @@ pub struct DipoleAlignmentPlan {
     gpu: Option<DipoleGpuState>,
 }
 
+pub struct DipoleMomentPlan {
+    selection: Selection,
+    group_by: GroupBy,
+    group_types: Option<Vec<usize>>,
+    charges: Vec<f64>,
+    length_scale: f64,
+    groups: Option<GroupMap>,
+    results: Vec<f32>,
+    time: Vec<f32>,
+    frames: usize,
+}
+
 #[cfg(feature = "cuda")]
 struct DipoleGpuState {
     ctx: GpuContext,
@@ -57,6 +69,106 @@ impl DipoleAlignmentPlan {
     pub fn with_group_types(mut self, types: Vec<usize>) -> Self {
         self.group_types = Some(types);
         self
+    }
+}
+
+impl DipoleMomentPlan {
+    pub fn new(selection: Selection, group_by: GroupBy, charges: Vec<f64>) -> Self {
+        Self {
+            selection,
+            group_by,
+            group_types: None,
+            charges,
+            length_scale: 1.0,
+            groups: None,
+            results: Vec::new(),
+            time: Vec::new(),
+            frames: 0,
+        }
+    }
+
+    pub fn with_length_scale(mut self, scale: f64) -> Self {
+        self.length_scale = scale;
+        self
+    }
+
+    pub fn with_group_types(mut self, types: Vec<usize>) -> Self {
+        self.group_types = Some(types);
+        self
+    }
+}
+
+impl Plan for DipoleMomentPlan {
+    fn name(&self) -> &'static str {
+        "dipole_moments"
+    }
+
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.time.clear();
+        self.frames = 0;
+        if self.charges.len() != system.n_atoms() {
+            return Err(TrajError::Mismatch(
+                "charges length does not match atom count".into(),
+            ));
+        }
+        let mut spec = GroupSpec::new(self.selection.clone(), self.group_by);
+        if let Some(types) = &self.group_types {
+            spec = spec.with_group_types(types.clone());
+        }
+        self.groups = Some(spec.build(system)?);
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        let groups = self
+            .groups
+            .as_ref()
+            .ok_or_else(|| TrajError::Mismatch("groups not initialized".into()))?;
+        let n_atoms = chunk.n_atoms;
+        let base_time = self.frames;
+        for frame in 0..chunk.n_frames {
+            let frame_base = frame * n_atoms;
+            for atoms in groups.groups.iter() {
+                let mut dip = [0.0f64; 3];
+                for &atom_idx in atoms {
+                    let p = chunk.coords[frame_base + atom_idx];
+                    let q = self.charges[atom_idx];
+                    dip[0] += p[0] as f64 * q;
+                    dip[1] += p[1] as f64 * q;
+                    dip[2] += p[2] as f64 * q;
+                }
+                self.results.push((dip[0] * self.length_scale) as f32);
+                self.results.push((dip[1] * self.length_scale) as f32);
+                self.results.push((dip[2] * self.length_scale) as f32);
+            }
+            let time = chunk
+                .time_ps
+                .as_ref()
+                .and_then(|times| times.get(frame).copied())
+                .unwrap_or((base_time + frame) as f32);
+            self.time.push(time);
+        }
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        let groups = self
+            .groups
+            .as_ref()
+            .ok_or_else(|| TrajError::Mismatch("groups not initialized".into()))?;
+        Ok(PlanOutput::TimeSeries {
+            time: std::mem::take(&mut self.time),
+            data: std::mem::take(&mut self.results),
+            rows: self.frames,
+            cols: groups.n_groups() * 3,
+        })
     }
 }
 

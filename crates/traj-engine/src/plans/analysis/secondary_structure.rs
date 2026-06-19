@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use traj_core::frame::{Box3, FrameChunk};
 use traj_core::pbc_math::{apply_pbc, apply_pbc_triclinic, cell_and_inv_from_box};
@@ -42,7 +42,7 @@ pub(crate) struct BackboneModel {
     pub labels: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct BackboneFrame {
     pub n: Vec<Option<[f64; 3]>>,
     pub h: Vec<Option<[f64; 3]>>,
@@ -185,33 +185,74 @@ pub(crate) fn build_backbone_model(system: &System, selection: &Selection) -> Ba
     BackboneModel { residues, labels }
 }
 
+pub(crate) fn build_backbone_io_selection(model: &BackboneModel) -> Vec<u32> {
+    let mut seen = HashSet::new();
+    let mut indices = Vec::new();
+    for residue in model.residues.iter() {
+        for atom_idx in [
+            residue.n_idx,
+            residue.ca_idx,
+            residue.c_idx,
+            residue.o_idx,
+            residue.h_idx,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if seen.insert(atom_idx) {
+                indices.push(atom_idx as u32);
+            }
+        }
+    }
+    indices
+}
+
+pub(crate) fn remap_backbone_model(model: &BackboneModel, io_selection: &[u32]) -> BackboneModel {
+    let slot_by_atom: HashMap<usize, usize> = io_selection
+        .iter()
+        .enumerate()
+        .map(|(slot, &atom)| (atom as usize, slot))
+        .collect();
+    let mut remapped = model.clone();
+    for residue in remapped.residues.iter_mut() {
+        residue.n_idx = remap_atom_index(residue.n_idx, &slot_by_atom);
+        residue.h_idx = remap_atom_index(residue.h_idx, &slot_by_atom);
+        residue.ca_idx = remap_atom_index(residue.ca_idx, &slot_by_atom);
+        residue.c_idx = remap_atom_index(residue.c_idx, &slot_by_atom);
+        residue.o_idx = remap_atom_index(residue.o_idx, &slot_by_atom);
+    }
+    remapped
+}
+
+fn remap_atom_index(
+    atom_idx: Option<usize>,
+    slot_by_atom: &HashMap<usize, usize>,
+) -> Option<usize> {
+    atom_idx.and_then(|idx| slot_by_atom.get(&idx).copied())
+}
+
 pub(crate) fn compute_backbone_frame(
     model: &BackboneModel,
     chunk: &FrameChunk,
     frame: usize,
 ) -> BackboneFrame {
     let n = model.residues.len();
-    let mut out = BackboneFrame {
-        n: vec![None; n],
-        h: vec![None; n],
-        ca: vec![None; n],
-        c: vec![None; n],
-        o: vec![None; n],
-        phi: vec![None; n],
-        psi: vec![None; n],
-        pprms2: vec![None; n],
-        d3: vec![None; n],
-        d4: vec![None; n],
-        d5: vec![None; n],
-        hbond_energy: vec![f64::NAN; n * n],
-        hbond_present: vec![false; n * n],
-        turn3: vec![false; n],
-        turn4: vec![false; n],
-        turn5: vec![false; n],
-        states: vec![DSSP_CODE_C; n],
-    };
+    let mut out = BackboneFrame::default();
+    reset_backbone_frame(&mut out, n);
+    compute_backbone_frame_into(model, chunk, frame, &mut out);
+    out
+}
+
+pub(crate) fn compute_backbone_frame_into(
+    model: &BackboneModel,
+    chunk: &FrameChunk,
+    frame: usize,
+    out: &mut BackboneFrame,
+) {
+    let n = model.residues.len();
+    reset_backbone_frame(out, n);
     if n == 0 {
-        return out;
+        return;
     }
 
     let transform = box_transform(chunk.box_.get(frame).copied().unwrap_or(Box3::None));
@@ -350,7 +391,43 @@ pub(crate) fn compute_backbone_frame(
         out.turn5[i] = has_turn(model, &out, i, 5);
     }
     out.states = assign_dssp_states(model, &out);
-    out
+}
+
+fn reset_backbone_frame(out: &mut BackboneFrame, n: usize) {
+    out.n.clear();
+    out.n.resize(n, None);
+    out.h.clear();
+    out.h.resize(n, None);
+    out.ca.clear();
+    out.ca.resize(n, None);
+    out.c.clear();
+    out.c.resize(n, None);
+    out.o.clear();
+    out.o.resize(n, None);
+    out.phi.clear();
+    out.phi.resize(n, None);
+    out.psi.clear();
+    out.psi.resize(n, None);
+    out.pprms2.clear();
+    out.pprms2.resize(n, None);
+    out.d3.clear();
+    out.d3.resize(n, None);
+    out.d4.clear();
+    out.d4.resize(n, None);
+    out.d5.clear();
+    out.d5.resize(n, None);
+    out.hbond_energy.clear();
+    out.hbond_energy.resize(n * n, f64::NAN);
+    out.hbond_present.clear();
+    out.hbond_present.resize(n * n, false);
+    out.turn3.clear();
+    out.turn3.resize(n, false);
+    out.turn4.clear();
+    out.turn4.resize(n, false);
+    out.turn5.clear();
+    out.turn5.resize(n, false);
+    out.states.clear();
+    out.states.resize(n, DSSP_CODE_C);
 }
 
 #[cfg(test)]

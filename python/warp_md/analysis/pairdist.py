@@ -40,6 +40,67 @@ def _format_extrema(values, mode: str, dtype: str):
     return out
 
 
+def _pairdist_extrema(
+    traj,
+    system,
+    mask: str,
+    mask2: str,
+    mode: str,
+    maxdist: Optional[float],
+    frame_indices: Optional[Sequence[int]],
+    dtype: str,
+    chunk_frames: Optional[int],
+    image: bool,
+    device: str,
+):
+    same = not bool(mask2)
+    if not is_native_traj(traj):
+        raise RuntimeError(
+            f"{mode}dist requires a Rust-backed trajectory so frame/atom loops stay in Rust."
+        )
+    native_system = coerce_native_system(system)
+    if native_system is None:
+        raise RuntimeError(f"failed to prepare native {mode}dist system")
+    maxdist_value = None
+    if maxdist is not None:
+        maxdist_value = float(maxdist)
+        if not np.isfinite(maxdist_value) or maxdist_value <= 0.0:
+            raise ValueError("maxdist must be finite and positive")
+    frame_indices_list = (
+        None if frame_indices is None else [int(value) for value in frame_indices]
+    )
+    sel_a = native_selection(system, native_system, mask, allow_at_indices=True)
+    sel_b = (
+        sel_a
+        if same
+        else native_selection(system, native_system, mask2, allow_at_indices=True)
+    )
+    plan_cls = load_native_symbol("PairDistanceExtremaPlan")
+    if plan_cls is None:
+        raise RuntimeError("PairDistanceExtremaPlan binding unavailable")
+    plan_mode = "min" if str(mode).lower() in ("min", "minimum") else "max"
+    pbc = "orthorhombic" if image else "none"
+    try:
+        values = plan_cls(
+            sel_a,
+            sel_b,
+            plan_mode,
+            pbc,
+            unique_pairs=bool(same),
+            cutoff=maxdist_value,
+            empty_value=maxdist_value,
+        ).run(
+            traj,
+            native_system,
+            chunk_frames=chunk_frames,
+            device=device,
+            frame_indices=frame_indices_list,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"native {plan_mode}dist execution failed") from exc
+    return _format_extrema(values, plan_mode, dtype)
+
+
 def pairdist(
     traj,
     system,
@@ -51,6 +112,8 @@ def pairdist(
     frame_indices: Optional[Sequence[int]] = None,
     dtype: str = "dict",
     chunk_frames: Optional[int] = None,
+    image: bool = False,
+    device: str = "auto",
 ):
     """Compute pair distance histogram or per-frame extrema."""
     mode_value = str(mode).lower()
@@ -60,6 +123,11 @@ def pairdist(
         raise ValueError("mode must be 'hist', 'min', or 'max'")
     if histogram_mode and delta <= 0.0:
         raise ValueError("delta must be positive")
+    maxdist_value = None
+    if maxdist is not None:
+        maxdist_value = float(maxdist)
+        if not np.isfinite(maxdist_value) or maxdist_value <= 0.0:
+            raise ValueError("maxdist must be finite and positive")
 
     same = not bool(mask2)
 
@@ -73,36 +141,30 @@ def pairdist(
     frame_indices_list = (
         None if frame_indices is None else [int(value) for value in frame_indices]
     )
-    sel_a = native_selection(system, native_system, mask)
-    sel_b = sel_a if same else native_selection(system, native_system, mask2)
+    sel_a = native_selection(system, native_system, mask, allow_at_indices=True)
+    sel_b = (
+        sel_a
+        if same
+        else native_selection(system, native_system, mask2, allow_at_indices=True)
+    )
+    pbc = "orthorhombic" if image else "none"
 
     if extrema_mode:
-        plan_cls = load_native_symbol("PairDistanceExtremaPlan")
-        if plan_cls is None:
-            raise RuntimeError("PairDistanceExtremaPlan binding unavailable")
-        plan_mode = "min" if mode_value in ("min", "minimum") else "max"
-        try:
-            values = plan_cls(
-                sel_a,
-                sel_b,
-                plan_mode,
-                "none",
-                unique_pairs=bool(same),
-            ).run(
-                traj,
-                native_system,
-                chunk_frames=chunk_frames,
-                device="auto",
-                frame_indices=frame_indices_list,
-            )
-        except Exception as exc:
-            raise RuntimeError("native PairDistanceExtremaPlan execution failed") from exc
-        return _format_extrema(values, plan_mode, dtype)
+        return _pairdist_extrema(
+            traj,
+            system,
+            mask,
+            mask2,
+            mode_value,
+            maxdist,
+            frame_indices,
+            dtype,
+            chunk_frames,
+            image,
+            device,
+        )
 
-    if maxdist is not None:
-        maxdist_value = float(maxdist)
-        if not np.isfinite(maxdist_value) or maxdist_value <= 0.0:
-            raise ValueError("maxdist must be finite and positive")
+    if maxdist_value is not None:
         plan_cls = load_native_symbol("PairDistPlan")
         if plan_cls is None:
             raise RuntimeError("PairDistPlan binding unavailable")
@@ -114,7 +176,7 @@ def pairdist(
                 sel_b,
                 n_bins,
                 r_max,
-                "none",
+                pbc,
                 output_distribution=True,
                 unique_pairs=bool(same),
                 compact_output=True,
@@ -122,7 +184,7 @@ def pairdist(
                 traj,
                 native_system,
                 chunk_frames=chunk_frames,
-                device="auto",
+                device=device,
                 frame_indices=frame_indices_list,
             )
         except Exception as exc:
@@ -137,7 +199,7 @@ def pairdist(
             sel_a,
             sel_b,
             np.float32(delta),
-            "none",
+            pbc,
             output_distribution=True,
             unique_pairs=bool(same),
             compact_output=True,
@@ -145,7 +207,7 @@ def pairdist(
             traj,
             native_system,
             chunk_frames=chunk_frames,
-            device="auto",
+            device=device,
             frame_indices=frame_indices_list,
         )
     except Exception as exc:
@@ -154,4 +216,62 @@ def pairdist(
     return _format_pairdist(centers, hist, std, counts, n_frames, dtype)
 
 
-__all__ = ["pairdist"]
+def mindist(
+    traj,
+    system,
+    mask: str = "*",
+    mask2: str = "",
+    *,
+    maxdist: Optional[float] = None,
+    frame_indices: Optional[Sequence[int]] = None,
+    dtype: str = "ndarray",
+    chunk_frames: Optional[int] = None,
+    image: bool = False,
+    device: str = "auto",
+):
+    """Compute the per-frame minimum distance between two selections in Rust."""
+    return _pairdist_extrema(
+        traj,
+        system,
+        mask,
+        mask2,
+        "min",
+        maxdist,
+        frame_indices,
+        dtype,
+        chunk_frames,
+        image,
+        device,
+    )
+
+
+def maxdist(
+    traj,
+    system,
+    mask: str = "*",
+    mask2: str = "",
+    *,
+    maxdist: Optional[float] = None,
+    frame_indices: Optional[Sequence[int]] = None,
+    dtype: str = "ndarray",
+    chunk_frames: Optional[int] = None,
+    image: bool = False,
+    device: str = "auto",
+):
+    """Compute the per-frame maximum distance between two selections in Rust."""
+    return _pairdist_extrema(
+        traj,
+        system,
+        mask,
+        mask2,
+        "max",
+        maxdist,
+        frame_indices,
+        dtype,
+        chunk_frames,
+        image,
+        device,
+    )
+
+
+__all__ = ["pairdist", "mindist", "maxdist"]

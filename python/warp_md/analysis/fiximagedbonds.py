@@ -7,7 +7,9 @@ from __future__ import annotations
 from typing import Optional, Sequence, Union
 
 import numpy as np
+import warp_md
 
+from ._runtime import is_native_traj
 from ._stream import infer_n_atoms
 from .trajectory import ArrayTrajectory
 
@@ -32,6 +34,17 @@ def _selection_from_mask(system, mask: MaskLike):
     return system.select_indices(np.asarray(mask, dtype=np.int64).reshape(-1).tolist())
 
 
+def _payload_to_array(payload) -> ArrayTrajectory:
+    coords = np.asarray(payload["coords"], dtype=np.float32)
+    box = payload.get("box")
+    time = payload.get("time_ps")
+    return ArrayTrajectory(
+        coords,
+        box=None if box is None else np.asarray(box, dtype=np.float32),
+        time_ps=None if time is None else np.asarray(time, dtype=np.float64),
+    )
+
+
 def fiximagedbonds(
     traj,
     system,
@@ -41,13 +54,13 @@ def fiximagedbonds(
     device: str = "auto",
 ) -> ArrayTrajectory:
     """Image selected atoms using Rust plan path only."""
-    try:
-        from warp_md import FixImageBondsPlan  # type: ignore
-    except Exception:
+    plan_cls = getattr(warp_md, "FixImageBondsTrajectoryPlan", None)
+    flat_plan_cls = getattr(warp_md, "FixImageBondsPlan", None)
+    if plan_cls is None and flat_plan_cls is None:
         raise RuntimeError(
             "FixImageBondsPlan binding unavailable. Rebuild bindings with `maturin develop`."
         )
-    if getattr(FixImageBondsPlan, "__name__", "") == "_Missing":
+    if getattr(flat_plan_cls, "__name__", "") == "_Missing":
         raise RuntimeError(
             "FixImageBondsPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
         )
@@ -56,7 +69,31 @@ def fiximagedbonds(
     if len(sel.indices) == 0:
         raise ValueError("selection resolved to empty set")
 
-    plan = FixImageBondsPlan(sel)
+    if (
+        is_native_traj(traj)
+        and plan_cls is not None
+        and getattr(plan_cls, "__name__", "") != "_Missing"
+    ):
+        plan = plan_cls(sel)
+        try:
+            payload = plan.run(
+                traj,
+                system,
+                chunk_frames=chunk_frames,
+                device=device,
+                frame_indices=frame_indices,
+            )
+        except TypeError as exc:
+            raise RuntimeError(
+                "fiximagedbonds requires Rust-backed trajectory/system objects when using the Rust plan path."
+            ) from exc
+        return _payload_to_array(payload)
+
+    if getattr(flat_plan_cls, "__name__", "") == "_Missing":
+        raise RuntimeError(
+            "FixImageBondsPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
+        )
+    plan = flat_plan_cls(sel)
     try:
         flat = plan.run(
             traj,

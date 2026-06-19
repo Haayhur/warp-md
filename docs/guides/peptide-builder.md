@@ -235,8 +235,24 @@ subprocess.run(["warp-pep", "build", "-j", "multi.json", "-o", "complex.pdb"], c
 
 Add ACE/NME caps for neutral termini:
 
-`warp-pep` CLI in this repo currently does not expose a direct cap-toggle flag.
-Use the Rust `warp-pep` library API for capping workflows.
+`warp-pep` CLI in this repo currently does not expose a direct cap-toggle flag. However, because capping groups are implemented as special residue types, **you can specify them directly in three-letter sequence modes or JSON specifications**:
+
+{% tabs %}
+{% tab title="Three-Letter CLI" %}
+```bash
+warp-pep build -t ACE-ALA-ALA-NME --oxt -o capped.pdb
+```
+{% endtab %}
+{% tab title="JSON Spec" %}
+```json
+{
+  "residues": ["ACE", "ALA", "VAL", "NME"],
+  "preset": "alpha-helix",
+  "oxt": true
+}
+```
+{% endtab %}
+{% endtabs %}
 
 | Cap | Structure | Position |
 |-----|-----------|----------|
@@ -244,7 +260,7 @@ Use the Rust `warp-pep` library API for capping workflows.
 | NME | -NH-CH3 | C-terminal |
 
 {% hint style="warning" %}
-Adding NME cap removes any existing OXT atoms to avoid invalid mixed terminal chemistry.
+Adding an NME cap removes any existing OXT atoms at the terminal junction to avoid invalid mixed terminal chemistry.
 {% endhint %}
 
 ---

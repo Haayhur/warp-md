@@ -1,8 +1,18 @@
+import importlib
+
 import numpy as np
 import pytest
 
 import warp_md
 from warp_md.analysis.surf import molsurf, surf
+
+surf_mod = importlib.import_module("warp_md.analysis.surf")
+
+
+@pytest.fixture(autouse=True)
+def _native_surface_inputs(monkeypatch):
+    monkeypatch.setattr(surf_mod, "is_native_traj", lambda _traj: True)
+    monkeypatch.setattr(surf_mod, "coerce_native_system", lambda system: system)
 
 
 class _DummySelection:
@@ -385,6 +395,37 @@ def test_molsurf_uses_molsurf_plan_and_radii_mode(monkeypatch):
     }
 
 
+def test_molsurf_solutemask_passes_report_and_occluder_selections(monkeypatch):
+    coords = np.array([[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]]], dtype=np.float64)
+    traj = _DummyTraj(coords)
+    system = _DummySystem(coords.shape[1])
+    called = {}
+
+    class _DummyPlan:
+        def __init__(
+            self,
+            sel,
+            algorithm="sasa",
+            probe_radius=1.4,
+            n_sphere_points=64,
+            radii=None,
+            offset=0.0,
+            radii_mode="gb",
+            solute_selection=None,
+        ):
+            called["selection"] = list(sel.indices)
+            called["solute_selection"] = list(solute_selection.indices)
+
+        def run(self, _traj, _system, chunk_frames=None, device="auto", frame_indices=None):
+            return np.array([1.0], dtype=np.float32)
+
+    monkeypatch.setattr(warp_md, "MolSurfPlan", _DummyPlan, raising=False)
+    out = molsurf(traj, system, mask=[0], solutemask=[0, 1])
+
+    np.testing.assert_allclose(out, np.array([1.0], dtype=np.float32))
+    assert called == {"selection": [0], "solute_selection": [0, 1]}
+
+
 def test_molsurf_atom_area_uses_native_detail(monkeypatch):
     coords = np.array([[[0.0, 0.0, 0.0]]], dtype=np.float64)
     traj = _DummyTraj(coords)
@@ -475,6 +516,18 @@ def test_surf_no_python_fallback_when_plan_missing(monkeypatch):
         assert "SurfPlan binding unavailable" in str(exc)
     else:
         raise AssertionError("expected RuntimeError for missing SurfPlan binding")
+
+
+def test_surf_rejects_non_native_trajectory(monkeypatch):
+    monkeypatch.setattr(surf_mod, "is_native_traj", lambda _traj: False)
+    with pytest.raises(RuntimeError, match="Rust-backed trajectory"):
+        surf(_DummyTraj(np.zeros((1, 1, 3), dtype=np.float32)), _DummySystem(1), mask=[0])
+
+
+def test_molsurf_rejects_non_native_trajectory(monkeypatch):
+    monkeypatch.setattr(surf_mod, "is_native_traj", lambda _traj: False)
+    with pytest.raises(RuntimeError, match="Rust-backed trajectory"):
+        molsurf(_DummyTraj(np.zeros((1, 1, 3), dtype=np.float32)), _DummySystem(1), mask=[0])
 
 
 def test_surf_algorithm_case_normalized(monkeypatch):
@@ -574,6 +627,70 @@ def test_sasa_alias_keeps_zero_radius_offset(monkeypatch):
     sasa(traj, system, mask=[0])
     assert called["algorithm"] == "sasa"
     assert called["offset"] == 0.0
+
+
+def test_surface_wrappers_accept_atom_index_masks():
+    coords = np.array([[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]], dtype=np.float32)
+    system = warp_md.System.from_arrays(
+        {
+            "name": ["A", "B"],
+            "resname": ["RES", "RES"],
+            "resid": [1, 2],
+            "chain_id": [0, 0],
+            "mass": [1.0, 1.0],
+        },
+        positions0=coords[0],
+    )
+    expected = np.array([4.0 * np.pi], dtype=np.float32)
+
+    surf_out = surf(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        mask="@1",
+        algorithm="sasa",
+        probe_radius=0.0,
+        radii=[1.0],
+        n_sphere_points=32,
+    )
+    molsurf_out = molsurf(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        mask="@1",
+        probe=0.0,
+        radii=[1.0],
+        n_sphere_points=32,
+    )
+
+    np.testing.assert_allclose(surf_out, expected, rtol=1e-6)
+    np.testing.assert_allclose(molsurf_out, expected, rtol=1e-6)
+
+
+def test_surfplan_binding_defaults_to_lcpo():
+    coords = np.array([[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]]], dtype=np.float32)
+    system = warp_md.System.from_arrays(
+        {
+            "name": ["C", "C"],
+            "resname": ["RES", "RES"],
+            "resid": [1, 2],
+            "chain_id": [0, 0],
+            "mass": [12.0, 12.0],
+        },
+        positions0=coords[0],
+    )
+    sel = system.select("name C")
+
+    default = warp_md.SurfPlan(sel).run(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        device="cpu",
+    )
+    explicit = warp_md.SurfPlan(sel, algorithm="lcpo").run(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        device="cpu",
+    )
+
+    np.testing.assert_allclose(default, explicit, rtol=1e-6)
 
 
 def test_surf_rejects_invalid_numeric_contract(monkeypatch):

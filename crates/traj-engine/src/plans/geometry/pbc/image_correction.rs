@@ -36,6 +36,49 @@ impl Plan for FixImageBondsPlan {
     }
 }
 
+pub struct FixImageBondsTrajectoryPlan {
+    inner: ImageTrajectoryPlan,
+}
+
+impl FixImageBondsTrajectoryPlan {
+    pub fn new(selection: Selection) -> Self {
+        Self {
+            inner: ImageTrajectoryPlan::new(selection),
+        }
+    }
+}
+
+impl Plan for FixImageBondsTrajectoryPlan {
+    fn name(&self) -> &'static str {
+        "fiximagedbonds_trajectory"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        self.inner.requirements()
+    }
+
+    fn set_frames_hint(&mut self, n_frames: Option<usize>) {
+        self.inner.set_frames_hint(n_frames);
+    }
+
+    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+        self.inner.init(system, device)
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        device: &Device,
+    ) -> TrajResult<()> {
+        self.inner.process_chunk(chunk, system, device)
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        self.inner.finalize()
+    }
+}
+
 pub struct RandomizeIonsPlan {
     selection: Selection,
     around: Option<Selection>,
@@ -416,6 +459,113 @@ impl Plan for RandomizeIonsPlan {
 
     fn finalize(&mut self) -> TrajResult<PlanOutput> {
         Ok(PlanOutput::Series(std::mem::take(&mut self.results)))
+    }
+}
+
+pub struct RandomizeIonsTrajectoryPlan {
+    inner: RandomizeIonsPlan,
+    box_: Vec<Box3>,
+    time: Vec<f32>,
+    saw_time: bool,
+    frames: usize,
+    atoms: usize,
+}
+
+impl RandomizeIonsTrajectoryPlan {
+    pub fn new(selection: Selection, seed: u64) -> Self {
+        Self {
+            inner: RandomizeIonsPlan::new(selection, seed),
+            box_: Vec::new(),
+            time: Vec::new(),
+            saw_time: false,
+            frames: 0,
+            atoms: 0,
+        }
+    }
+
+    pub fn with_around(
+        mut self,
+        around: Option<Selection>,
+        by: f64,
+        overlap: f64,
+        noimage: bool,
+    ) -> Self {
+        self.inner = self.inner.with_around(around, by, overlap, noimage);
+        self
+    }
+
+    pub fn with_max_attempts(mut self, max_attempts: usize) -> Self {
+        self.inner = self.inner.with_max_attempts(max_attempts);
+        self
+    }
+
+    fn record_metadata(&mut self, chunk: &FrameChunk) {
+        self.box_
+            .extend(chunk.box_.iter().take(chunk.n_frames).copied());
+        if let Some(time) = &chunk.time_ps {
+            self.time.extend(time.iter().take(chunk.n_frames).copied());
+            if !time.is_empty() {
+                self.saw_time = true;
+            }
+        }
+    }
+}
+
+impl Plan for RandomizeIonsTrajectoryPlan {
+    fn name(&self) -> &'static str {
+        "randomize_ions_trajectory"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        PlanRequirements::new(true, true)
+    }
+
+    fn set_frames_hint(&mut self, n_frames: Option<usize>) {
+        if let Some(frames) = n_frames {
+            if let Some(cap) = frames
+                .checked_mul(self.atoms.max(1))
+                .and_then(|value| value.checked_mul(3))
+            {
+                self.inner.results.reserve(cap);
+            }
+        }
+    }
+
+    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+        self.inner.init(system, device)?;
+        self.box_.clear();
+        self.time.clear();
+        self.saw_time = false;
+        self.frames = 0;
+        self.atoms = system.n_atoms();
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        device: &Device,
+    ) -> TrajResult<()> {
+        self.atoms = chunk.n_atoms;
+        self.inner.process_chunk(chunk, system, device)?;
+        self.record_metadata(chunk);
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Trajectory(TrajectoryOutput {
+            coords: std::mem::take(&mut self.inner.results),
+            frames: self.frames,
+            atoms: self.atoms,
+            box_: std::mem::take(&mut self.box_),
+            time: if self.saw_time {
+                std::mem::take(&mut self.time)
+            } else {
+                Vec::new()
+            },
+        }))
     }
 }
 

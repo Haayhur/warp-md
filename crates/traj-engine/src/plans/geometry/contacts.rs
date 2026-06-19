@@ -52,6 +52,7 @@ pub struct NativeContactsPlan {
     sel_a: Selection,
     sel_b: Selection,
     cutoff: f64,
+    min_cutoff: Option<f64>,
     pbc: PbcMode,
     reference_mode: ReferenceMode,
     reference_pairs: Vec<(u32, u32)>,
@@ -80,6 +81,7 @@ impl NativeContactsPlan {
             sel_a,
             sel_b,
             cutoff,
+            min_cutoff: None,
             pbc,
             reference_mode,
             reference_pairs: Vec::new(),
@@ -89,6 +91,20 @@ impl NativeContactsPlan {
             #[cfg(feature = "cuda")]
             gpu: None,
         }
+    }
+
+    pub fn with_min_cutoff(mut self, min_cutoff: Option<f64>) -> Self {
+        self.min_cutoff = min_cutoff.map(|value| value.max(0.0));
+        self
+    }
+
+    fn in_contact_range(&self, distance: f64) -> bool {
+        if let Some(min_cutoff) = self.min_cutoff {
+            if distance < min_cutoff {
+                return false;
+            }
+        }
+        distance <= self.cutoff
     }
 
     fn build_reference(
@@ -104,7 +120,6 @@ impl NativeContactsPlan {
             self.reference_ready = true;
             return Ok(());
         }
-        let cutoff = self.cutoff;
         let (lx, ly, lz) = box_.unwrap_or((0.0, 0.0, 0.0));
         if self.same_sel {
             for i in 0..n_a {
@@ -120,7 +135,7 @@ impl NativeContactsPlan {
                         apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
                     }
                     let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                    if dist <= cutoff {
+                    if self.in_contact_range(dist) {
                         self.reference_pairs
                             .push((self.sel_a.indices[i], self.sel_a.indices[j]));
                     }
@@ -143,7 +158,7 @@ impl NativeContactsPlan {
                         apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
                     }
                     let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                    if dist <= cutoff {
+                    if self.in_contact_range(dist) {
                         self.reference_pairs.push((a, b));
                     }
                 }
@@ -233,29 +248,30 @@ impl Plan for NativeContactsPlan {
                 .extend(std::iter::repeat(0.0).take(chunk.n_frames));
             return Ok(());
         }
-        let cutoff = self.cutoff;
         #[cfg(feature = "cuda")]
-        if let (Device::Cuda(ctx), Some(gpu)) = (_device, &self.gpu) {
-            let coords = convert_coords(&chunk.coords);
-            let boxes = chunk_boxes(chunk, self.pbc)?;
-            let counts = ctx.native_contacts_counts(
-                &coords,
-                chunk.n_atoms,
-                chunk.n_frames,
-                &gpu.pairs,
-                &boxes,
-                cutoff as f32,
-            )?;
-            let denom = n_ref as f32;
-            for count in counts {
-                let frac = if denom > 0.0 {
-                    count as f32 / denom
-                } else {
-                    0.0
-                };
-                self.results.push(frac);
+        if self.min_cutoff.is_none() {
+            if let (Device::Cuda(ctx), Some(gpu)) = (_device, &self.gpu) {
+                let coords = convert_coords(&chunk.coords);
+                let boxes = chunk_boxes(chunk, self.pbc)?;
+                let counts = ctx.native_contacts_counts(
+                    &coords,
+                    chunk.n_atoms,
+                    chunk.n_frames,
+                    &gpu.pairs,
+                    &boxes,
+                    cutoff as f32,
+                )?;
+                let denom = n_ref as f32;
+                for count in counts {
+                    let frac = if denom > 0.0 {
+                        count as f32 / denom
+                    } else {
+                        0.0
+                    };
+                    self.results.push(frac);
+                }
+                return Ok(());
             }
-            return Ok(());
         }
         for frame in 0..chunk.n_frames {
             let (lx, ly, lz) = if matches!(self.pbc, PbcMode::Orthorhombic) {
@@ -274,7 +290,7 @@ impl Plan for NativeContactsPlan {
                     apply_pbc(&mut dx, &mut dy, &mut dz, lx, ly, lz);
                 }
                 let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                if dist <= cutoff {
+                if self.in_contact_range(dist) {
                     count += 1;
                 }
             }

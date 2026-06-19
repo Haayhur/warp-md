@@ -24,9 +24,11 @@ pub mod helix_orientation;
 pub mod hydration_order;
 pub mod hydrophobic_defect;
 pub mod ion_pair;
+pub mod kabsch_sander;
 pub mod legacy;
 pub mod lipid;
 pub mod msd;
+pub mod nematic;
 pub mod nmr;
 pub mod potential;
 pub mod rama;
@@ -53,9 +55,11 @@ pub use clustering::{ClusterMethod, TrajectoryClusterPlan};
 pub use conductivity::ConductivityPlan;
 pub use cross_correlation::CrossCorrelationPlan;
 pub use current::CurrentPlan;
-pub use density_map::{DensityMapPlan, DensityMapUnit};
+pub use density_map::{
+    DensityMapPlan, DensityMapUnit, LinearDensityNorm, LinearDensityPlan, LinearDensityWeight,
+};
 pub use dielectric::DielectricPlan;
-pub use dipole::DipoleAlignmentPlan;
+pub use dipole::{DipoleAlignmentPlan, DipoleMomentPlan};
 pub use distance_matrix::MdmatPlan;
 pub use docking::DockingPlan;
 pub use dssp::{
@@ -74,6 +78,7 @@ pub use hydrophobic_defect::{
     HydrophobicDefectGridMode, HydrophobicDefectLeaflet, HydrophobicDefectPlan,
 };
 pub use ion_pair::IonPairCorrelationPlan;
+pub use kabsch_sander::KabschSanderPlan;
 pub use lipid::{
     LipidAreaPlan, LipidCurvedLeafletPlan, LipidFlipFlopPlan, LipidLargestClusterPlan,
     LipidLeafletPlan, LipidMembraneThicknessPlan, LipidMsdPlan, LipidNeighbourMatrixPlan,
@@ -81,6 +86,7 @@ pub use lipid::{
     LipidZThicknessPlan,
 };
 pub use msd::{DtDecimation, FrameDecimation, MsdPlan, TimeBinning};
+pub use nematic::NematicOrderPlan;
 pub use nmr::NmrIredPlan;
 pub use potential::PotentialPlan;
 pub use rama::RamaPlan;

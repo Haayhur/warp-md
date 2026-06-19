@@ -43,6 +43,36 @@ impl SuperposePlan {
     }
 }
 
+impl SuperposeTrajectoryPlan {
+    pub fn new(
+        selection: Selection,
+        reference_mode: ReferenceMode,
+        mass_weighted: bool,
+        norotate: bool,
+    ) -> Self {
+        Self {
+            inner: SuperposePlan::new(selection, reference_mode, mass_weighted, norotate),
+            n_frames_hint: None,
+            box_: Vec::new(),
+            time: Vec::new(),
+            saw_time: false,
+            frames: 0,
+            atoms: 0,
+        }
+    }
+
+    fn record_metadata(&mut self, chunk: &FrameChunk) {
+        self.box_
+            .extend(chunk.box_.iter().take(chunk.n_frames).copied());
+        if let Some(time) = &chunk.time_ps {
+            self.time.extend(time.iter().take(chunk.n_frames).copied());
+            if !time.is_empty() {
+                self.saw_time = true;
+            }
+        }
+    }
+}
+
 impl Plan for AlignPlan {
     fn name(&self) -> &'static str {
         "align"
@@ -430,5 +460,64 @@ impl Plan for SuperposePlan {
 
     fn finalize(&mut self) -> TrajResult<PlanOutput> {
         Ok(PlanOutput::Series(std::mem::take(&mut self.results)))
+    }
+}
+
+impl Plan for SuperposeTrajectoryPlan {
+    fn name(&self) -> &'static str {
+        "superpose_trajectory"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        PlanRequirements::new(true, true)
+    }
+
+    fn set_frames_hint(&mut self, n_frames: Option<usize>) {
+        self.n_frames_hint = n_frames;
+    }
+
+    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+        self.inner.init(system, device)?;
+        self.box_.clear();
+        self.time.clear();
+        self.saw_time = false;
+        self.frames = 0;
+        self.atoms = system.n_atoms();
+        if let Some(frames) = self.n_frames_hint {
+            if let Some(cap) = frames
+                .checked_mul(system.n_atoms())
+                .and_then(|value| value.checked_mul(3))
+            {
+                self.inner.results.reserve(cap);
+            }
+        }
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        device: &Device,
+    ) -> TrajResult<()> {
+        self.atoms = chunk.n_atoms;
+        self.inner.process_chunk(chunk, system, device)?;
+        self.record_metadata(chunk);
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Trajectory(TrajectoryOutput {
+            coords: std::mem::take(&mut self.inner.results),
+            frames: self.frames,
+            atoms: self.atoms,
+            box_: std::mem::take(&mut self.box_),
+            time: if self.saw_time {
+                std::mem::take(&mut self.time)
+            } else {
+                Vec::new()
+            },
+        }))
     }
 }

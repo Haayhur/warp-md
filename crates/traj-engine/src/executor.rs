@@ -580,6 +580,7 @@ pub enum PlanOutput {
         counts: Vec<u64>,
     },
     PairDistribution(PairDistributionOutput),
+    NeighborList(NeighborListOutput),
     Rdf(RdfOutput),
     Surface(SurfaceOutput),
     Persistence(PersistenceOutput),
@@ -589,6 +590,7 @@ pub enum PlanOutput {
         rows: usize,
         cols: usize,
     },
+    Trajectory(TrajectoryOutput),
     Dielectric(DielectricOutput),
     Current(CurrentOutput),
     Bundle(BundleOutput),
@@ -611,6 +613,14 @@ pub enum PlanOutput {
     Clustering(ClusteringOutput),
 }
 
+pub struct TrajectoryOutput {
+    pub coords: Vec<f32>,
+    pub frames: usize,
+    pub atoms: usize,
+    pub box_: Vec<Box3>,
+    pub time: Vec<f32>,
+}
+
 pub struct RdfOutput {
     pub r: Vec<f32>,
     pub g_r: Vec<f32>,
@@ -623,6 +633,13 @@ pub struct PairDistributionOutput {
     pub probability: Vec<f32>,
     pub std: Vec<f32>,
     pub counts: Vec<u64>,
+    pub frames: usize,
+}
+
+pub struct NeighborListOutput {
+    pub offsets: Vec<u64>,
+    pub indices: Vec<u32>,
+    pub counts: Vec<u32>,
     pub frames: usize,
 }
 

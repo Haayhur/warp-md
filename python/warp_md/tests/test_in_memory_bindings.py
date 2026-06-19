@@ -1,24 +1,45 @@
+import importlib
+
 import numpy as np
 
 import warp_md
 from warp_md.analysis.align import align, align_principal_axis, superpose
+from warp_md.analysis.atom_map import atom_map
 from warp_md.analysis.autoimage import autoimage
 from warp_md.analysis.density import density
+from warp_md.analysis.dihedral_rms import dihedral_rms
 from warp_md.analysis.fluct import atomicfluct, rmsf
 from warp_md.analysis.geometry import distance
 from warp_md.analysis.closest import closest
 from warp_md.analysis.matrix import correl, covar, dist, mwcovar
 from warp_md.analysis.multidihedral import multidihedral
+from warp_md.analysis.neighbors import search_neighbors
 from warp_md.analysis.pca import pca, projection
 from warp_md.analysis.rmsd import distance_rmsd, pairwise_rmsd
 from warp_md.analysis.rotation import rotation_matrix
+from warp_md.analysis.set_velocity import set_velocity
 from warp_md.analysis.structure import make_structure, mean_structure, radgyr, radgyr_tensor
+from warp_md.analysis.symmrmsd import symmrmsd
 from warp_md.analysis.transform import center, rotate, scale, transform, translate
 from warp_md.analysis.atomiccorr import atomiccorr
 from warp_md.analysis.velocity import get_velocity
 from warp_md.analysis.voxel import count_in_voxel
 from warp_md.analysis.volmap import volmap
 from warp_md.analysis.watershell import watershell
+
+align_mod = importlib.import_module("warp_md.analysis.align")
+atom_map_mod = importlib.import_module("warp_md.analysis.atom_map")
+autoimage_mod = importlib.import_module("warp_md.analysis.autoimage")
+dihedral_rms_mod = importlib.import_module("warp_md.analysis.dihedral_rms")
+dihedral_tools_mod = importlib.import_module("warp_md.analysis.dihedral_tools")
+fiximagedbonds_mod = importlib.import_module("warp_md.analysis.fiximagedbonds")
+neighbors_mod = importlib.import_module("warp_md.analysis.neighbors")
+randomize_ions_mod = importlib.import_module("warp_md.analysis.randomize_ions")
+rotation_mod = importlib.import_module("warp_md.analysis.rotation")
+set_velocity_mod = importlib.import_module("warp_md.analysis.set_velocity")
+structure_mod = importlib.import_module("warp_md.analysis.structure")
+symmrmsd_mod = importlib.import_module("warp_md.analysis.symmrmsd")
+transform_mod = importlib.import_module("warp_md.analysis.transform")
 
 
 def _atom_table(n_atoms: int, *, resid=None):
@@ -183,6 +204,29 @@ def test_superpose_keeps_unselected_frames_when_subset_requested():
     np.testing.assert_allclose(out[1], coords[1], atol=1e-5)
 
 
+def test_superpose_native_trajectory_does_not_materialize_in_python(monkeypatch):
+    ref = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        dtype=np.float32,
+    )
+    coords = np.stack([ref, ref + np.array([2.0, -1.0, 3.0], dtype=np.float32)], axis=0)
+    box = np.array([[10.0, 11.0, 12.0], [13.0, 14.0, 15.0]], dtype=np.float32)
+    time = np.array([0.5, 1.5], dtype=np.float32)
+    system = warp_md.System.from_arrays(_atom_table(3), positions0=ref)
+    traj = warp_md.Trajectory.from_numpy(coords, box=box, time_ps=time)
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native superpose path should stream through Rust")
+
+    monkeypatch.setattr(align_mod, "read_all_frames", _fail_read_all)
+    out = align_mod.superpose(traj, system, mask="all", ref=0, chunk_frames=1)
+    chunk = out.read_chunk(4)
+    expected = np.stack([ref, ref], axis=0)
+    np.testing.assert_allclose(chunk["coords"], expected, atol=1e-5)
+    np.testing.assert_allclose(chunk["box"], box, atol=1e-6)
+    np.testing.assert_allclose(chunk["time"], time.astype(np.float64), atol=1e-6)
+
+
 def test_distance_rmsd_supports_negative_reference_with_box():
     coords = np.array(
         [
@@ -260,6 +304,163 @@ def test_rotation_matrix_supports_nonzero_reference_and_subset():
     np.testing.assert_allclose(rmsd, np.zeros(2, dtype=np.float32), atol=1e-6)
 
 
+def test_rotation_matrix_native_does_not_materialize_in_python(monkeypatch):
+    ref = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        dtype=np.float32,
+    )
+    rot = np.array(
+        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    frame0 = ref @ rot.T + np.array([5.0, -3.0, 2.0], dtype=np.float32)
+    coords = np.stack([frame0, ref], axis=0)
+
+    system = warp_md.System.from_arrays(_atom_table(3), positions0=ref)
+    traj = warp_md.Trajectory.from_numpy(coords)
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native rotation_matrix path should stream through Rust")
+
+    monkeypatch.setattr(rotation_mod, "read_all_frames", _fail_read_all)
+    mats, rmsd = rotation_mod.rotation_matrix(
+        traj,
+        system,
+        mask="all",
+        ref=-1,
+        frame_indices=[0],
+        with_rmsd=True,
+        chunk_frames=1,
+    )
+    np.testing.assert_allclose(mats[0], rot.T, atol=1e-5)
+    np.testing.assert_allclose(mats[1], np.eye(3, dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(rmsd, np.zeros(2, dtype=np.float32), atol=1e-6)
+
+
+def test_symmrmsd_native_does_not_materialize_in_python(monkeypatch):
+    ref = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        dtype=np.float32,
+    )
+    coords = np.array(
+        [
+            ref,
+            ref + np.array([2.0, -1.0, 3.0], dtype=np.float32),
+            ref + np.array([0.0, 0.0, 2.0], dtype=np.float32),
+        ],
+        dtype=np.float32,
+    )
+    system = warp_md.System.from_arrays(_atom_table(3), positions0=ref)
+    traj = warp_md.Trajectory.from_numpy(coords)
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native symmrmsd path should stream through Rust")
+
+    monkeypatch.setattr(symmrmsd_mod, "read_all_frames", _fail_read_all)
+    out = symmrmsd(
+        traj,
+        system,
+        mask="all",
+        ref=0,
+        fit=True,
+        frame_indices=[1, 2],
+        chunk_frames=1,
+    )
+    np.testing.assert_allclose(out, np.zeros(2, dtype=np.float32), atol=1e-6)
+
+
+def test_symmrmsd_native_remap_does_not_materialize_in_python(monkeypatch):
+    ref = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    coords = np.array(
+        [
+            ref,
+            [[0.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    system = warp_md.System.from_arrays(_atom_table(3, resid=[1, 1, 1]), positions0=ref)
+    traj = warp_md.Trajectory.from_numpy(coords)
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native symmrmsd remap path should stream through Rust")
+
+    monkeypatch.setattr(symmrmsd_mod, "read_all_frames", _fail_read_all)
+    out = symmrmsd(
+        traj,
+        system,
+        mask="all",
+        ref=0,
+        fit=False,
+        remap=True,
+        symmetry_groups=[[1, 2]],
+        chunk_frames=1,
+    )
+    np.testing.assert_allclose(out, np.zeros(2, dtype=np.float32), atol=1e-6)
+
+
+def test_atom_map_native_rmsd_does_not_materialize_in_python(monkeypatch):
+    ref = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        dtype=np.float32,
+    )
+    coords = np.array(
+        [
+            ref,
+            ref + np.array([2.0, -1.0, 3.0], dtype=np.float32),
+            ref + np.array([0.0, 0.0, 2.0], dtype=np.float32),
+        ],
+        dtype=np.float32,
+    )
+    system = warp_md.System.from_arrays(_atom_table(3), positions0=ref)
+    traj = warp_md.Trajectory.from_numpy(coords)
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native atom_map path should avoid full-frame materialization")
+
+    def _fail_nearest_mapping(*args, **kwargs):
+        raise AssertionError("native atom_map path should use Rust nearest mapping")
+
+    monkeypatch.setattr(atom_map_mod, "read_all_frames", _fail_read_all)
+    monkeypatch.setattr(atom_map_mod, "_nearest_mapping", _fail_nearest_mapping)
+    mask_str, rmsd = atom_map(traj, system, ref=0, rmsfit=True, mask="all", chunk_frames=1)
+    assert mask_str == "@1,2,3"
+    np.testing.assert_allclose(rmsd, np.zeros(3, dtype=np.float32), atol=1e-6)
+
+
+def test_set_velocity_native_does_not_materialize_in_python(monkeypatch):
+    coords = np.zeros((3, 2, 3), dtype=np.float32)
+    system = warp_md.System.from_arrays(_atom_table(2), positions0=coords[0])
+    traj = warp_md.Trajectory.from_numpy(coords)
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native set_velocity path should stream through Rust")
+
+    monkeypatch.setattr(set_velocity_mod, "_read_all", _fail_read_all)
+    vel1 = set_velocity(
+        traj,
+        system,
+        temperature=100.0,
+        ig=7,
+        mask="all",
+        frame_indices=[2, 0],
+        chunk_frames=1,
+    )
+    vel2 = set_velocity(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        temperature=100.0,
+        ig=7,
+        mask="all",
+        frame_indices=[2, 0],
+        chunk_frames=1,
+    )
+    assert vel1.shape == (2, 2, 3)
+    np.testing.assert_allclose(vel1, vel2, atol=1e-6)
+
+
 def test_transform_family_runs_on_in_memory_native_objects():
     coords = np.array([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]], dtype=np.float32)
     box = np.array([[10.0, 10.0, 10.0]], dtype=np.float32)
@@ -289,6 +490,228 @@ def test_transform_family_runs_on_in_memory_native_objects():
         mode="box",
     ).read_chunk()["coords"]
     np.testing.assert_allclose(centered.mean(axis=1), np.array([[5.0, 5.0, 5.0]], dtype=np.float32), atol=1e-6)
+
+
+def test_translate_native_trajectory_does_not_materialize_in_python(monkeypatch):
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    box = np.array([[10.0, 11.0, 12.0], [13.0, 14.0, 15.0]], dtype=np.float32)
+    time = np.array([0.5, 1.5], dtype=np.float32)
+    traj = warp_md.Trajectory.from_numpy(coords, box=box, time_ps=time)
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native transform path should stream through Rust")
+
+    monkeypatch.setattr(transform_mod, "read_all_frames", _fail_read_all)
+    out = transform_mod.translate(traj, [1.0, 2.0, 3.0], chunk_frames=1)
+    chunk = out.read_chunk(4)
+    np.testing.assert_allclose(chunk["coords"], coords + np.array([1.0, 2.0, 3.0], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(chunk["box"], box, atol=1e-6)
+    np.testing.assert_allclose(chunk["time"], time.astype(np.float64), atol=1e-6)
+
+
+def test_center_native_trajectory_does_not_materialize_in_python(monkeypatch):
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            [[1.0, 2.0, 3.0], [3.0, 2.0, 3.0]],
+        ],
+        dtype=np.float32,
+    )
+    box = np.array([[10.0, 11.0, 12.0], [13.0, 14.0, 15.0]], dtype=np.float32)
+    time = np.array([0.5, 1.5], dtype=np.float32)
+    system = warp_md.System.from_arrays(_atom_table(2), positions0=coords[0])
+    traj = warp_md.Trajectory.from_numpy(coords, box=box, time_ps=time)
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native center path should stream through Rust")
+
+    monkeypatch.setattr(transform_mod, "read_all_frames", _fail_read_all)
+    out = transform_mod.center(traj, system, mask="all", mode="origin", chunk_frames=1)
+    chunk = out.read_chunk(4)
+    expected = np.array(
+        [
+            [[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            [[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(chunk["coords"], expected, atol=1e-6)
+    np.testing.assert_allclose(chunk["box"], box, atol=1e-6)
+    np.testing.assert_allclose(chunk["time"], time.astype(np.float64), atol=1e-6)
+
+
+def test_autoimage_native_trajectory_does_not_materialize_in_python(monkeypatch):
+    coords = np.array(
+        [
+            [[10.5, -1.0, 2.0], [12.0, 7.0, -3.0]],
+            [[11.0, 0.5, 10.5], [1.0, 2.0, 3.0]],
+        ],
+        dtype=np.float32,
+    )
+    box = np.array([[10.0, 10.0, 10.0], [10.0, 10.0, 10.0]], dtype=np.float32)
+    time = np.array([0.5, 1.5], dtype=np.float32)
+    system = warp_md.System.from_arrays(_atom_table(2), positions0=coords[0])
+    traj = warp_md.Trajectory.from_numpy(coords, box=box, time_ps=time)
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native autoimage path should stream through Rust")
+
+    monkeypatch.setattr(autoimage_mod, "read_all_frames", _fail_read_all)
+    out = autoimage_mod.autoimage(traj, system, mask="all", frame_indices=[1, 0], chunk_frames=1)
+    chunk = out.read_chunk(4)
+    expected = np.array(
+        [
+            [[1.0, 0.5, 0.5], [1.0, 2.0, 3.0]],
+            [[0.5, 9.0, 2.0], [2.0, 7.0, 7.0]],
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_allclose(chunk["coords"], expected, atol=1e-6)
+    np.testing.assert_allclose(chunk["box"], box[[1, 0]], atol=1e-6)
+    np.testing.assert_allclose(chunk["time"], time[[1, 0]].astype(np.float64), atol=1e-6)
+
+
+def test_fiximagedbonds_native_trajectory_preserves_metadata():
+    coords = np.array(
+        [
+            [[2.5, -1.0, 0.0], [3.0, 0.0, 0.0]],
+            [[4.0, 3.5, 0.0], [0.5, 0.5, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    box = np.array([[3.0, 3.0, 3.0], [4.0, 4.0, 4.0]], dtype=np.float32)
+    time = np.array([0.5, 1.5], dtype=np.float32)
+    system = warp_md.System.from_arrays(_atom_table(2), positions0=coords[0])
+    traj = warp_md.Trajectory.from_numpy(coords, box=box, time_ps=time)
+
+    out = fiximagedbonds_mod.fiximagedbonds(
+        traj,
+        system,
+        mask="all",
+        frame_indices=[1, 0],
+        chunk_frames=1,
+    )
+    chunk = out.read_chunk(4)
+    assert chunk["coords"].shape == (2, 2, 3)
+    np.testing.assert_allclose(chunk["box"], box[[1, 0]], atol=1e-6)
+    np.testing.assert_allclose(chunk["time"], time[[1, 0]].astype(np.float64), atol=1e-6)
+
+
+def test_randomize_ions_native_trajectory_preserves_metadata():
+    table = _atom_table(4, resid=[1, 2, 2, 3])
+    table["name"] = ["NA", "OW", "HW", "CA"]
+    table["resname"] = ["ION", "WAT", "WAT", "SOL"]
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [5.0, 5.0, 5.0]],
+            [[0.5, 0.0, 0.0], [1.5, 0.0, 0.0], [1.5, 1.0, 0.0], [6.0, 5.0, 5.0]],
+        ],
+        dtype=np.float32,
+    )
+    box = np.array([[10.0, 10.0, 10.0], [11.0, 11.0, 11.0]], dtype=np.float32)
+    time = np.array([0.5, 1.5], dtype=np.float32)
+    system = warp_md.System.from_arrays(table, positions0=coords[0])
+    traj = warp_md.Trajectory.from_numpy(coords, box=box, time_ps=time)
+
+    out = randomize_ions_mod.randomize_ions(
+        traj,
+        system,
+        mask="resid 1",
+        frame_indices=[1, 0],
+        chunk_frames=1,
+    )
+    chunk = out.read_chunk(4)
+    assert chunk["coords"].shape == (2, 4, 3)
+    np.testing.assert_allclose(chunk["box"], box[[1, 0]], atol=1e-6)
+    np.testing.assert_allclose(chunk["time"], time[[1, 0]].astype(np.float64), atol=1e-6)
+
+
+def test_dihedral_tools_native_trajectory_preserves_metadata():
+    coords = np.array(
+        [
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+            [[2.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.0, 2.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    box = np.array([[8.0, 9.0, 10.0], [11.0, 12.0, 13.0]], dtype=np.float32)
+    time = np.array([0.5, 1.5], dtype=np.float32)
+    system = warp_md.System.from_arrays(_atom_table(4), positions0=coords[0])
+
+    rotated = dihedral_tools_mod.rotate_dihedral(
+        warp_md.Trajectory.from_numpy(coords, box=box, time_ps=time),
+        system,
+        atoms=[0, 1, 2, 3],
+        rotate_mask=[3],
+        angle=90.0,
+        frame_indices=[1, 0],
+        chunk_frames=1,
+    ).read_chunk(4)
+    assert rotated["coords"].shape == (2, 4, 3)
+    np.testing.assert_allclose(rotated["box"], box[[1, 0]], atol=1e-6)
+    np.testing.assert_allclose(rotated["time"], time[[1, 0]].astype(np.float64), atol=1e-6)
+
+    set_out = dihedral_tools_mod.set_dihedral(
+        warp_md.Trajectory.from_numpy(coords, box=box, time_ps=time),
+        system,
+        atoms=[0, 1, 2, 3],
+        rotate_mask=[3],
+        target=90.0,
+        frame_indices=[1, 0],
+        chunk_frames=1,
+    ).read_chunk(4)
+    assert set_out["coords"].shape == (2, 4, 3)
+    np.testing.assert_allclose(set_out["box"], box[[1, 0]], atol=1e-6)
+    np.testing.assert_allclose(set_out["time"], time[[1, 0]].astype(np.float64), atol=1e-6)
+
+
+def test_search_neighbors_native_does_not_materialize_in_python(monkeypatch):
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [5.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    system = warp_md.System.from_arrays(
+        _atom_table(3, resid=[1, 2, 3]),
+        positions0=coords[0],
+    )
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native search_neighbors path should stream through Rust")
+
+    monkeypatch.setattr(neighbors_mod, "_read_all", _fail_read_all)
+    out = search_neighbors(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        mask="resid 1",
+        distance=2.5,
+        chunk_frames=1,
+    )
+    assert [list(row.keys())[0] for row in out] == ["0", "1"]
+    np.testing.assert_array_equal(out[0]["0"], np.array([0, 1]))
+    np.testing.assert_array_equal(out[1]["1"], np.array([0, 1]))
+
+    flat = search_neighbors(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        mask="resid 1",
+        distance=2.5,
+        frame_indices=[1],
+        dtype="flat",
+        chunk_frames=1,
+    )
+    np.testing.assert_array_equal(flat["offsets"], np.array([0, 2], dtype=np.uint64))
+    np.testing.assert_array_equal(flat["indices"], np.array([0, 1]))
+    np.testing.assert_array_equal(flat["counts"], np.array([2], dtype=np.uint32))
+    np.testing.assert_array_equal(flat["frame_indices"], np.array([1]))
 
 
 def test_autoimage_mean_structure_and_make_structure_compose_natively():
@@ -328,6 +751,41 @@ def test_autoimage_mean_structure_and_make_structure_compose_natively():
     )
     np.testing.assert_allclose(mean, ref, atol=1e-5)
     np.testing.assert_allclose(made, ref, atol=1e-5)
+
+
+def test_mean_and_make_structure_native_frame_subset_do_not_materialize(monkeypatch):
+    coords = np.array(
+        [
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            [[10.0, 0.0, 0.0], [12.0, 0.0, 0.0]],
+            [[20.0, 1.0, 0.0], [22.0, 1.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+    system = warp_md.System.from_arrays(_atom_table(2), positions0=coords[0])
+
+    def _fail_read_all(*args, **kwargs):
+        raise AssertionError("native structure averaging should stream through Rust")
+
+    monkeypatch.setattr(structure_mod, "read_all_frames", _fail_read_all)
+    expected = coords[2]
+
+    mean = mean_structure(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        mask="all",
+        frame_indices=[2],
+        chunk_frames=1,
+    )
+    made = make_structure(
+        warp_md.Trajectory.from_numpy(coords),
+        system,
+        mask="all",
+        frame_indices=[2],
+        chunk_frames=1,
+    )
+    np.testing.assert_allclose(mean, expected, atol=1e-6)
+    np.testing.assert_allclose(made, expected, atol=1e-6)
 
 
 def test_align_principal_axis_and_radgyr_tensor_run_natively():
@@ -514,6 +972,27 @@ def test_matrix_watershell_atomiccorr_and_multidihedral_run_natively():
     assert sorted(out) == ["phi:2", "psi:1"]
     assert out["phi:2"].shape == (1,)
     assert out["psi:1"].shape == (1,)
+
+
+def test_dihedral_rms_native_does_not_build_dihedral_matrix(monkeypatch):
+    coords = np.array(
+        [
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 1.0]],
+        ],
+        dtype=np.float32,
+    )
+    system = warp_md.System.from_arrays(_atom_table(4), positions0=coords[0])
+    traj = warp_md.Trajectory.from_numpy(coords)
+
+    def _fail_dihedral(*args, **kwargs):
+        raise AssertionError("native dihedral_rms path should use DihedralRmsPlan")
+
+    monkeypatch.setattr(dihedral_rms_mod, "dihedral", _fail_dihedral)
+    out = dihedral_rms(traj, system, "@1 @2 @3 @4", ref=0, chunk_frames=1)
+    assert out.shape == (2,)
+    assert np.isclose(out[0], 0.0, atol=1e-6)
+    assert np.isfinite(out[1])
 
 
 def test_grid_family_returns_native_grid_output_on_in_memory_objects():

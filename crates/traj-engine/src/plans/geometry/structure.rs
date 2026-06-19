@@ -1,10 +1,10 @@
 use traj_core::error::TrajResult;
-use traj_core::frame::FrameChunk;
+use traj_core::frame::{Box3, FrameChunk};
 use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use super::geometry_math::*;
-use crate::executor::{Device, Plan, PlanOutput};
+use crate::executor::{Device, Plan, PlanOutput, PlanRequirements, TrajectoryOutput};
 use crate::plans::PbcMode;
 
 #[cfg(feature = "cuda")]
@@ -49,15 +49,43 @@ impl Plan for CheckStructurePlan {
         let n_atoms = chunk.n_atoms;
         let sel = &self.selection.indices;
         for frame in 0..chunk.n_frames {
-            let mut ok = true;
+            let mut invalid = 0usize;
             for &idx in sel.iter() {
                 let p = chunk.coords[frame * n_atoms + idx as usize];
                 if !p[0].is_finite() || !p[1].is_finite() || !p[2].is_finite() {
-                    ok = false;
-                    break;
+                    invalid += 1;
                 }
             }
-            self.results.push(if ok { 1.0 } else { 0.0 });
+            self.results.push(invalid as f32);
+        }
+        Ok(())
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        if self.selection.indices.is_empty() {
+            None
+        } else {
+            Some(&self.selection.indices)
+        }
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        _source_selection: &[u32],
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        let n_atoms = chunk.n_atoms;
+        for frame in 0..chunk.n_frames {
+            let mut invalid = 0usize;
+            for local in 0..n_atoms {
+                let p = chunk.coords[frame * n_atoms + local];
+                if !p[0].is_finite() || !p[1].is_finite() || !p[2].is_finite() {
+                    invalid += 1;
+                }
+            }
+            self.results.push(invalid as f32);
         }
         Ok(())
     }
@@ -329,6 +357,113 @@ pub struct StripPlan {
     results: Vec<f32>,
     #[cfg(feature = "cuda")]
     gpu: Option<GpuSelection>,
+}
+
+pub struct StripTrajectoryPlan {
+    selection: Selection,
+    results: Vec<f32>,
+    box_: Vec<Box3>,
+    time: Vec<f32>,
+    saw_time: bool,
+    frames: usize,
+}
+
+impl StripTrajectoryPlan {
+    pub fn new(selection: Selection) -> Self {
+        Self {
+            selection,
+            results: Vec::new(),
+            box_: Vec::new(),
+            time: Vec::new(),
+            saw_time: false,
+            frames: 0,
+        }
+    }
+
+    fn record_metadata(&mut self, chunk: &FrameChunk) {
+        self.box_
+            .extend(chunk.box_.iter().take(chunk.n_frames).copied());
+        if let Some(time) = &chunk.time_ps {
+            self.time.extend(time.iter().take(chunk.n_frames).copied());
+            if !time.is_empty() {
+                self.saw_time = true;
+            }
+        }
+    }
+}
+
+impl Plan for StripTrajectoryPlan {
+    fn name(&self) -> &'static str {
+        "strip_trajectory"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        PlanRequirements::new(true, true)
+    }
+
+    fn init(&mut self, _system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.box_.clear();
+        self.time.clear();
+        self.saw_time = false;
+        self.frames = 0;
+        Ok(())
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        if self.selection.indices.is_empty() {
+            None
+        } else {
+            Some(&self.selection.indices)
+        }
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        let n_atoms = chunk.n_atoms;
+        for frame in 0..chunk.n_frames {
+            for &idx in self.selection.indices.iter() {
+                let p = chunk.coords[frame * n_atoms + idx as usize];
+                self.results.extend_from_slice(&[p[0], p[1], p[2]]);
+            }
+        }
+        self.record_metadata(chunk);
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        _source_selection: &[u32],
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        for p in chunk.coords.iter() {
+            self.results.extend_from_slice(&[p[0], p[1], p[2]]);
+        }
+        self.record_metadata(chunk);
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Trajectory(TrajectoryOutput {
+            coords: std::mem::take(&mut self.results),
+            frames: self.frames,
+            atoms: self.selection.indices.len(),
+            box_: std::mem::take(&mut self.box_),
+            time: if self.saw_time {
+                std::mem::take(&mut self.time)
+            } else {
+                Vec::new()
+            },
+        }))
+    }
 }
 
 impl StripPlan {

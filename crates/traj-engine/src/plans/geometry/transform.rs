@@ -4,7 +4,7 @@ use traj_core::selection::Selection;
 use traj_core::system::System;
 
 use super::geometry_math::*;
-use crate::executor::{Device, Plan, PlanOutput, PlanRequirements};
+use crate::executor::{Device, Plan, PlanOutput, PlanRequirements, TrajectoryOutput};
 
 #[cfg(feature = "cuda")]
 use traj_gpu::{convert_coords, Float4, GpuBufferF32, GpuBufferU32, GpuGroups};
@@ -197,6 +197,189 @@ impl Plan for CenterTrajectoryPlan {
     }
 }
 
+pub struct CenterTrajectoryOutputPlan {
+    selection: Selection,
+    center: [f64; 3],
+    mode: CenterMode,
+    mass_weighted: bool,
+    n_frames_hint: Option<usize>,
+    results: Vec<f32>,
+    box_: Vec<Box3>,
+    time: Vec<f32>,
+    saw_time: bool,
+    frames: usize,
+    atoms: usize,
+    #[cfg(feature = "cuda")]
+    gpu: Option<CenterGpuState>,
+}
+
+impl CenterTrajectoryOutputPlan {
+    pub fn new(
+        selection: Selection,
+        center: [f64; 3],
+        mode: CenterMode,
+        mass_weighted: bool,
+    ) -> Self {
+        Self {
+            selection,
+            center,
+            mode,
+            mass_weighted,
+            n_frames_hint: None,
+            results: Vec::new(),
+            box_: Vec::new(),
+            time: Vec::new(),
+            saw_time: false,
+            frames: 0,
+            atoms: 0,
+            #[cfg(feature = "cuda")]
+            gpu: None,
+        }
+    }
+
+    fn record_metadata(&mut self, chunk: &FrameChunk) {
+        self.box_
+            .extend(chunk.box_.iter().take(chunk.n_frames).copied());
+        if let Some(time) = &chunk.time_ps {
+            self.time.extend(time.iter().take(chunk.n_frames).copied());
+            if !time.is_empty() {
+                self.saw_time = true;
+            }
+        }
+    }
+}
+
+impl Plan for CenterTrajectoryOutputPlan {
+    fn name(&self) -> &'static str {
+        "center_trajectory_output"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        PlanRequirements::new(true, true)
+    }
+
+    fn set_frames_hint(&mut self, n_frames: Option<usize>) {
+        self.n_frames_hint = n_frames;
+    }
+
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.box_.clear();
+        self.time.clear();
+        self.saw_time = false;
+        self.frames = 0;
+        self.atoms = system.n_atoms();
+        reserve_output_capacity(&mut self.results, self.n_frames_hint, system.n_atoms());
+        #[cfg(feature = "cuda")]
+        {
+            self.gpu = None;
+            if let Device::Cuda(ctx) = _device {
+                let mut indices = Vec::with_capacity(self.selection.indices.len());
+                indices.extend(self.selection.indices.iter().copied());
+                let offsets = vec![0u32, self.selection.indices.len() as u32];
+                let max_len = self.selection.indices.len().max(1);
+                let groups = ctx.groups(&offsets, &indices, max_len)?;
+                let masses = if self.mass_weighted {
+                    system.atoms.mass.clone()
+                } else {
+                    vec![1.0f32; system.n_atoms()]
+                };
+                let masses = ctx.upload_f32(&masses)?;
+                self.gpu = Some(CenterGpuState { groups, masses });
+            }
+        }
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        self.atoms = chunk.n_atoms;
+        #[cfg(feature = "cuda")]
+        if let (Device::Cuda(ctx), Some(gpu)) = (_device, &self.gpu) {
+            let coords = convert_coords(&chunk.coords);
+            let coms = ctx.group_com(
+                &coords,
+                chunk.n_atoms,
+                chunk.n_frames,
+                &gpu.groups,
+                &gpu.masses,
+                1.0,
+            )?;
+            let mut shifts = Vec::with_capacity(chunk.n_frames);
+            for frame in 0..chunk.n_frames {
+                let center = match self.mode {
+                    CenterMode::Origin => [0.0, 0.0, 0.0],
+                    CenterMode::Point => self.center,
+                    CenterMode::Box => {
+                        let (lx, ly, lz) = box_lengths(chunk, frame)?;
+                        [lx / 2.0, ly / 2.0, lz / 2.0]
+                    }
+                };
+                let com = coms[frame];
+                shifts.push(Float4 {
+                    x: (center[0] - com.x as f64) as f32,
+                    y: (center[1] - com.y as f64) as f32,
+                    z: (center[2] - com.z as f64) as f32,
+                    w: 0.0,
+                });
+            }
+            let out = ctx.shift_coords(&coords, chunk.n_atoms, chunk.n_frames, &shifts)?;
+            self.results.extend(out);
+            self.record_metadata(chunk);
+            self.frames += chunk.n_frames;
+            return Ok(());
+        }
+
+        let n_atoms = chunk.n_atoms;
+        let masses = &system.atoms.mass;
+        for frame in 0..chunk.n_frames {
+            let center = match self.mode {
+                CenterMode::Origin => [0.0, 0.0, 0.0],
+                CenterMode::Point => self.center,
+                CenterMode::Box => {
+                    let (lx, ly, lz) = box_lengths(chunk, frame)?;
+                    [lx / 2.0, ly / 2.0, lz / 2.0]
+                }
+            };
+            let com = center_of_selection(
+                chunk,
+                frame,
+                &self.selection.indices,
+                masses,
+                self.mass_weighted,
+            );
+            let shift = [center[0] - com[0], center[1] - com[1], center[2] - com[2]];
+            for atom in 0..n_atoms {
+                let p = chunk.coords[frame * n_atoms + atom];
+                self.results.push((p[0] as f64 + shift[0]) as f32);
+                self.results.push((p[1] as f64 + shift[1]) as f32);
+                self.results.push((p[2] as f64 + shift[2]) as f32);
+            }
+        }
+        self.record_metadata(chunk);
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Trajectory(TrajectoryOutput {
+            coords: std::mem::take(&mut self.results),
+            frames: self.frames,
+            atoms: self.atoms,
+            box_: std::mem::take(&mut self.box_),
+            time: if self.saw_time {
+                std::mem::take(&mut self.time)
+            } else {
+                Vec::new()
+            },
+        }))
+    }
+}
+
 pub struct TranslatePlan {
     delta: [f32; 3],
     n_frames_hint: Option<usize>,
@@ -348,6 +531,134 @@ impl Plan for TransformPlan {
 
     fn finalize(&mut self) -> TrajResult<PlanOutput> {
         Ok(PlanOutput::Series(std::mem::take(&mut self.results)))
+    }
+}
+
+pub struct TransformTrajectoryPlan {
+    rotation: [f32; 9],
+    translation: [f32; 3],
+    n_frames_hint: Option<usize>,
+    results: Vec<f32>,
+    box_: Vec<Box3>,
+    time: Vec<f32>,
+    saw_time: bool,
+    frames: usize,
+    atoms: usize,
+}
+
+impl TransformTrajectoryPlan {
+    pub fn new(rotation: [f64; 9], translation: [f64; 3]) -> Self {
+        let mut rot = [0.0f32; 9];
+        for (dst, src) in rot.iter_mut().zip(rotation.iter()) {
+            *dst = *src as f32;
+        }
+        Self {
+            rotation: rot,
+            translation: [
+                translation[0] as f32,
+                translation[1] as f32,
+                translation[2] as f32,
+            ],
+            n_frames_hint: None,
+            results: Vec::new(),
+            box_: Vec::new(),
+            time: Vec::new(),
+            saw_time: false,
+            frames: 0,
+            atoms: 0,
+        }
+    }
+
+    fn record_metadata(&mut self, chunk: &FrameChunk) {
+        self.box_
+            .extend(chunk.box_.iter().take(chunk.n_frames).copied());
+        if let Some(time) = &chunk.time_ps {
+            self.time.extend(time.iter().take(chunk.n_frames).copied());
+            if !time.is_empty() {
+                self.saw_time = true;
+            }
+        }
+    }
+}
+
+impl Plan for TransformTrajectoryPlan {
+    fn name(&self) -> &'static str {
+        "transform_trajectory"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        PlanRequirements::new(true, true)
+    }
+
+    fn set_frames_hint(&mut self, n_frames: Option<usize>) {
+        self.n_frames_hint = n_frames;
+    }
+
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.box_.clear();
+        self.time.clear();
+        self.saw_time = false;
+        self.frames = 0;
+        self.atoms = system.n_atoms();
+        reserve_output_capacity(&mut self.results, self.n_frames_hint, system.n_atoms());
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        self.atoms = chunk.n_atoms;
+        #[cfg(feature = "cuda")]
+        if let Device::Cuda(ctx) = _device {
+            let coords = convert_coords(&chunk.coords);
+            let out = ctx.transform_coords(
+                &coords,
+                chunk.n_atoms,
+                chunk.n_frames,
+                &self.rotation,
+                &self.translation,
+            )?;
+            self.results.extend(out);
+            self.record_metadata(chunk);
+            self.frames += chunk.n_frames;
+            return Ok(());
+        }
+
+        let r = &self.rotation;
+        let t = &self.translation;
+        let base = self.results.len();
+        let needed = chunk.coords.len().saturating_mul(3);
+        self.results.resize(base + needed, 0.0);
+        let out = &mut self.results[base..];
+        for (dst, p) in out.chunks_exact_mut(3).zip(chunk.coords.iter()) {
+            let x = p[0];
+            let y = p[1];
+            let z = p[2];
+            dst[0] = r[0] * x + r[1] * y + r[2] * z + t[0];
+            dst[1] = r[3] * x + r[4] * y + r[5] * z + t[1];
+            dst[2] = r[6] * x + r[7] * y + r[8] * z + t[2];
+        }
+        self.record_metadata(chunk);
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Trajectory(TrajectoryOutput {
+            coords: std::mem::take(&mut self.results),
+            frames: self.frames,
+            atoms: self.atoms,
+            box_: std::mem::take(&mut self.box_),
+            time: if self.saw_time {
+                std::mem::take(&mut self.time)
+            } else {
+                Vec::new()
+            },
+        }))
     }
 }
 
@@ -585,6 +896,97 @@ impl Plan for ImagePlan {
     }
 }
 
+pub struct ImageTrajectoryPlan {
+    inner: ImagePlan,
+    n_frames_hint: Option<usize>,
+    box_: Vec<Box3>,
+    time: Vec<f32>,
+    saw_time: bool,
+    frames: usize,
+    atoms: usize,
+}
+
+impl ImageTrajectoryPlan {
+    pub fn new(selection: Selection) -> Self {
+        Self {
+            inner: ImagePlan::new(selection),
+            n_frames_hint: None,
+            box_: Vec::new(),
+            time: Vec::new(),
+            saw_time: false,
+            frames: 0,
+            atoms: 0,
+        }
+    }
+
+    fn record_metadata(&mut self, chunk: &FrameChunk) {
+        self.box_
+            .extend(chunk.box_.iter().take(chunk.n_frames).copied());
+        if let Some(time) = &chunk.time_ps {
+            self.time.extend(time.iter().take(chunk.n_frames).copied());
+            if !time.is_empty() {
+                self.saw_time = true;
+            }
+        }
+    }
+}
+
+impl Plan for ImageTrajectoryPlan {
+    fn name(&self) -> &'static str {
+        "image_trajectory"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        PlanRequirements::new(true, true)
+    }
+
+    fn set_frames_hint(&mut self, n_frames: Option<usize>) {
+        self.n_frames_hint = n_frames;
+    }
+
+    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+        self.inner.init(system, device)?;
+        self.box_.clear();
+        self.time.clear();
+        self.saw_time = false;
+        self.frames = 0;
+        self.atoms = system.n_atoms();
+        reserve_output_capacity(
+            &mut self.inner.results,
+            self.n_frames_hint,
+            system.n_atoms(),
+        );
+        Ok(())
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        device: &Device,
+    ) -> TrajResult<()> {
+        self.atoms = chunk.n_atoms;
+        self.inner.process_chunk(chunk, system, device)?;
+        self.record_metadata(chunk);
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Trajectory(TrajectoryOutput {
+            coords: std::mem::take(&mut self.inner.results),
+            frames: self.frames,
+            atoms: self.atoms,
+            box_: std::mem::take(&mut self.box_),
+            time: if self.saw_time {
+                std::mem::take(&mut self.time)
+            } else {
+                Vec::new()
+            },
+        }))
+    }
+}
+
 pub struct AutoImagePlan {
     inner: ImagePlan,
 }
@@ -600,6 +1002,49 @@ impl AutoImagePlan {
 impl Plan for AutoImagePlan {
     fn name(&self) -> &'static str {
         "autoimage"
+    }
+
+    fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {
+        self.inner.init(system, device)
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        device: &Device,
+    ) -> TrajResult<()> {
+        self.inner.process_chunk(chunk, system, device)
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        self.inner.finalize()
+    }
+}
+
+pub struct AutoImageTrajectoryPlan {
+    inner: ImageTrajectoryPlan,
+}
+
+impl AutoImageTrajectoryPlan {
+    pub fn new(selection: Selection) -> Self {
+        Self {
+            inner: ImageTrajectoryPlan::new(selection),
+        }
+    }
+}
+
+impl Plan for AutoImageTrajectoryPlan {
+    fn name(&self) -> &'static str {
+        "autoimage_trajectory"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        self.inner.requirements()
+    }
+
+    fn set_frames_hint(&mut self, n_frames: Option<usize>) {
+        self.inner.set_frames_hint(n_frames);
     }
 
     fn init(&mut self, system: &System, device: &Device) -> TrajResult<()> {

@@ -422,6 +422,271 @@ impl Plan for AnglePlan {
     }
 }
 
+struct AngleDef {
+    sel_a: Selection,
+    sel_b: Selection,
+    sel_c: Selection,
+}
+
+struct AngleDefLocal {
+    sel_a: Vec<u32>,
+    sel_b: Vec<u32>,
+    sel_c: Vec<u32>,
+}
+
+pub struct MultiAnglePlan {
+    angles: Vec<AngleDef>,
+    angles_local: Vec<AngleDefLocal>,
+    preferred_selection: Vec<u32>,
+    selected_masses: Vec<f32>,
+    use_selected_input: bool,
+    mass_weighted: bool,
+    pbc: PbcMode,
+    degrees: bool,
+    results: Vec<f32>,
+    frames: usize,
+}
+
+impl MultiAnglePlan {
+    pub fn new(
+        angles: Vec<(Selection, Selection, Selection)>,
+        mass_weighted: bool,
+        pbc: PbcMode,
+        degrees: bool,
+    ) -> Self {
+        Self {
+            angles: angles
+                .into_iter()
+                .map(|(a, b, c)| AngleDef {
+                    sel_a: a,
+                    sel_b: b,
+                    sel_c: c,
+                })
+                .collect(),
+            angles_local: Vec::new(),
+            preferred_selection: Vec::new(),
+            selected_masses: Vec::new(),
+            use_selected_input: false,
+            mass_weighted,
+            pbc,
+            degrees,
+            results: Vec::new(),
+            frames: 0,
+        }
+    }
+
+    fn rebuild_selected_path(&mut self, system: &System) {
+        self.angles_local.clear();
+        self.preferred_selection.clear();
+        self.selected_masses.clear();
+
+        let mut global_to_local = std::collections::HashMap::<u32, u32>::new();
+        let mut push_idx =
+            |idx: u32, preferred_selection: &mut Vec<u32>, selected_masses: &mut Vec<f32>| {
+                if global_to_local.contains_key(&idx) {
+                    return;
+                }
+                let local = preferred_selection.len() as u32;
+                global_to_local.insert(idx, local);
+                preferred_selection.push(idx);
+                selected_masses.push(system.atoms.mass[idx as usize]);
+            };
+
+        for def in self.angles.iter() {
+            for &idx in def
+                .sel_a
+                .indices
+                .iter()
+                .chain(def.sel_b.indices.iter())
+                .chain(def.sel_c.indices.iter())
+            {
+                push_idx(
+                    idx,
+                    &mut self.preferred_selection,
+                    &mut self.selected_masses,
+                );
+            }
+        }
+
+        for def in self.angles.iter() {
+            self.angles_local.push(AngleDefLocal {
+                sel_a: def
+                    .sel_a
+                    .indices
+                    .iter()
+                    .map(|idx| *global_to_local.get(idx).unwrap())
+                    .collect(),
+                sel_b: def
+                    .sel_b
+                    .indices
+                    .iter()
+                    .map(|idx| *global_to_local.get(idx).unwrap())
+                    .collect(),
+                sel_c: def
+                    .sel_c
+                    .indices
+                    .iter()
+                    .map(|idx| *global_to_local.get(idx).unwrap())
+                    .collect(),
+            });
+        }
+    }
+}
+
+impl Plan for MultiAnglePlan {
+    fn name(&self) -> &'static str {
+        "multi_angle"
+    }
+
+    fn requirements(&self) -> PlanRequirements {
+        PlanRequirements::new(matches!(self.pbc, PbcMode::Orthorhombic), false)
+    }
+
+    fn init(&mut self, system: &System, _device: &Device) -> TrajResult<()> {
+        self.results.clear();
+        self.frames = 0;
+        self.use_selected_input = true;
+        self.rebuild_selected_path(system);
+        Ok(())
+    }
+
+    fn preferred_selection(&self) -> Option<&[u32]> {
+        if self.use_selected_input && !self.preferred_selection.is_empty() {
+            Some(&self.preferred_selection)
+        } else {
+            None
+        }
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: &FrameChunk,
+        system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        if self.angles.is_empty() {
+            self.frames += chunk.n_frames;
+            return Ok(());
+        }
+        let masses = &system.atoms.mass;
+        for frame in 0..chunk.n_frames {
+            let (lx, ly, lz) = if matches!(self.pbc, PbcMode::Orthorhombic) {
+                box_lengths(chunk, frame)?
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            for def in self.angles.iter() {
+                let a = center_of_selection(
+                    chunk,
+                    frame,
+                    &def.sel_a.indices,
+                    masses,
+                    self.mass_weighted,
+                );
+                let b = center_of_selection(
+                    chunk,
+                    frame,
+                    &def.sel_b.indices,
+                    masses,
+                    self.mass_weighted,
+                );
+                let c = center_of_selection(
+                    chunk,
+                    frame,
+                    &def.sel_c.indices,
+                    masses,
+                    self.mass_weighted,
+                );
+                let mut v1x = a[0] - b[0];
+                let mut v1y = a[1] - b[1];
+                let mut v1z = a[2] - b[2];
+                let mut v2x = c[0] - b[0];
+                let mut v2y = c[1] - b[1];
+                let mut v2z = c[2] - b[2];
+                if matches!(self.pbc, PbcMode::Orthorhombic) {
+                    apply_pbc(&mut v1x, &mut v1y, &mut v1z, lx, ly, lz);
+                    apply_pbc(&mut v2x, &mut v2y, &mut v2z, lx, ly, lz);
+                }
+                self.results.push(angle_from_vectors(
+                    [v1x, v1y, v1z],
+                    [v2x, v2y, v2z],
+                    self.degrees,
+                ));
+            }
+        }
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn process_chunk_selected(
+        &mut self,
+        chunk: &FrameChunk,
+        _source_selection: &[u32],
+        _system: &System,
+        _device: &Device,
+    ) -> TrajResult<()> {
+        if self.angles_local.is_empty() {
+            self.frames += chunk.n_frames;
+            return Ok(());
+        }
+        for frame in 0..chunk.n_frames {
+            let (lx, ly, lz) = if matches!(self.pbc, PbcMode::Orthorhombic) {
+                box_lengths(chunk, frame)?
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            for def in self.angles_local.iter() {
+                let a = center_of_selection(
+                    chunk,
+                    frame,
+                    &def.sel_a,
+                    &self.selected_masses,
+                    self.mass_weighted,
+                );
+                let b = center_of_selection(
+                    chunk,
+                    frame,
+                    &def.sel_b,
+                    &self.selected_masses,
+                    self.mass_weighted,
+                );
+                let c = center_of_selection(
+                    chunk,
+                    frame,
+                    &def.sel_c,
+                    &self.selected_masses,
+                    self.mass_weighted,
+                );
+                let mut v1x = a[0] - b[0];
+                let mut v1y = a[1] - b[1];
+                let mut v1z = a[2] - b[2];
+                let mut v2x = c[0] - b[0];
+                let mut v2y = c[1] - b[1];
+                let mut v2z = c[2] - b[2];
+                if matches!(self.pbc, PbcMode::Orthorhombic) {
+                    apply_pbc(&mut v1x, &mut v1y, &mut v1z, lx, ly, lz);
+                    apply_pbc(&mut v2x, &mut v2y, &mut v2z, lx, ly, lz);
+                }
+                self.results.push(angle_from_vectors(
+                    [v1x, v1y, v1z],
+                    [v2x, v2y, v2z],
+                    self.degrees,
+                ));
+            }
+        }
+        self.frames += chunk.n_frames;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> TrajResult<PlanOutput> {
+        Ok(PlanOutput::Matrix {
+            data: std::mem::take(&mut self.results),
+            rows: self.frames,
+            cols: self.angles.len(),
+        })
+    }
+}
+
 pub struct DihedralPlan {
     sel_a: Selection,
     sel_b: Selection,

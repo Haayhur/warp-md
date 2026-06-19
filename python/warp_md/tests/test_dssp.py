@@ -6,6 +6,12 @@ import pytest
 dssp_mod = importlib.import_module("warp_md.analysis.dssp")
 
 
+@pytest.fixture(autouse=True)
+def _native_dssp_inputs(monkeypatch):
+    monkeypatch.setattr(dssp_mod, "is_native_traj", lambda _traj: True)
+    monkeypatch.setattr(dssp_mod, "coerce_native_system", lambda system: system)
+
+
 class _DummySelection:
     def __init__(self, indices):
         self.indices = indices
@@ -148,6 +154,46 @@ def test_dssp_defaults_to_simplified_output(monkeypatch):
     np.testing.assert_allclose(avg["coil_avg"], np.array([1.0], dtype=np.float32))
 
 
+def test_dssp_full_dtype_includes_codes_and_symbols(monkeypatch):
+    class _DummyPlan:
+        def __init__(self, _sel):
+            pass
+
+        def run(
+            self,
+            _traj,
+            _system,
+            chunk_frames=None,
+            device="auto",
+            frame_indices=None,
+            simplified=False,
+        ):
+            labels = ["ALA:1", "GLY:2"]
+            codes = np.array([[4, 1], [0, 7]], dtype=np.uint8)
+            symbols = ["H", "E", "C", "C"]
+            avg = {
+                "alpha_avg": np.array([0.5, 0.0], dtype=np.float32),
+                "extended_avg": np.array([0.0, 0.5], dtype=np.float32),
+                "bend_avg": np.array([0.0, 0.5], dtype=np.float32),
+            }
+            return labels, codes, symbols, 2, 2, avg
+
+    monkeypatch.setattr(dssp_mod, "_DsspPlan", _DummyPlan, raising=True)
+    out = dssp_mod.dssp(
+        _DummyTraj(),
+        _DummySystem(),
+        mask="protein",
+        simplified=True,
+        dtype="full",
+    )
+
+    assert set(out.keys()) == {"residues", "ss", "codes", "avg"}
+    assert out["residues"].tolist() == ["ALA:1", "GLY:2"]
+    assert out["ss"].tolist() == [["H", "E"], ["C", "C"]]
+    np.testing.assert_array_equal(out["codes"], np.array([[4, 1], [0, 7]], dtype=np.uint8))
+    np.testing.assert_allclose(out["avg"]["alpha_avg"], np.array([0.5, 0.0], dtype=np.float32))
+
+
 def test_dssp_passes_frame_indices_to_rust_plan(monkeypatch):
     traj = _DummyTraj()
     seen = {}
@@ -200,4 +246,10 @@ def test_dssp_passes_frame_indices_to_rust_plan(monkeypatch):
 def test_dssp_raises_when_binding_missing(monkeypatch):
     monkeypatch.setattr(dssp_mod, "_DsspPlan", None, raising=True)
     with pytest.raises(RuntimeError, match="PyDsspPlan binding unavailable"):
+        dssp_mod.dssp(_DummyTraj(), _DummySystem(), mask="protein")
+
+
+def test_dssp_rejects_non_native_trajectory(monkeypatch):
+    monkeypatch.setattr(dssp_mod, "is_native_traj", lambda _traj: False)
+    with pytest.raises(RuntimeError, match="Rust-backed trajectory"):
         dssp_mod.dssp(_DummyTraj(), _DummySystem(), mask="protein")

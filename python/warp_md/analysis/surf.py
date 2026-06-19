@@ -8,18 +8,10 @@ from typing import Optional, Sequence, Union
 
 import numpy as np
 
+from ._runtime import coerce_native_system, is_native_traj, materialize_selection
+
 MaskLike = Union[str, Sequence[int], np.ndarray]
 RadiiLike = Union[str, Sequence[float], np.ndarray]
-
-
-def _all_resid_mask(system) -> str:
-    if not hasattr(system, "atom_table"):
-        return "all"
-    atoms = system.atom_table()
-    resids = atoms.get("resid", [])
-    if not resids:
-        return "resid 0:0"
-    return f"resid {min(resids)}:{max(resids)}"
 
 
 def _normalize_algorithm(value: str) -> str:
@@ -90,9 +82,18 @@ def _normalize_radii_input(
 
 
 def _select_mask(system, mask: MaskLike):
-    if isinstance(mask, str):
-        return system.select(mask if mask not in ("", "*", "all", None) else _all_resid_mask(system))
-    return system.select_indices(np.asarray(mask, dtype=np.int64).reshape(-1).tolist())
+    return materialize_selection(system, mask, allow_at_indices=True)
+
+
+def _require_native_surface_inputs(traj, system, name: str):
+    if not is_native_traj(traj):
+        raise RuntimeError(
+            f"{name} requires a Rust-backed trajectory so frame/atom loops stay in Rust."
+        )
+    native_system = coerce_native_system(system)
+    if native_system is None:
+        raise RuntimeError(f"failed to prepare native {name} system")
+    return native_system
 
 
 def _format_surface_output(
@@ -205,6 +206,7 @@ def surf(
     residue_area = bool(residue_area)
     if (atom_area or volume or residue_area) and plan_algorithm != "sasa":
         raise ValueError("surface detail output requires algorithm='sasa'")
+    native_system = _require_native_surface_inputs(traj, system, "surf")
 
     try:
         from warp_md import SurfPlan  # type: ignore
@@ -217,15 +219,11 @@ def surf(
             "SurfPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
         )
 
-    sel = _select_mask(system, mask)
+    sel = _select_mask(native_system, mask)
     if solutemask in ("", None):
         solute_sel = None
-    elif isinstance(solutemask, str):
-        solute_sel = system.select(solutemask)
     else:
-        solute_sel = system.select_indices(
-            np.asarray(solutemask, dtype=np.int64).reshape(-1).tolist()
-        )
+        solute_sel = _select_mask(native_system, solutemask)
     radii_list, radii_mode_value = _normalize_radii_input(radii, radii_mode)
     plan_kwargs = {
         "algorithm": plan_algorithm,
@@ -250,7 +248,7 @@ def surf(
     try:
         raw = plan.run(
             traj,
-            system,
+            native_system,
             chunk_frames=chunk_frames,
             device=device,
             frame_indices=frame_indices_list,
@@ -271,6 +269,7 @@ def molsurf(
     probe: float = 1.4,
     probe_radius: Optional[float] = None,
     offset: Optional[float] = 0.0,
+    solutemask: MaskLike = "",
     n_sphere_points: int = 64,
     radii: Optional[RadiiLike] = None,
     radii_mode: str = "gb",
@@ -298,6 +297,7 @@ def molsurf(
     residue_area = bool(residue_area)
     if (atom_area or volume or residue_area) and algorithm != "sasa":
         raise ValueError("surface detail output requires algorithm='sasa'")
+    native_system = _require_native_surface_inputs(traj, system, "molsurf")
 
     try:
         from warp_md import MolSurfPlan  # type: ignore
@@ -310,7 +310,8 @@ def molsurf(
             "MolSurfPlan binding unavailable in this build. Rebuild bindings with `maturin develop`."
         )
 
-    sel = _select_mask(system, mask)
+    sel = _select_mask(native_system, mask)
+    solute_sel = None if solutemask in ("", None) else _select_mask(native_system, solutemask)
     plan_kwargs = {
         "algorithm": algorithm,
         "probe_radius": radius,
@@ -319,6 +320,8 @@ def molsurf(
         "offset": offset_value,
         "radii_mode": radii_mode_value,
     }
+    if solute_sel is not None:
+        plan_kwargs["solute_selection"] = solute_sel
     if atom_area:
         plan_kwargs["atom_area"] = True
     if volume:
@@ -332,7 +335,7 @@ def molsurf(
     try:
         raw = plan.run(
             traj,
-            system,
+            native_system,
             chunk_frames=chunk_frames,
             device=device,
             frame_indices=frame_indices_list,

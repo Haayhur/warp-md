@@ -17,12 +17,35 @@ def _format(dtype: str, centers, values, counts, integral=None):
     centers = np.asarray(centers, dtype=np.float32)
     values = np.asarray(values, dtype=np.float32)
     counts = np.asarray(counts, dtype=np.uint64)
+    integral_values = None
+    if integral is not None:
+        integral_values = np.asarray(integral, dtype=np.float32)
     if key == "dict":
         out = {"bin_centers": centers, "rdf": values, "counts": counts}
-        if integral is not None:
-            out["integral_rdf"] = np.asarray(integral, dtype=np.float32)
+        if integral_values is not None:
+            out["integral_rdf"] = integral_values
         return out
+    if key in ("full", "tuple_full"):
+        if integral_values is not None:
+            return centers, values, counts, integral_values
+        return centers, values, counts
     return centers, values
+
+
+def _normalize_rdf_output_mode(norm, raw_rdf: bool, volume: bool):
+    number_density = False
+    if norm is None:
+        return bool(raw_rdf), bool(volume), number_density
+    key = str(norm).strip().lower().replace("-", "_").replace(" ", "_")
+    if key in ("rdf", "g_r", "gr"):
+        return False, bool(volume), number_density
+    if key in ("none", "raw", "count", "counts"):
+        return True, False, number_density
+    if key in ("volume", "box", "box_volume"):
+        return False, True, number_density
+    if key in ("density", "number_density", "numberdensity"):
+        return False, False, True
+    raise ValueError("norm must be 'rdf', 'volume', 'number_density', or 'none'")
 
 
 def rdf(
@@ -41,6 +64,7 @@ def rdf(
     frame_indices: Optional[Sequence[int]] = None,
     top=None,
     raw_rdf: bool = False,
+    norm: Optional[str] = None,
     dtype: str = "tuple",
     byres1: bool = False,
     byres2: bool = False,
@@ -70,6 +94,9 @@ def rdf(
     dimension_value = str(dimension).lower()
     if dimension_value not in ("3d", "xyz", "xy"):
         raise ValueError("dimension must be '3d' or 'xy'")
+    raw_rdf_value, volume_value, number_density = _normalize_rdf_output_mode(
+        norm, raw_rdf, volume
+    )
 
     plan_cls = load_native_symbol("RdfPlan")
     if plan_cls is None:
@@ -88,11 +115,11 @@ def rdf(
         raise RuntimeError("failed to prepare native RDF system")
 
     pbc = "orthorhombic" if image else "none"
-    sel_a = native_selection(system, native_system, solvent_mask)
+    sel_a = native_selection(system, native_system, solvent_mask, allow_at_indices=True)
     sel_b = (
         sel_a
         if solute_mask in ("", None)
-        else native_selection(system, native_system, solute_mask)
+        else native_selection(system, native_system, solute_mask, allow_at_indices=True)
     )
     frame_indices_list = (
         None if frame_indices is None else [int(value) for value in frame_indices]
@@ -112,10 +139,11 @@ def rdf(
         no_intramol=not bool(intramol),
         mass_weighted=bool(mass),
         density=density_value,
-        volume=bool(volume),
-        raw_rdf=bool(raw_rdf),
+        volume=volume_value,
+        raw_rdf=raw_rdf_value,
         intrdf=bool(intrdf),
         dimension=dimension_value,
+        number_density=number_density,
     )
     result = plan.run(
         traj,

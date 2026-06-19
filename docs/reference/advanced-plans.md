@@ -178,6 +178,92 @@ r, g, q, s = plan.run(traj, system)
 
 ---
 
+## VelocityAutoCorrPlan
+
+*Velocity Autocorrelation Function (VACF) — molecular vibrations and diffusion.*
+
+```python
+from warp_md import VelocityAutoCorrPlan
+
+plan = VelocityAutoCorrPlan(
+    selection,
+    group_by="resid",
+    lag_mode="auto"
+)
+time, vacf = plan.run(traj, system)
+```
+
+---
+
+## CurrentPlan
+
+*Electric current correlations for transport properties.*
+
+```python
+from warp_md import CurrentPlan
+
+plan = CurrentPlan(
+    selection,
+    group_by="resid",
+    charges=charges
+)
+time, current = plan.run(traj, system)
+```
+
+---
+
+## CrossCorrelationPlan
+
+*Cross-correlations between different groups of atoms.*
+
+```python
+from warp_md import CrossCorrelationPlan
+
+plan = CrossCorrelationPlan(selection)
+time, cross_corr = plan.run(traj, system)
+```
+
+---
+
+## VanHovePlan
+
+*Van Hove correlation function — dynamic spatial correlations.*
+
+```python
+from warp_md import VanHovePlan
+
+plan = VanHovePlan(selection)
+r, t, g_rt = plan.run(traj, system)
+```
+
+---
+
+## WaveletPlan
+
+*Wavelet transforms for frequency-time localized dynamics.*
+
+```python
+from warp_md import WaveletPlan
+
+plan = WaveletPlan(selection)
+result = plan.run(traj, system)
+```
+
+---
+
+## TrajectoryClusterPlan
+
+*Cluster trajectory frames into conformational microstates.*
+
+```python
+from warp_md import TrajectoryClusterPlan
+
+plan = TrajectoryClusterPlan(selection)
+result = plan.run(traj, system)
+```
+
+---
+
 ## EquipartitionPlan
 
 *Temperature from kinetic energy (requires velocities)*

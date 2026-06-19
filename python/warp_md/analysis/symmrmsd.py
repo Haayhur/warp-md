@@ -11,17 +11,15 @@ from typing import Optional, Sequence, Union
 import numpy as np
 
 from ._runtime import (
+    is_native_traj,
     kabsch_rmsd,
     load_native_symbol,
-    native_inputs,
+    native_reference_inputs,
     native_selection,
-    prepend_reference_frame,
     read_all_frames,
-    reset_traj,
     rmsd_raw,
     selection_indices,
 )
-from .trajectory import ArrayTrajectory
 
 
 RefLike = Union[int, str]
@@ -160,34 +158,48 @@ def _native_symmrmsd(
     mask: str,
     ref: RefLike,
     fit: bool,
+    symmetry_groups: Optional[Sequence[np.ndarray]],
+    max_permutations: int,
     chunk_frames: Optional[int],
+    frame_indices: Optional[Sequence[int]],
 ):
     plan_cls = load_native_symbol("SymmRmsdPlan")
     if plan_cls is None:
         raise RuntimeError("SymmRmsdPlan binding unavailable")
-    native_traj, native_system = native_inputs(traj, system, chunk_frames)
-    if native_traj is None or native_system is None:
+    native_traj, reference_system = native_reference_inputs(
+        traj,
+        system,
+        mask,
+        ref,
+        mask,
+        chunk_frames,
+    )
+    if native_traj is None or reference_system is None:
         raise RuntimeError("failed to prepare native symmrmsd inputs")
     try:
-        selection = native_selection(system, native_system, mask)
-        ref_index = int(ref)
-        run_traj = native_traj
-        trim_first = False
-        if ref_index == 0:
-            if not reset_traj(run_traj):
-                raise RuntimeError("failed to reset native trajectory")
-        else:
-            run_traj = prepend_reference_frame(native_traj, ref_index, chunk_frames)
-            if run_traj is None:
-                raise RuntimeError("failed to build native reference trajectory")
-            trim_first = True
-        plan = plan_cls(selection, reference="frame0", align=fit)
+        selection = native_selection(system, reference_system, mask)
+        group_arg = (
+            None
+            if symmetry_groups is None
+            else [[int(v) for v in group.tolist()] for group in symmetry_groups]
+        )
+        plan = plan_cls(
+            selection,
+            reference="topology",
+            align=fit,
+            symmetry_groups=group_arg,
+            max_permutations=int(max_permutations),
+        )
         values = np.asarray(
-            plan.run(run_traj, native_system, chunk_frames=chunk_frames, device="auto"),
+            plan.run(
+                native_traj,
+                reference_system,
+                chunk_frames=chunk_frames,
+                device="auto",
+                frame_indices=None if frame_indices is None else [int(v) for v in frame_indices],
+            ),
             dtype=np.float32,
         )
-        if trim_first:
-            values = values[1:]
         return values
     except Exception as exc:
         raise RuntimeError("native SymmRmsdPlan execution failed") from exc
@@ -213,12 +225,6 @@ def symmrmsd(
     if max_permutations <= 0:
         raise ValueError("max_permutations must be positive")
 
-    coords, _box, _time = read_all_frames(traj, chunk_frames, include_box=True)
-    if coords is None:
-        raise ValueError("trajectory has no frames")
-    if coords.size == 0:
-        return np.empty((0,), dtype=np.float32)
-
     idx = selection_indices(system, mask)
     if idx.size == 0:
         raise ValueError("selection resolved to empty set")
@@ -229,14 +235,36 @@ def symmrmsd(
     if ref_idx.size != idx.size:
         raise ValueError("mask and ref_mask selections must have same size")
 
-    if (
-        not remap
-        and ref_mask == mask
-        and frame_indices is None
-        and isinstance(ref, int)
-    ):
-        source = ArrayTrajectory(np.asarray(coords, dtype=np.float32))
-        return _native_symmrmsd(source, system, mask, ref, fit, chunk_frames)
+    native_groups = None
+    if remap:
+        if symmetry_groups is not None:
+            native_groups = _normalize_symmetry_groups(symmetry_groups, idx)
+        else:
+            native_groups = _infer_symmetry_groups(system, idx)
+        total = _permutation_budget(native_groups)
+        if total > max_permutations:
+            raise ValueError(
+                f"symmetry remap requires {total} permutations, exceeds max_permutations={max_permutations}"
+            )
+
+    if ref_mask == mask and is_native_traj(traj):
+        return _native_symmrmsd(
+            traj,
+            system,
+            mask,
+            ref,
+            fit,
+            native_groups,
+            max_permutations,
+            chunk_frames,
+            frame_indices,
+        )
+
+    coords, _box, _time = read_all_frames(traj, chunk_frames, include_box=True)
+    if coords is None:
+        raise ValueError("trajectory has no frames")
+    if coords.size == 0:
+        return np.empty((0,), dtype=np.float32)
 
     n_frames = coords.shape[0]
     if frame_indices is not None:
@@ -256,10 +284,7 @@ def symmrmsd(
     if not remap:
         groups = []
     else:
-        if symmetry_groups is not None:
-            groups = _normalize_symmetry_groups(symmetry_groups, idx)
-        else:
-            groups = _infer_symmetry_groups(system, idx)
+        groups = native_groups if native_groups is not None else []
 
     out = np.empty(n_frames, dtype=np.float64)
     for i in range(n_frames):
