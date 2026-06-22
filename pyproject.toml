@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "warp-md"
-version = "0.4.27"
+version = "0.4.28"
 description = "warp-md Python bindings"
 authors = [
     { name = "Ayodele Faleti" },
@@ -43,7 +43,6 @@ include = [
     "scripts/**",
     "docs/**",
     "MANIFEST.in",
-    { path = "forcefields/martini3/*", from = "out-dir", to = "warp_md/assets/" },
 ]
 sdist-include = [
     "Cargo.toml",
