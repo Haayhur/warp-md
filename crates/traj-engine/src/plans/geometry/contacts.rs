@@ -259,7 +259,7 @@ impl Plan for NativeContactsPlan {
                     chunk.n_frames,
                     &gpu.pairs,
                     &boxes,
-                    cutoff as f32,
+                    self.cutoff as f32,
                 )?;
                 let denom = n_ref as f32;
                 for count in counts {
