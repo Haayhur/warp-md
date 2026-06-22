@@ -28,6 +28,20 @@ distances = plan.run(traj, system)
 
 Also available as: `warp_md.analysis.dist()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atom pairs defining distances |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+| `mass_weighted` | `bool` | `False` | Weight distances by atomic mass |
+
+#### Output
+
+- **Type**: 2D array
+- **Shape**: `(n_frames, n_pairs)`
+- **Unit**: Angstrom
+
 ---
 
 ### PairwiseDistancePlan
@@ -40,6 +54,18 @@ from warp_md import PairwiseDistancePlan
 plan = PairwiseDistancePlan(selection)
 matrix = plan.run(traj, system)
 ```
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to compute pairwise distances for |
+
+#### Output
+
+- **Type**: 3D array
+- **Shape**: `(n_frames, n_atoms, n_atoms)`
+- **Unit**: Angstrom
 
 ---
 
@@ -54,6 +80,20 @@ plan = PairDistPlan(selection)
 result = plan.run(traj, system)
 ```
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `sel_a` | `Selection` | required | First atom group |
+| `sel_b` | `Selection` | required | Second atom group |
+| `bins` | `int` | `200` | Number of histogram bins |
+| `r_max` | `float` | `10.0` | Maximum distance (Å) |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling |
+
+#### Output
+
+- **Type**: tuple `(r, g, counts)` — bin centers, distribution, raw counts
+
 ---
 
 ### DistanceToPointPlan
@@ -66,6 +106,19 @@ from warp_md import DistanceToPointPlan
 plan = DistanceToPointPlan(selection)
 result = plan.run(traj, system)
 ```
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to measure |
+| `point` | `list[float]` | required | Fixed point coordinates `[x, y, z]` |
+
+#### Output
+
+- **Type**: 2D array
+- **Shape**: `(n_frames, n_atoms)`
+- **Unit**: Angstrom
 
 ---
 
@@ -80,6 +133,19 @@ plan = DistanceToReferencePlan(selection)
 result = plan.run(traj, system)
 ```
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to compare |
+| `reference` | `str` | `"topology"` | Reference (`"topology"` or `"frame0"`) |
+
+#### Output
+
+- **Type**: 1D array
+- **Shape**: `(n_frames,)`
+- **Unit**: Angstrom
+
 ---
 
 ### LowestCurvePlan
@@ -92,6 +158,16 @@ from warp_md import LowestCurvePlan
 plan = LowestCurvePlan(selection)
 result = plan.run(traj, system)
 ```
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to analyze |
+
+#### Output
+
+- **Type**: dict with path coordinates and energies
 
 ---
 
@@ -110,6 +186,18 @@ angles = plan.run(traj, system)  # degrees
 
 Also available as: `warp_md.analysis.angle()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | 3-atom selection defining the angle |
+
+#### Output
+
+- **Type**: 1D array
+- **Shape**: `(n_frames,)`
+- **Unit**: degrees
+
 ---
 
 ## Vector Plans
@@ -127,6 +215,18 @@ vectors = plan.run(traj, system)
 
 Also available as: `warp_md.analysis.vector()`, `warp_md.analysis.vector_mask()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atom pairs defining vectors |
+
+#### Output
+
+- **Type**: 3D array
+- **Shape**: `(n_frames, n_pairs, 3)`
+- **Unit**: Angstrom (vector components)
+
 ---
 
 ## Centers of Mass / Geometry
@@ -142,6 +242,18 @@ plan = CenterOfMassPlan(selection)
 com = plan.run(traj, system)  # (n_frames, 3) in Å
 ```
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to compute COM for |
+
+#### Output
+
+- **Type**: 2D array
+- **Shape**: `(n_frames, 3)`
+- **Unit**: Angstrom
+
 ---
 
 ### CenterOfGeometryPlan
@@ -154,6 +266,18 @@ from warp_md import CenterOfGeometryPlan
 plan = CenterOfGeometryPlan(selection)
 cog = plan.run(traj, system)  # (n_frames, 3) in Å
 ```
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to compute COG for |
+
+#### Output
+
+- **Type**: 2D array
+- **Shape**: `(n_frames, 3)`
+- **Unit**: Angstrom
 
 ---
 
@@ -170,6 +294,17 @@ plan = PrincipalAxesPlan(selection)
 result = plan.run(traj, system)
 ```
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to analyze |
+| `mass_weighted` | `bool` | `False` | Use mass-weighted inertia tensor |
+
+#### Output
+
+- **Type**: dict with eigenvalues and eigenvectors of inertia tensor
+
 ---
 
 ## Neighbor Search & Contacts
@@ -185,6 +320,20 @@ plan = MindistPlan(selection)
 result = plan.run(traj, system)
 ```
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `sel_a` | `Selection` | required | First atom group |
+| `sel_b` | `Selection` | required | Second atom group |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+
+#### Output
+
+- **Type**: 1D array
+- **Shape**: `(n_frames,)`
+- **Unit**: Angstrom
+
 ---
 
 ### HausdorffPlan
@@ -197,6 +346,49 @@ from warp_md import HausdorffPlan
 plan = HausdorffPlan(selection)
 result = plan.run(traj, system)
 ```
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `sel_a` | `Selection` | required | First atom group |
+| `sel_b` | `Selection` | required | Second atom group |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+
+#### Output
+
+- **Type**: 1D array
+- **Shape**: `(n_frames,)`
+- **Unit**: Angstrom
+
+---
+
+### MaxdistPlan
+
+*Maximum distance between two groups of atoms — the farthest pair per frame.*
+
+```python
+from warp_md import MaxdistPlan
+
+plan = MaxdistPlan(selection)
+result = plan.run(traj, system)
+```
+
+Also available as: `warp_md.analysis.maxdist()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `sel_a` | `Selection` | required | First atom group |
+| `sel_b` | `Selection` | required | Second atom group |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+
+#### Output
+
+- **Type**: 1D array
+- **Shape**: `(n_frames,)`
+- **Unit**: Angstrom
 
 ---
 
@@ -213,6 +405,17 @@ result = plan.run(traj, system)
 
 Also available as: `warp_md.analysis.closest_atom()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atom groups (target + probe) |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+
+#### Output
+
+- **Type**: tuple of (atom indices, distances)
+
 ---
 
 ### ClosestPlan
@@ -227,6 +430,19 @@ result = plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.closest()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `target` | `Selection` | required | Reference selection |
+| `probe` | `Selection` | required | Probe selection to search |
+| `n_solvents` | `int` | required | Number of closest molecules to find |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+
+#### Output
+
+- **Type**: dict with closest atom indices, distances, and coordinates
 
 ---
 
@@ -243,6 +459,19 @@ result = plan.run(traj, system)
 
 Also available as: `warp_md.analysis.search_neighbors()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `target` | `Selection` | required | Reference selection |
+| `probe` | `Selection` | required | Probe selection to search |
+| `cutoff` | `float` | required | Distance cutoff (Å) |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+
+#### Output
+
+- **Type**: list of neighbor indices per frame
+
 ---
 
 ### NativeContactsPlan
@@ -257,6 +486,77 @@ result = plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.native_contacts()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `mask` | `Selection` | required | Atom selection |
+| `ref` | `str` or `int` | `"topology"` | Reference frame for native contacts |
+| `distance` | `float` | `5.0` | Contact cutoff (Å) |
+| `image` | `bool` | `True` | Use PBC imaging |
+| `mask2` | `Selection` | `None` | Optional second selection |
+| `mindist` | `float` | `None` | Minimum distance cutoff |
+| `maxdist` | `float` | `None` | Maximum distance cutoff |
+
+#### Output
+
+- **Type**: 1D array
+- **Shape**: `(n_frames,)`
+- **Unit**: fraction of native contacts preserved
+
+---
+
+### SaltBridgePlan
+
+*Salt bridge analysis — detect ion pairs between charged residues (e.g., Arg-COO⁻, Lys-COO⁻) within a distance cutoff.*
+
+```python
+from warp_md import SaltBridgePlan
+
+plan = SaltBridgePlan(selection)
+result = plan.run(traj, system)
+```
+
+Also available as: `warp_md.analysis.saltbr()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atom selection including charged groups |
+
+#### Output
+
+- **Type**: dict with salt bridge persistence and distances
+
+---
+
+## Running Average
+
+### RunningAveragePlan
+
+*Running average of coordinates over a window — smooths trajectory noise.*
+
+```python
+from warp_md import RunningAveragePlan
+
+plan = RunningAveragePlan(selection)
+result = plan.run(traj, system)
+```
+
+Also available as: `warp_md.analysis.runningavg()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to average |
+| `window` | `int` | `None` | Fixed window size; omit for cumulative average |
+
+#### Output
+
+- **Type**: 2D array — smoothed coordinates `(n_frames, n_atoms * 3)`
 
 ---
 
@@ -275,6 +575,16 @@ result = plan.run(traj, system)
 
 Also available as: `warp_md.analysis.atom_map()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to map |
+
+#### Output
+
+- **Type**: dict mapping atom indices between topologies
+
 ---
 
 ### RandomizeIonsPlan
@@ -287,6 +597,16 @@ from warp_md import RandomizeIonsPlan
 plan = RandomizeIonsPlan(selection)
 result = plan.run(traj, system)
 ```
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Ion selection to randomize |
+
+#### Output
+
+- Modifies coordinates in-place
 
 ---
 
@@ -302,6 +622,18 @@ from warp_md import VolumePlan
 plan = VolumePlan(selection)
 volumes = plan.run(traj, system)  # Å³
 ```
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms (uses box vectors from trajectory) |
+
+#### Output
+
+- **Type**: 1D array
+- **Shape**: `(n_frames,)`
+- **Unit**: Angstrom³
 
 ---
 

@@ -43,7 +43,7 @@ python -c "import warp_md; print('🎉', warp_md.System)"
 ```
 
 {% hint style="info" %}
-**Source builds get the latest fixes** and let you hack on the internals. Requires Rust 1.70+ and `pip install maturin`.
+**Source builds get the latest fixes** and let you hack on the internals. Requires Rust 1.75+ and `pip install maturin`.
 {% endhint %}
 {% endtab %}
 

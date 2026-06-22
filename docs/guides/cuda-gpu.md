@@ -192,14 +192,15 @@ Ensure `nvrtc` is available. This ships with the CUDA Toolkit.
 
 ## Benchmarks
 
-Typical speedups on modern GPUs (RTX 3080):
+GPU performance depends on atom count, trajectory length, chunk size, PCIe
+transfer cost, kernel support, and GPU architecture. Use the repository
+benchmark scripts and generated reports instead of assuming a fixed speedup:
 
-| Analysis | CPU Time | GPU Time | Speedup |
-|----------|----------|----------|---------|
-| Rg (10k frames) | 2.5s | 0.3s | ~8x |
-| RDF (10k frames) | 45s | 3s | ~15x |
-| MSD (100k frames) | 120s | 8s | ~15x |
+```bash
+.agent/bench-venv/bin/python scripts/bench/benchmark_readers.py --help
+.agent/bench-venv/bin/python scripts/bench/build_benchmark_report.py --help
+```
 
-{% hint style="info" %}
-Actual speedup depends on system size, trajectory length, and hardware. Your mileage may vary — but it's usually impressive.
-{% endhint %}
+Canonical measured results belong in `manuscript/tables/` and
+`manuscript/figures/`, with the benchmark manifest and status under
+`internal/benchmark/`.

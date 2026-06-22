@@ -28,6 +28,20 @@ That split keeps:
 
 ---
 
+## CLI Reference
+
+| Subcommand | Flags | What It Does |
+|-----------|-------|-------------|
+| `schema` | `--kind request|result|event|source_bundle|build_manifest|charge_manifest|topology_graph`, `--format json|yaml`, `--json`, `--out PATH` | Print a build contract schema variant |
+| `example` | `--mode aligned`, `--bundle-path PATH`, `--format json|yaml`, `--json` | Print an example build request |
+| `example-bundle` | `--out PATH`, `--format json|yaml`, `--json` | Materialize an example source bundle to disk |
+| `capabilities` | `--format json|yaml`, `--json` | Print build capabilities fingerprint |
+| `inspect-source <path>` | `--format json|yaml`, `--json` | Inspect a source bundle: validate referenced artifacts and junction selectors against residue templates |
+| `validate <request>` | `--deep`, `--shallow`, `--format json|yaml`, `--json` | Validate a build request (defaults to deep geometry/QC preflight) |
+| `run <request>` | `--stream` | Execute a build request and emit artifacts |
+
+---
+
 ## Quick Start
 
 {% tabs %}
@@ -375,10 +389,8 @@ Once the chain is built, hand the manifest into `warp-pack`:
       "model": "tip3p"
     },
     "ions": {
-      "neutralize": true,
-      "salt_molar": 0.15,
-      "cation": "Na+",
-      "anion": "Cl-"
+      "neutralize": {"enabled": true},
+      "salt": {"name": "nacl", "molar": 0.15}
     },
     "morphology": {
       "mode": "single_chain_solution"
@@ -386,7 +398,10 @@ Once the chain is built, hand the manifest into `warp-pack`:
   },
   "outputs": {
     "coordinates": "outputs/system.pdb",
-    "manifest": "outputs/system_manifest.json"
+    "format": "pdb-strict",
+    "manifest": "outputs/system_manifest.json",
+    "preserve_topology_graph": true,
+    "write_conect": true
   }
 }
 ```

@@ -1,11 +1,14 @@
 ---
-description: The complete agent manual — 96 Plans, 88 functional APIs, one unified contract
+description: The complete agent manual — Python plans, CLI contracts, and one unified runtime model
 icon: book
 ---
 
 # API Reference
 
-Everything your agent needs to know about warp-md — every class, every parameter, every option. This isn't "20+ analyses." It's **96 Plan classes** and **88 functional APIs** organized into clear categories.
+Everything your agent needs to know about warp-md — classes, parameters,
+contracts, and CLI workflows. The current Python package exposes **160 Plan
+classes**; `warp-md capabilities` reports the config-runner subset supported by
+the installed build.
 
 ---
 
@@ -60,7 +63,11 @@ Everything your agent needs to know about warp-md — every class, every paramet
             <td><a href="advanced-plans.md">Advanced Plans</a></td>
         </tr>
         <tr>
-            <td><strong>Warp Build</strong><br>Source bundles, build manifests, topology graphs, and handoff into world-build</td>
+            <td><strong>Lipid Analysis</strong><br>Membrane properties, leaflet assignment, lateral diffusion</td>
+            <td><a href="lipid-analysis.md">Lipid Analysis</a></td>
+        </tr>
+        <tr>
+            <td><strong>Warp Build</strong><br>Source bundles, build manifests, topology graphs, handoff into world-build</td>
             <td><a href="../guides/warp-build.md">Warp Build</a></td>
         </tr>
         <tr>
@@ -96,7 +103,7 @@ Everything your agent needs to know about warp-md — every class, every paramet
 | Structure validation | 2 | [Structural Analysis](structural-analysis.md) |
 | Thermodynamic (equipartition) | 1 | [Advanced Plans](advanced-plans.md) |
 | H-bond | 1 | [Advanced Plans](advanced-plans.md) |
-| **Total** | **96** | |
+| **Documented categories above** | **Selected plan families** | |
 
 ---
 
@@ -111,11 +118,22 @@ Under the hood, warp-md is a family of Rust crates:
 | `traj-engine` | Plans, executor, CPU fallback, device dispatch |
 | `traj-gpu` | CUDA context + buffers (optional feature) |
 | `traj-kernels` | CUDA kernels (compiled with nvrtc) |
-| `traj-py` | Python bindings (PyO3, 96 Plan classes) |
+| `traj-py` | Python bindings (PyO3, 160 exposed Plan classes) |
 | `warp-build` | Native polymer construction stage, build manifests, topology graphs |
 | `warp-pack` | World-build engine for solvent, ions, box, and morphology |
 | `warp-cg` | Martini coarse-graining mapper with native trajectory mapping, xTB references, bonded tuning, ITP/TOP output, and JSON agent contract |
 | `warp-pep` | Peptide builder + mutation engine (internal coordinate geometry) |
+
+
+
+## See Also
+
+| Section | What You'll Find |
+|---------|-----------------|
+| [Architecture](../architecture/README.md) | Crate design, agent contract, GPU architecture |
+| [Examples](../examples/README.md) | Copy-paste ready usage examples |
+| [Development](../development/README.md) | Contributing, building, testing, validation |
+| [Guides](../guides/agent-contract-helpers.md) | Contract helpers, streaming, packing, building, CG, QM |
 
 ---
 

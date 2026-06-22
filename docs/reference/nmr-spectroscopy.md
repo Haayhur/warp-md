@@ -26,6 +26,18 @@ plan = NmrIredPlan(selection)
 result = plan.run(traj, system)
 ```
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `pairs` | `list[[u32; 2]]` | required | Atom pairs for iRED analysis |
+| `length_scale` | `float` | `1.0` | Length scale for vector normalization |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+
+#### Output
+
+- **Type**: dict with iRED vectors, correlation matrix, and order parameters (S²)
+
 ---
 
 ### Functional NMR API
@@ -72,6 +84,17 @@ plan = AtomicCorrPlan(selection)
 result = plan.run(traj, system)
 ```
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to correlate |
+| `reference_mode` | `str` | `"topology"` | Reference structure mode |
+
+#### Output
+
+- **Type**: 2D array — correlation matrix `(n_atoms * 3, n_atoms * 3)`
+
 ---
 
 ### VelocityAutoCorrPlan
@@ -87,6 +110,16 @@ result = plan.run(traj, system)
 
 Also available as: `warp_md.analysis.velocity_autocorrelation()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms for velocity correlation |
+
+#### Output
+
+- **Type**: 1D array — velocity ACF over lag times
+
 ---
 
 ### XcorrPlan
@@ -101,6 +134,16 @@ result = plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.xcorr()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms for cross-correlation |
+
+#### Output
+
+- **Type**: 2D array — cross-correlation matrix
 
 ---
 
@@ -132,6 +175,16 @@ from warp_md.analysis import infraredspec
 
 ir_spectrum = infraredspec(traj, system, selection)
 ```
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms for dipole moment calculation |
+
+#### Output
+
+- **Type**: 2D array — IR spectrum (wavenumbers × intensity)
 
 ---
 
@@ -165,6 +218,19 @@ result = plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.wavelet()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `sel_a` | `Selection` | required | First atom selection |
+| `sel_b` | `Selection` | required | Second atom selection |
+| `mass_weighted` | `bool` | `False` | Mass-weight the signal |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+
+#### Output
+
+- **Type**: dict with wavelet coefficients and frequency decomposition
 
 ---
 

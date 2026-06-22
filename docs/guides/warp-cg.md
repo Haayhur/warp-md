@@ -7,6 +7,32 @@ icon: atom
 
 `warp-cg` maps atomistic molecules to Martini-style coarse-grained beads and emits deterministic artifacts for agents.
 
+## CLI Reference
+
+| Subcommand | Flags | What It Does |
+|-----------|-------|-------------|
+| `run <request>` | `--stdin`, `--stream none|ndjson` | Run a first-class agent request JSON with streaming events |
+| `validate <request>` | `--stdin` | Validate a first-class agent request JSON (source files, counts, template preconditions, xTB availability) |
+| `schema` | `--kind request|result|event` | Print JSON schema for the agent contract |
+| `example` | — | Print an example agent request |
+| `capabilities` | — | Print agent capabilities fingerprint |
+| `build run <request>` | `--stdin`, `--stream none|ndjson` | Execute a CG system build request (membranes, lipids, solvent, ions) |
+| `build validate <request>` | `--stdin` | Validate a CG system build request |
+| `build schema` | `--kind request|result|event` | Print CG build contract schema |
+| `build example` | — | Print an example CG build request |
+| `build capabilities` | — | Print CG build capabilities |
+| `simulate schema` | `--kind request|plan|result|status|manifest` | Print CG simulation contract schema |
+| `simulate example` | `--engine gromacs|openmm` | Print an example simulation request |
+| `simulate capabilities` | — | Print CG simulation capabilities |
+| `simulate validate <request>` | `--stdin` | Validate a CG simulation request |
+| `simulate plan <request>` | `--stdin`, `--engine gromacs|openmm` | Emit an execution handoff plan with MDP templates or runner scripts |
+| `simulate status <run_dir>` | — | Inspect a run directory for artifacts, checkpoints, and status |
+| `forcefield inspect` | `--kind martini3` | Print the bundled forcefield manifest with SHA-256 hashes |
+| `forcefield install` | `--kind martini3`, `--dest PATH`, `--overwrite` | Copy a bundled forcefield snapshot into a project-local directory |
+| `runner martini-openmm` | Runner-specific OpenMM flags | Execute one prepared Martini/OpenMM system directly |
+
+---
+
 ## Agent contract
 
 Run a request file with streaming events:
@@ -68,7 +94,7 @@ extracted statistics or grouped reference targets.
 runs. Runtime never fetches forcefield files from the network. Use the bundled
 snapshot directly in a request:
 
-```json
+```jsonc
 "forcefield": {
   "kind": "martini3",
   "source": "bundled",
@@ -89,7 +115,7 @@ warp-cg forcefield install --kind martini3 --dest forcefields/martini3
 
 Then point requests at it:
 
-```json
+```jsonc
 "forcefield": {
   "kind": "martini3",
   "source": "path",
@@ -130,7 +156,7 @@ when a root `forcefield` request is present, and runs OpenMM under
 
 Minimal managed-runner shape:
 
-```json
+```jsonc
 "optimization": {
   "enabled": true,
   "method": "bo",
@@ -476,7 +502,7 @@ The build request drives exact-proof deterministic geometry placement, lipid opt
 **System Level (`system`)**
 * `force_field`: Target force field for topology emission (e.g., `martini3`).
 * `box_size_angstrom`: Array of `[X, Y, Z]` specifying the simulation box size.
-* `pbc`: Array of `[bool, bool, bool]` declaring periodic boundary axes.
+* `pbc`: Periodicity mode string. Omit it to use the schema default.
 * `placement`: Global placement settings.
   * `relaxation`: Enables/disables deterministic coordinate relaxation (`bool`).
   * `max_steps`: Maximum number of push/pull steps during relaxation.
@@ -493,9 +519,13 @@ Each membrane object defines a distinct bilayer or monolayer stack in the Z-axis
   * `apl_angstrom2`: Area per lipid. Directly impacts automated count planning.
   * `exclusions[]`: Array of `{"name", "center_angstrom", "radius_angstrom"}` defining manual circular holes.
   * `regions[]`: Defines exact geometrical regions (`circle`, `ellipse`, `rectangle`, `polygon`).
-    * `role`: Determines how the region interacts with placement (`hole` or constrained patch).
+    * `role`: Determines how the region interacts with placement (`hole` or constrained `patch`).
     * `geometry`: Includes shape parameters, `scale_xy`, and `rotate_degrees`.
   * `composition[]`: Array of `{"lipid": <name>, "count": <int>}` defining stoichiometry.
+
+Region objects do not have their own `composition`. A `patch` constrains the
+placement union for the containing leaflet; composition remains a leaflet-level
+field.
 
 **Environment (`environment`)**
 * `ions`: Controls bulk ion neutralization.
@@ -522,7 +552,6 @@ Each membrane object defines a distinct bilayer or monolayer stack in the Z-axis
   "system": {
     "force_field": "martini3",
     "box_size_angstrom": [120.0, 120.0, 140.0],
-    "pbc": [true, true, true],
     "placement": {
       "relaxation": true,
       "max_steps": 100,

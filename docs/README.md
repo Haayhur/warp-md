@@ -63,7 +63,7 @@ python -c "import warp_md; print('🎉', warp_md.System)"
 ```
 
 {% hint style="info" %}
-**Source builds get the latest fixes** and let you hack on the internals. Requires Rust 1.70+ and `pip install maturin`.
+**Source builds get the latest fixes** and let you hack on the internals. Requires Rust 1.75+ and `pip install maturin`.
 {% endhint %}
 {% endtab %}
 
@@ -197,9 +197,13 @@ print(f"Mean Rg: {rg.mean():.2f} Å")  # Done. That was easy.
 | [Getting Started](getting-started/installation.md) | From zero to simulation in minutes |
 | [Tutorial](tutorial/README.md) | The complete learning path |
 | [Agent Schema](reference/agent-schema.md) | The contract your agent signs |
+| [Architecture](architecture/README.md) | Crate design, GPU, and agent-first principles |
+| [Examples](examples/README.md) | Copy-paste ready usage examples |
 | [Warp Build](guides/warp-build.md) | Build chains and emit handoff artifacts for `warp-pack` |
 | [Packing Guide](guides/packing.md) | Build initial coordinates with warp-pack |
 | [Peptide Builder](guides/peptide-builder.md) | Construct and mutate peptides with warp-pep |
+| [Coarse-Graining](guides/warp-cg.md) | Map atomistic to Martini CG beads |
+| [Development](development/README.md) | Contributing, building, testing |
 | [API Reference](reference/README.md) | Every class, every parameter |
 
 <a href="getting-started/quickstart.md" class="button primary" data-icon="bolt">Quick Start →</a>

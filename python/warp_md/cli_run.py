@@ -33,11 +33,6 @@ from .cli_specs import SPEC_BUILDERS
 from . import build_cli
 from .frame_edit import add_frame_edit_args, run_frame_edit
 from .pack.data import available_water_models, water_pdb
-from .atlas_api import (
-    DEFAULT_ATLAS_API_BASE_URL,
-    AtlasApiError,
-    download_atlas_trajectory,
-)
 
 _EXIT_OK = 0
 _EXIT_CONFIG_VALIDATION = 2
@@ -690,41 +685,6 @@ def list_water_models(fmt: str = "text") -> None:
         print(model)
 
 
-def run_atlas_fetch(args: argparse.Namespace) -> tuple[int, Dict[str, Any]]:
-    try:
-        payload = download_atlas_trajectory(
-            dataset=args.dataset,
-            kind=args.kind,
-            pdb_chain=args.pdb_chain,
-            out=args.out,
-            base_url=args.base_url,
-            timeout=float(args.timeout),
-            retries=int(args.retries),
-            retry_wait=float(args.retry_wait),
-            resume=bool(args.resume),
-        )
-    except (ValueError, AtlasApiError) as exc:
-        return _EXIT_RUNTIME_EXEC, {
-            "status": "error",
-            "exit_code": _EXIT_RUNTIME_EXEC,
-            "error": {
-                "code": "E_ATLAS_FETCH",
-                "message": str(exc),
-            },
-        }
-    except Exception as exc:
-        return _EXIT_INTERNAL, {
-            "status": "error",
-            "exit_code": _EXIT_INTERNAL,
-            "error": {
-                "code": "E_INTERNAL",
-                "message": str(exc),
-            },
-        }
-    payload["exit_code"] = _EXIT_OK
-    return _EXIT_OK, payload
-
-
 def list_plans_with_details(fmt: str = "text", details: bool = False) -> None:
     """List available analysis plans with optional detailed metadata."""
     result = contract.list_all_plans(details=details)
@@ -1150,61 +1110,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="alias for --format json",
     )
-    atlas_fetch = sub.add_parser(
-        "atlas-fetch",
-        help="download trajectory archive from the ATLAS API",
-    )
-    atlas_fetch.add_argument(
-        "--dataset",
-        choices=["ATLAS", "chameleon", "DPF"],
-        default="ATLAS",
-        help="ATLAS dataset family",
-    )
-    atlas_fetch.add_argument(
-        "--kind",
-        choices=["analysis", "protein", "total"],
-        default="total",
-        help="trajectory package type",
-    )
-    atlas_fetch.add_argument(
-        "--pdb-chain",
-        required=True,
-        help="PDB chain identifier (example: 16pk_A)",
-    )
-    atlas_fetch.add_argument(
-        "--out",
-        default=None,
-        help="output archive path (.zip)",
-    )
-    atlas_fetch.add_argument(
-        "--base-url",
-        default=DEFAULT_ATLAS_API_BASE_URL,
-        help="ATLAS API base URL",
-    )
-    atlas_fetch.add_argument(
-        "--timeout",
-        type=float,
-        default=120.0,
-        help="HTTP timeout in seconds",
-    )
-    atlas_fetch.add_argument(
-        "--retries",
-        type=int,
-        default=3,
-        help="number of retry attempts for transient failures",
-    )
-    atlas_fetch.add_argument(
-        "--retry-wait",
-        type=float,
-        default=2.0,
-        help="seconds to wait between retries",
-    )
-    atlas_fetch.add_argument(
-        "--resume",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="resume from partial .part file when possible",
-    )
     frames_cmd = sub.add_parser(
         "frames",
         help="extract or stride trajectory frames into a new trajectory or structure file",
@@ -1429,10 +1334,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         fmt = "json" if args.json else args.format
         list_water_models(fmt)
         return 0
-    if args.cmd == "atlas-fetch":
-        exit_code, payload = run_atlas_fetch(args)
-        print(json.dumps(payload, indent=2))
-        return exit_code
     if args.cmd == "frames":
         exit_code, payload = run_frame_edit(args)
         print(json.dumps(payload, indent=2))

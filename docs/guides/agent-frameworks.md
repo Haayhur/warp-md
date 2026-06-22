@@ -16,7 +16,7 @@ warp-md is built agent-first. Our Pydantic schemas, structured error codes, and 
 * **Streaming support** - NDJSON events for real-time progress
 * **Zero Python lock-in** - Use from Rust, Python, or any language with subprocess
 
-See [Agent Schema & Contract](reference/agent-schema.md) for the full contract specification.
+See [Agent Schema & Contract](../reference/agent-schema.md) for the full contract specification.
 {% endhint %}
 
 ---
@@ -277,7 +277,7 @@ result = wrapper.analyze(
     {
         "name": "conductivity",
         "selection": "resname NA or resname CL",
-        "charges": [1.0, -1.0],
+        "charges": "by_resname",
         "temperature": 300.0
     }
 ]
@@ -294,6 +294,12 @@ All frameworks receive structured error envelopes:
     "schema_version": "warp-md.agent.v1",
     "status": "error",
     "exit_code": 3,
+    "analysis_count": 1,
+    "started_at": "2026-06-22T08:00:00Z",
+    "finished_at": "2026-06-22T08:00:00Z",
+    "elapsed_ms": 10,
+    "warnings": [],
+    "results": [],
     "error": {
         "code": "E_ANALYSIS_SPEC",
         "message": "rdf missing required fields: sel_a, sel_b"
@@ -326,7 +332,7 @@ request = {
 
 ### warp-pack Packing
 ```bash
-warp-pack --config pack.yaml --stream
+warp-pack run pack_request.json --stream ndjson
 ```
 
 ### warp-pep Building
@@ -341,6 +347,6 @@ See [Streaming Progress API](streaming-progress.md) for complete event reference
 ## Next Steps
 
 * [Streaming Progress API](streaming-progress.md) - Complete streaming guide
-* [Agent Schema & Contract](reference/agent-schema.md) - Full API contract
-* [Analysis Plans Reference](reference/analysis-plans.md) - Available analyses
+* [Agent Schema & Contract](../reference/agent-schema.md) - Full API contract
+* [Analysis Plans Reference](../reference/analysis-plans.md) - Available analyses
 * [Examples](../examples/) - More agent examples

@@ -74,9 +74,9 @@ Every batch run starts with a `RunRequest` — a Pydantic-validated JSON documen
   "output_dir": "results",
   "analyses": [
     {"name": "rg", "selection": "protein", "out": "results/rg.npz"},
-    {"name": "rmsd", "selection": "backbone", "reference": "topology", "align": true},
+    {"name": "rmsd", "selection": "backbone", "reference": 0, "align": true},
     {"name": "rdf", "sel_a": "resname SOL and name OW", "sel_b": "resname SOL and name OW", "bins": 200, "r_max": 10.0},
-    {"name": "conductivity", "selection": "resname NA or resname CL", "charges": [1.0, -1.0], "temperature": 300.0}
+    {"name": "conductivity", "selection": "resname NA or resname CL", "charges": "by_resname", "temperature": 300.0}
   ]
 }
 ```
@@ -152,7 +152,7 @@ The `name` field in each analysis maps to these 19 CLI-registered analyses:
 | `docking` | `receptor_mask`, `ligand_mask` |
 
 {% hint style="info" %}
-**Beyond the CLI**: The Python API exposes **96 Plan classes** total. The config runner covers the 19 most common analyses. For the rest, use the Python API directly.
+**Beyond the CLI**: The current Python package exposes **160 Plan classes**. The config runner advertises its supported subset through `warp-md capabilities`; use the Python API for plans outside that catalog.
 {% endhint %}
 
 ---

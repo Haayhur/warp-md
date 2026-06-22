@@ -74,12 +74,6 @@ def test_water_models_json_alias() -> None:
     assert "tip3p" in names
 
 
-def test_atlas_fetch_help() -> None:
-    result = _run("atlas-fetch", "--help")
-    assert result.returncode == 0
-    assert "--pdb-chain" in result.stdout
-
-
 def test_frames_help() -> None:
     result = _run("frames", "--help")
     assert result.returncode == 0

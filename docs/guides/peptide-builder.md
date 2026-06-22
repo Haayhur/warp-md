@@ -374,4 +374,4 @@ export(result, "pdb", "solvated_peptide.pdb")
 
 ---
 
-For CLI reference, see [pack.md](../pack.md) for packing integration.
+For CLI reference, see [packing.md](../guides/packing.md) for packing integration.

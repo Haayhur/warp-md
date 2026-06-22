@@ -23,7 +23,7 @@ warp-md rg --topology protein.pdb --traj traj.xtc --selection "protein"
 
 | Capability | Tool | Example |
 |------------|------|---------|
-| **Trajectory Analysis** | `warp-md` | Calculate Rg, RMSD, RDF, conductivity (96+ analyses) |
+| **Trajectory Analysis** | `warp-md` | Calculate Rg, RMSD, RDF, conductivity, and other advertised plans |
 | **Polymer Construction** | `warp-build` | Build chains, sequence polymers, and emit manifests for world-build |
 | **Molecular Packing** | `warp-pack` | Solvate proteins, build simulation boxes |
 | **Coarse Graining** | `warp-cg` | Map SMILES and trajectories to Martini beads |
@@ -43,7 +43,7 @@ warp-md run config.json --stream ndjson
 warp-build run build_request.json --stream
 
 # Packing
-warp-pack --config pack.yaml --stream --output packed.pdb
+warp-pack run pack_request.json --stream ndjson
 
 # Martini coarse graining
 warp-cg run cg_request.json --stream ndjson
@@ -176,6 +176,18 @@ Runnable request templates live in `examples/warp_cg/`:
 | `solvated_external_bo_request.json` | Solvated external trajectory with `target_selection`, mass-weighted mapping, BO tuning, and Martini ITP output |
 | `xtb_pso_request.json` | xTB-initiated reference workflow with PSO tuning and mapped `gro` output |
 
+### Agent Helpers
+
+Use these when an agent needs contract discovery before analysis:
+
+```bash
+# Suggest analyses from a natural-language goal
+warp-md suggest "protein stability" --json
+```
+
+- `warp-md suggest` ranks analysis plans from a natural-language goal and a list of already-provided fields.
+- Contract helpers such as `validate`, `plan-schema`, `contract-template`, `normalize`, `capabilities`, `bundle-plan`, `inspect-inputs`, and `lint-selection` are documented in the [CLI Reference](reference/cli.md).
+
 ### Python API
 
 ```python
@@ -206,10 +218,10 @@ print(f"Mean Rg: {rg.mean():.2f} Å")
 
 | Framework | Guide | Example Files |
 |-----------|-------|---------------|
-| **LangChain** | [Agent Framework Integrations](agent-frameworks.md#1-langchain) | `examples/agents/langchain/` |
-| **CrewAI** | [Agent Framework Integrations](agent-frameworks.md#2-crewai) | `examples/agents/crewai/` |
-| **AutoGen** | [Agent Framework Integrations](agent-frameworks.md#4-autogen) | `examples/agents/autogen/` |
-| **OpenAI Agents** | [Agent Framework Integrations](agent-frameworks.md#3-openai-agents-sdk) | `examples/agents/openai/` |
+| **LangChain** | [Agent Framework Integrations](guides/agent-frameworks.md#1-langchain) | `examples/agents/langchain/` |
+| **CrewAI** | [Agent Framework Integrations](guides/agent-frameworks.md#2-crewai) | `examples/agents/crewai/` |
+| **AutoGen** | [Agent Framework Integrations](guides/agent-frameworks.md#4-autogen) | `examples/agents/autogen/` |
+| **OpenAI Agents** | [Agent Framework Integrations](guides/agent-frameworks.md#3-openai-agents-sdk) | `examples/agents/openai/` |
 
 ---
 
@@ -218,7 +230,7 @@ print(f"Mean Rg: {rg.mean():.2f} Å")
 Enable real-time progress updates with `--stream`:
 
 ```bash
-warp-pack --config pack.yaml --stream
+warp-pack run pack_request.json --stream ndjson
 ```
 
 **Output:**
@@ -231,7 +243,7 @@ warp-pack --config pack.yaml --stream
   ✓ Complete: 4500 atoms in 52s
 ```
 
-See [Streaming Progress API](streaming-progress.md) for complete event reference.
+See [Streaming Progress API](guides/streaming-progress.md) for complete event reference.
 
 ---
 
@@ -250,6 +262,12 @@ All tools follow the same contract:
 {
     "schema_version": "warp-md.agent.v1",
     "status": "ok",
+    "exit_code": 0,
+    "analysis_count": 1,
+    "started_at": "2026-06-22T08:00:00Z",
+    "finished_at": "2026-06-22T08:00:01Z",
+    "elapsed_ms": 1000,
+    "warnings": [],
     "results": [
         {"analysis": "rg", "out": "rg.npz", "status": "ok"}
     ]
@@ -263,6 +281,12 @@ All tools follow the same contract:
     "schema_version": "warp-md.agent.v1",
     "status": "error",
     "exit_code": 3,
+    "analysis_count": 1,
+    "started_at": "2026-06-22T08:00:00Z",
+    "finished_at": "2026-06-22T08:00:00Z",
+    "elapsed_ms": 10,
+    "warnings": [],
+    "results": [],
     "error": {
         "code": "E_ANALYSIS_SPEC",
         "message": "rdf missing required fields: sel_a, sel_b"
@@ -316,11 +340,13 @@ warp-md rg --topology peptide.pdb --traj traj.xtc --selection protein
 warp-md rg --topology mutant.pdb --traj traj.xtc --selection protein
 ```
 
----
+
 
 ## See Also
 
-* [Agent Schema & Contract](../reference/agent-schema.md) - Full API contract
-* [Streaming Progress API](streaming-progress.md) - Event reference
-* [Sample Agent Conversations](agent-transcripts.md) - Example transcripts
-* [Agent Framework Integrations](agent-frameworks.md) - Framework guides
+* [Agent Contract](architecture/agent-contract.md) - The single source of truth for agent integrations
+* [Agent Schema & Contract](reference/agent-schema.md) - Full API contract reference
+* [Streaming Progress API](guides/streaming-progress.md) - Event reference
+* [Sample Agent Conversations](guides/agent-transcripts.md) - Example transcripts
+* [Agent Framework Integrations](guides/agent-frameworks.md) - Framework guides
+* [Examples](examples/README.md) - Copy-paste ready agent workflows

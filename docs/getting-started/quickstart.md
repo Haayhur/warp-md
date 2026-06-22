@@ -150,7 +150,7 @@ warp-md rdf --topology system.pdb --traj trajectory.xtc \
             <td><a href="../tutorial/README.md">Tutorial</a></td>
         </tr>
         <tr>
-            <td><strong>📊 Analysis Arsenal</strong><br>All 96 Plans — from Rg to GIST</td>
+            <td><strong>📊 Analysis Arsenal</strong><br>160 Python Plan classes plus a discoverable CLI contract catalog</td>
             <td><a href="../reference/README.md">API Reference</a></td>
         </tr>
         <tr>

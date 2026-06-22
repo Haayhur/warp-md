@@ -28,6 +28,16 @@ plan.run(traj, system)
 
 Also available as: `warp_md.analysis.align()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms used for alignment |
+
+#### Output
+
+- Modifies coordinates in-place
+
 ---
 
 ### SuperposePlan
@@ -42,6 +52,16 @@ plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.superpose()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms for superposition |
+
+#### Output
+
+- Modifies coordinates in-place
 
 ---
 
@@ -58,6 +78,20 @@ result = plan.run(traj, system)  # (n_frames, 3, 3)
 
 Also available as: `warp_md.analysis.rotation_matrix()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms for rotation fitting |
+| `reference_mode` | `str` | `"topology"` | Reference structure mode |
+| `mass_weighted` | `bool` | `False` | Mass-weight the fit |
+
+#### Output
+
+- **Type**: 3D array
+- **Shape**: `(n_frames, 3, 3)`
+- **Unit**: rotation matrix (orthonormal)
+
 ---
 
 ### AlignPrincipalAxisPlan
@@ -72,6 +106,17 @@ plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.align_principal_axis()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to compute principal axis from |
+| `mass_weighted` | `bool` | `False` | Mass-weight the inertia tensor |
+
+#### Output
+
+- Modifies coordinates in-place
 
 ---
 
@@ -90,6 +135,18 @@ plan.run(traj, system)
 
 Also available as: `warp_md.analysis.center()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to center |
+| `center_at` | `str` | `"box"` | Centering target (`"box"` or `"origin"`) |
+| `mass_weighted` | `bool` | `False` | Use COM rather than COG |
+
+#### Output
+
+- Modifies coordinates in-place
+
 ---
 
 ### TranslatePlan
@@ -104,6 +161,16 @@ plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.translate()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to translate |
+
+#### Output
+
+- Modifies coordinates in-place
 
 ---
 
@@ -122,6 +189,16 @@ plan.run(traj, system)
 
 Also available as: `warp_md.analysis.rotate()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to rotate |
+
+#### Output
+
+- Modifies coordinates in-place
+
 ---
 
 ### ScalePlan
@@ -136,6 +213,17 @@ plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.scale()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to scale |
+| `scale_factor` | `float` | required | Scaling factor |
+
+#### Output
+
+- Modifies coordinates in-place
 
 ---
 
@@ -152,6 +240,16 @@ plan.run(traj, system)
 
 Also available as: `warp_md.analysis.transform()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to transform |
+
+#### Output
+
+- Modifies coordinates in-place
+
 ---
 
 ## PBC Imaging
@@ -167,6 +265,17 @@ plan = ImagePlan(selection)
 plan.run(traj, system)
 ```
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to image |
+| `pbc` | `str` | `"orthorhombic"` | PBC handling mode |
+
+#### Output
+
+- Modifies coordinates in-place
+
 ---
 
 ### AutoImagePlan
@@ -181,6 +290,16 @@ plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.autoimage()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to auto-image |
+
+#### Output
+
+- Modifies coordinates in-place
 
 {% hint style="warning" %}
 **Order matters**: For many analyses, the recommended preprocessing pipeline is: `AutoImage → Center → Align`. Running RMSD on unimaged trajectories invites heartbreak.
@@ -201,6 +320,16 @@ plan.run(traj, system)
 
 Also available as: `warp_md.analysis.fiximagedbonds()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to fix broken bonds for |
+
+#### Output
+
+- Modifies coordinates in-place
+
 ---
 
 ## Cell Operations
@@ -216,6 +345,16 @@ plan = ReplicateCellPlan(selection)
 plan.run(traj, system)
 ```
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to replicate |
+
+#### Output
+
+- Produces new coordinates with replicated cell
+
 ---
 
 ### XtalSymmPlan
@@ -230,6 +369,16 @@ plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.xtalsymm()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to transform |
+
+#### Output
+
+- Produces new coordinates with symmetry copies
 
 ---
 
@@ -248,6 +397,16 @@ plan.run(traj, system)
 
 Also available as: `warp_md.analysis.strip()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to keep (inverse strips) |
+
+#### Output
+
+- Modifies trajectory atom count in-place
+
 ---
 
 ### MeanStructurePlan
@@ -262,6 +421,16 @@ mean = plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.mean_structure()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to average |
+
+#### Output
+
+- **Type**: 2D array — average coordinates `(n_atoms, 3)`
 
 ---
 
@@ -278,6 +447,16 @@ result = plan.run(traj, system)
 
 Also available as: `warp_md.analysis.get_average_frame()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to average |
+
+#### Output
+
+- **Type**: 2D array — averaged coordinates `(n_atoms, 3)`
+
 ---
 
 ### MakeStructurePlan
@@ -292,6 +471,16 @@ result = plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.make_structure()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms for new structure |
+
+#### Output
+
+- **Type**: `System` object
 
 ---
 
@@ -310,6 +499,17 @@ velocities = plan.run(traj, system)
 
 Also available as: `warp_md.analysis.get_velocity()`
 
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to extract velocities for |
+
+#### Output
+
+- **Type**: 2D array
+- **Shape**: `(n_frames, n_atoms * 3)` — velocity components
+
 ---
 
 ### SetVelocityPlan
@@ -324,6 +524,16 @@ plan.run(traj, system)
 ```
 
 Also available as: `warp_md.analysis.set_velocity()`
+
+#### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to set velocities for |
+
+#### Output
+
+- Modifies trajectory velocities in-place
 
 ---
 

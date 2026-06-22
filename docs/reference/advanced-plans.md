@@ -123,6 +123,35 @@ time, data = plan.run(traj, system)
 
 ---
 
+## DipoleMomentPlan
+
+*Compute dipole moments of molecular groups — total dipole, per-group decomposition, and average dipole vectors.*
+
+```python
+from warp_md import DipoleMomentPlan
+
+plan = DipoleMomentPlan(selection, group_by="resid", charges=charges)
+dipoles = plan.run(traj, system)
+```
+
+Also available as: `warp_md.analysis.dipole_moments()`
+
+### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `selection` | `Selection` | required | Atoms to compute dipole for |
+| `group_by` | `str` | `"resid"` | Grouping mode |
+| `charges` | `list[float]` | required | Per-atom partial charges |
+
+### Output
+
+- `mu_per_group`: 2D array — dipole vector per group per frame `(n_frames, n_groups * 3)`
+- `mu_total`: 1D array — total dipole magnitude per frame
+- `mu_avg`: average dipole vector
+
+---
+
 ## IonPairCorrelationPlan
 
 *Who's clustering with whom?*
@@ -222,6 +251,33 @@ from warp_md import CrossCorrelationPlan
 plan = CrossCorrelationPlan(selection)
 time, cross_corr = plan.run(traj, system)
 ```
+
+---
+
+## BundlePlan
+
+*Run multiple analyses from a single config bundle — composition of standard MD reports and polymer reports.*
+
+```python
+from warp_md import BundlePlan
+
+plan = BundlePlan(top_selection, bottom_selection, n_axes=3)
+result = plan.run(traj, system)
+```
+
+Also available via CLI: `warp-md bundle-plan standard_md_report`
+
+### Parameters
+
+| Parameter | Type | Default | What It Does |
+|-----------|------|---------|--------------|
+| `top_selection` | `Selection` | required | Upper leaflet / top selection |
+| `bottom_selection` | `Selection` | required | Lower leaflet / bottom selection |
+| `n_axes` | `int` | `3` | Number of bundle axes |
+
+### Output
+
+- **Type**: dict with bundled analysis results keyed by analysis name
 
 ---
 

@@ -141,7 +141,7 @@ warp-md example > config.json
   "output_dir": "outputs",
   "analyses": [
     {"name": "rg", "selection": "protein"},
-    {"name": "rmsd", "selection": "backbone", "reference": "topology"},
+    {"name": "rmsd", "selection": "backbone", "reference": 0},
     {"name": "rdf", "sel_a": "resname SOL", "sel_b": "resname SOL", "bins": 200}
   ]
 }

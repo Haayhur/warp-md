@@ -15,6 +15,23 @@ It manages the messy world of external QM inputs, coordinates, basis sets, and c
 
 ---
 
+## CLI Reference
+
+| Subcommand | Flags | What It Does |
+|-----------|-------|-------------|
+| `schema` | `--kind request|result|event`, `--format json|yaml`, `--json`, `--out PATH` | Print a QM contract schema variant |
+| `example` | `--engine psi4|orca|multiwfn|xtb`, `--task single_point|generic_run`, `--format json|yaml`, `--json` | Print an example QM request |
+| `capabilities` | `--format json|yaml`, `--json`, `--orca-executable`, `--multiwfn-executable`, `--threads` | Print QM capabilities fingerprint; with exec paths probes backend availability |
+| `doctor` | `--format json|yaml`, `--json`, `--orca-executable`, `--multiwfn-executable`, `--threads` | Run a full diagnostic check on QM backend environment |
+| `validate <request>` | `--deep`, `--shallow`, `--format json|yaml`, `--json` | Validate a QM request JSON |
+| `run <request>` | `--stream` | Execute a QM request and emit results |
+| `inspect-output <output>` | `--engine orca|psi4`, `--format json|yaml`, `--json` | Parse and inspect an existing QM engine output file |
+| `project-charges <charge_manifest>` | `-n`, `--repeat-set`, `--terminal-policy`, `--format json|yaml`, `--json`, `--out`, `--charge-format` | Tile repeat-unit charges onto a polymer sequence |
+| `convert-manifest <charge_manifest>` | `--to warp-build-charge`, `--repeat-count`, `--repeat-set`, `--terminal-policy`, `--out` | Convert a charge manifest to another format |
+| `projection infer` | `--training-mol2`, `--middle-mol2`, `--start-mol2`, `--end-mol2`, `--policy`, `--out` | Infer charge projection maps from structural templates |
+
+---
+
 ## Engine Setup
 
 Because we value your disk space, external binaries are not bundled with `warp-md`. You must tell the agent where to find them using environment variables:
