@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "warp-md"
-version = "0.4.26"
+version = "0.4.27"
 description = "warp-md Python bindings"
 authors = [
     { name = "Ayodele Faleti" },
