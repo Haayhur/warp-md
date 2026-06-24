@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use warp_cg::{agent, build_contract, forcefield, simulate_contract};
+use warp_cg::{agent, backmap_contract, build_contract, forcefield, simulate_contract};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -52,6 +52,34 @@ enum Command {
         #[command(subcommand)]
         command: ForcefieldCommand,
     },
+    /// Reconstruct AA coordinates from generated inverse-mapping contracts.
+    Backmap {
+        #[command(subcommand)]
+        command: BackmapCommand,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum BackmapCommand {
+    /// Run a warp-cg.backmap.v1 request.
+    Run {
+        request: Option<String>,
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Validate a warp-cg.backmap.v1 request.
+    Validate {
+        request: Option<String>,
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Print backmap JSON schema.
+    Schema {
+        #[arg(long, value_parser = ["request", "result"], default_value = "request")]
+        kind: String,
+    },
+    /// Print backmap capabilities.
+    Capabilities,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -177,6 +205,34 @@ fn run_agent_command(command: Command) -> Result<()> {
         Command::Build { command } => return run_build_command(command),
         Command::Simulate { command } => return run_simulate_command(command),
         Command::Forcefield { command } => return run_forcefield_command(command),
+        Command::Backmap { command } => return run_backmap_command(command),
+    }
+    Ok(())
+}
+
+fn run_backmap_command(command: BackmapCommand) -> Result<()> {
+    match command {
+        BackmapCommand::Run { request, stdin } => {
+            let payload = read_payload(request, stdin)?;
+            let (exit_code, result) = backmap_contract::run_request_json(&payload);
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            std::process::exit(exit_code);
+        }
+        BackmapCommand::Validate { request, stdin } => {
+            let payload = read_payload(request, stdin)?;
+            let (exit_code, result) = backmap_contract::validate_request_json(&payload);
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            std::process::exit(exit_code);
+        }
+        BackmapCommand::Schema { kind } => {
+            println!("{}", backmap_contract::schema_json(&kind)?);
+        }
+        BackmapCommand::Capabilities => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&backmap_contract::capabilities())?
+            );
+        }
     }
     Ok(())
 }

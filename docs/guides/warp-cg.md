@@ -725,3 +725,71 @@ generation.
 | xTB end-to-end validation | Passing `internal/validation/warp_cg_xtb_manifest.json` lanes with `xtb` installed |
 | BO/PSO scientific parity | Passing `internal/validation/warp_cg_bonded_parity_manifest.json`, including the concrete OpenMM bonded parity lane |
 | Completion audit | `results/cg/warp_cg_completion_status.json` reports `complete` |
+
+## Agent-native backmapping
+
+Source-driven mappings emit `<name>_backmap_plan.json` with schema
+`warp-cg.backmap-plan.v1`. The plan retains the atomistic residue templates,
+the exact atom groups used to calculate each CG bead, and inter-residue
+covalent links. Keep this artifact with the generated CG model; it is the
+machine-readable inverse mapping contract.
+
+Backmapping aligns each residue template against the current CG bead centers.
+Placed neighbor atoms and unplaced neighbor bead centers provide orientation
+constraints. Placement supports disconnected, branched, cyclic, and
+crosslinked residue graphs. The result is an initialization geometry and
+should still undergo force-field minimization before production simulation.
+
+```rust
+use warp_cg::backmap::BackmapPlan;
+
+let plan: BackmapPlan = serde_json::from_value(backmap_artifact["plan"].clone())?;
+let all_atom_coords = plan.execute(&cg_coords)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Forward mappings with overlapping atom groups are accepted for analysis but
+are rejected by backmapping because they do not define a unique inverse.
+
+Backmapping uses the versioned `warp-cg.backmap.v1` agent contract. Requests
+accept inline frames or a trajectory path. Trajectory input is read in bounded
+chunks and can stream directly to XTC without returning coordinates. Rebuilt
+coordinates are omitted from results by default; enable `include_coordinates`
+only for deliberately small jobs.
+
+```bash
+warp-cg backmap validate backmap_request.json
+warp-cg backmap run backmap_request.json
+```
+
+The `warp-cg.backmap-result.v1` result restores source topology atom order and
+reports mapped-bead, internal-bond, linked-bond, finite-coordinate, and
+chirality diagnostics per frame. Quality thresholds can fail the request or
+emit warnings. Outputs include JSON, PDB, GRO, XTC, DCD, and a versioned
+minimization handoff.
+
+```json
+{
+  "schema_version": "warp-cg.backmap.v1",
+  "plan_path": "model_backmap_plan.json",
+  "trajectory_path": "cg.xtc",
+  "chunk_frames": 64,
+  "include_coordinates": false,
+  "make_whole": true,
+  "box_vectors": [[10, 0, 0], [0, 10, 0], [0, 0, 10]],
+  "quality": {
+    "max_bead_error": 0.00001,
+    "max_link_bond_error": 0.25,
+    "max_internal_bond_error": 0.000001,
+    "max_chirality_inversions": 0,
+    "max_steric_clashes": 0,
+    "on_violation": "error"
+  },
+  "output": {
+    "out_dir": "backmapped",
+    "prefix": "model_aa",
+    "formats": ["pdb", "xtc", "json"],
+    "minimization_handoff": true
+  }
+}
+```

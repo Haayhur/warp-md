@@ -10,19 +10,23 @@ from .cg_contract import (
     build_example_request,
     cg_capabilities,
     cg_build_capabilities,
+    cg_backmap_capabilities,
     cg_forcefield_inspect,
     cg_forcefield_install,
     cg_simulate_capabilities,
     example_request,
     plan_cg_simulate_request,
     render_cg_build_schema,
+    render_cg_backmap_schema,
     render_cg_simulate_schema,
     render_cg_schema,
     run_cg_build_request,
+    run_cg_backmap_request,
     run_cg_request,
     cg_simulate_status,
     simulate_example_request,
     validate_build_request_payload,
+    validate_backmap_request_payload,
     validate_request_payload,
     validate_simulate_request_payload,
 )
@@ -129,6 +133,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     build_caps_cmd = build_sub.add_parser("capabilities", help="print build capabilities")
     build_caps_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+
+    backmap_cmd = sub.add_parser("backmap", help="reconstruct AA coordinates from CG frames")
+    backmap_sub = backmap_cmd.add_subparsers(dest="backmap_cmd", required=True)
+    backmap_run_cmd = backmap_sub.add_parser("run", help="run backmap request")
+    backmap_run_cmd.add_argument("request", nargs="?", help="path to request.json")
+    backmap_run_cmd.add_argument("--stdin", action="store_true", help="read request from stdin")
+    backmap_validate_cmd = backmap_sub.add_parser("validate", help="validate backmap request")
+    backmap_validate_cmd.add_argument("request", nargs="?", help="path to request.json")
+    backmap_validate_cmd.add_argument("--stdin", action="store_true", help="read request from stdin")
+    backmap_validate_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+    backmap_schema_cmd = backmap_sub.add_parser("schema", help="print backmap schema")
+    backmap_schema_cmd.add_argument("--kind", choices=["request", "result"], default="request")
+    backmap_schema_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
+    backmap_schema_cmd.add_argument("--out")
+    backmap_caps_cmd = backmap_sub.add_parser("capabilities", help="print backmap capabilities")
+    backmap_caps_cmd.add_argument("--format", choices=["json", "yaml"], default="json")
 
     simulate_cmd = sub.add_parser("simulate", help="plan and inspect CG simulation handoffs")
     simulate_sub = simulate_cmd.add_subparsers(dest="simulate_cmd", required=True)
@@ -249,6 +269,25 @@ def run_cli(argv: Optional[list[str]] = None) -> int:
             return 0
         if args.build_cmd == "capabilities":
             print(_dump_payload(cg_build_capabilities(), args.format))
+            return 0
+    if args.cmd == "backmap":
+        if args.backmap_cmd == "run":
+            exit_code, result = run_cg_backmap_request(_load_request(args))
+            print(json.dumps(result, indent=2))
+            return exit_code
+        if args.backmap_cmd == "validate":
+            result = validate_backmap_request_payload(_load_request(args))
+            print(_dump_payload(result, args.format))
+            return 0 if result.get("valid", False) else 2
+        if args.backmap_cmd == "schema":
+            rendered = render_cg_backmap_schema(args.kind, args.format)
+            if args.out:
+                Path(args.out).write_text(rendered + "\n", encoding="utf-8")
+            else:
+                print(rendered)
+            return 0
+        if args.backmap_cmd == "capabilities":
+            print(_dump_payload(cg_backmap_capabilities(), args.format))
             return 0
     if args.cmd == "simulate":
         if args.simulate_cmd == "schema":

@@ -119,6 +119,7 @@ wrapper is required.
 | Kind | Meaning |
 |------|---------|
 | `martini_mapping_json` | Deterministic bead-to-atom mapping and bead graph |
+| `backmap_plan_json` | Versioned AA template, atom-group, weight, bond, chirality, and source-order contract for CG-to-AA reconstruction |
 | `coarse_grained_pdb` | Bead-level PDB for quick downstream setup |
 | `coarse_grained_trajectory` | Native mapped trajectory in the requested output format |
 | `bond_stats_json` | Bond distribution statistics from mapped reference frames |
@@ -129,6 +130,19 @@ wrapper is required.
 | `martini_topology_top` | Top-level Gromacs topology wrapper including the generated ITP |
 | `xtb_optimized_xyz` | xTB optimized atomistic reference structure |
 | `xtb_reference_trajectory` | xTB reference trajectory when xTB MD succeeds |
+
+Backmap a generated model through the agent contract:
+
+```bash
+warp-cg backmap validate backmap_request.json
+warp-cg backmap run backmap_request.json
+```
+
+`warp-cg.backmap.v1` accepts inline CG frames or a trajectory path. Large
+trajectories are processed in bounded chunks. Per-frame diagnostics cover
+mapped-center error, internal and linked bond error, chirality inversions,
+finite coordinates, and steric clashes. Use `include_coordinates: false` with
+XTC/DCD output to avoid returning an in-memory trajectory.
 
 xTB-initiated reference example:
 

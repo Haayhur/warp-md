@@ -508,6 +508,31 @@ fn cg_agent_run<'py>(
 }
 
 #[pyfunction]
+#[pyo3(signature = (kind="request"))]
+fn cg_backmap_schema<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
+    let text = warp_cg::backmap_contract::schema_json(kind)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    json_string_to_py(py, text)
+}
+
+#[pyfunction]
+fn cg_backmap_capabilities<'py>(py: Python<'py>) -> PyResult<PyObject> {
+    json_value_to_py(py, &warp_cg::backmap_contract::capabilities())
+}
+
+#[pyfunction]
+fn cg_backmap_validate<'py>(py: Python<'py>, json: &str) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_cg::backmap_contract::validate_request_json(json);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
+fn cg_backmap_run<'py>(py: Python<'py>, json: &str) -> PyResult<(i32, PyObject)> {
+    let (exit_code, value) = warp_cg::backmap_contract::run_request_json(json);
+    Ok((exit_code, json_value_to_py(py, &value)?))
+}
+
+#[pyfunction]
 #[pyo3(signature = (kind="martini3"))]
 fn cg_forcefield_inspect<'py>(py: Python<'py>, kind: &str) -> PyResult<PyObject> {
     let value = warp_cg::forcefield::bundled_manifest_json(kind)
@@ -1134,6 +1159,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cg_agent_capabilities, m)?)?;
     m.add_function(wrap_pyfunction!(cg_agent_validate, m)?)?;
     m.add_function(wrap_pyfunction!(cg_agent_run, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_backmap_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_backmap_capabilities, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_backmap_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(cg_backmap_run, m)?)?;
     m.add_function(wrap_pyfunction!(cg_forcefield_inspect, m)?)?;
     m.add_function(wrap_pyfunction!(cg_forcefield_install, m)?)?;
     m.add_function(wrap_pyfunction!(cg_build_schema, m)?)?;

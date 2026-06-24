@@ -7,6 +7,9 @@ use warp_structure::io::{read_molecule, read_system_auto, MoleculeData};
 use warp_structure::model::BoxVectors;
 use warp_structure::AtomRecord;
 
+use crate::backmap::{
+    BackmapPlan, BeadSite, BondConstraint, ChiralConstraint, Link, ResidueTemplate,
+};
 use crate::mapping::{map_molecule_with_options, MappingOptions, MappingResult};
 use crate::molecule::Molecule;
 
@@ -42,6 +45,319 @@ pub(super) fn source_residues(atoms: &[AtomRecord]) -> Vec<SourceResidue> {
         residues[residue_idx].atom_indices.push(atom_idx);
     }
     residues
+}
+
+pub(super) fn source_backmap_plan(
+    atoms: &[AtomRecord],
+    residues: &[SourceResidue],
+    atom_groups: &[Vec<usize>],
+    bonds: &[(usize, usize)],
+    mass_weighted: bool,
+) -> Result<BackmapPlan> {
+    let mut atom_residue = BTreeMap::<usize, usize>::new();
+    for (residue_idx, residue) in residues.iter().enumerate() {
+        for &atom_idx in &residue.atom_indices {
+            atom_residue.insert(atom_idx, residue_idx);
+        }
+    }
+    let mut component_adjacency = vec![BTreeSet::new(); residues.len()];
+    let mut mapped_atoms = BTreeSet::new();
+    for (bead_idx, group) in atom_groups.iter().enumerate() {
+        let Some(&first_residue) = group.first().and_then(|idx| atom_residue.get(idx)) else {
+            return Err(anyhow!("backmap bead {bead_idx} has no source atoms"));
+        };
+        for atom_idx in group {
+            if !mapped_atoms.insert(*atom_idx) {
+                return Err(anyhow!(
+                    "backmap mapping is non-invertible: source atom {atom_idx} belongs to multiple beads"
+                ));
+            }
+            let Some(&residue_idx) = atom_residue.get(atom_idx) else {
+                return Err(anyhow!(
+                    "backmap bead {bead_idx} references missing source atom {atom_idx}"
+                ));
+            };
+            if residue_idx != first_residue {
+                component_adjacency[first_residue].insert(residue_idx);
+                component_adjacency[residue_idx].insert(first_residue);
+            }
+        }
+    }
+    let mut component_ids = vec![usize::MAX; residues.len()];
+    let mut component_residues = Vec::<Vec<usize>>::new();
+    for root in 0..residues.len() {
+        if component_ids[root] != usize::MAX {
+            continue;
+        }
+        let component_idx = component_residues.len();
+        let mut members = Vec::new();
+        let mut queue = VecDeque::from([root]);
+        component_ids[root] = component_idx;
+        while let Some(residue_idx) = queue.pop_front() {
+            members.push(residue_idx);
+            for &neighbor in &component_adjacency[residue_idx] {
+                if component_ids[neighbor] == usize::MAX {
+                    component_ids[neighbor] = component_idx;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        members.sort_unstable();
+        component_residues.push(members);
+    }
+    let component_atoms = component_residues
+        .iter()
+        .map(|members| {
+            members
+                .iter()
+                .flat_map(|&residue_idx| residues[residue_idx].atom_indices.iter().copied())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut atom_location = BTreeMap::<usize, (usize, usize)>::new();
+    for (component_idx, component) in component_atoms.iter().enumerate() {
+        for (local_idx, &atom_idx) in component.iter().enumerate() {
+            atom_location.insert(atom_idx, (component_idx, local_idx));
+        }
+    }
+    let mut sites_by_component = vec![Vec::new(); component_atoms.len()];
+    for (bead_idx, group) in atom_groups.iter().enumerate() {
+        let Some(&(component_idx, _)) = group.first().and_then(|idx| atom_location.get(idx)) else {
+            return Err(anyhow!("backmap bead {bead_idx} has no source atoms"));
+        };
+        let local_indices = group
+            .iter()
+            .map(|atom_idx| {
+                atom_location
+                    .get(atom_idx)
+                    .filter(|(group_component, _)| *group_component == component_idx)
+                    .map(|(_, local_idx)| *local_idx)
+                    .ok_or_else(|| anyhow!("backmap bead {bead_idx} has inconsistent atoms"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        sites_by_component[component_idx].push(BeadSite {
+            target_bead_index: bead_idx,
+            atom_indices: local_indices,
+            weights: mass_weighted.then(|| {
+                group
+                    .iter()
+                    .map(|&atom_idx| element_mass(&atoms[atom_idx].element))
+                    .collect()
+            }),
+        });
+    }
+    let templates = component_atoms
+        .iter()
+        .enumerate()
+        .map(|(component_idx, component)| {
+            let internal_bonds = bonds
+                .iter()
+                .filter_map(|&(left, right)| {
+                    let &(left_component, left_local) = atom_location.get(&left)?;
+                    let &(right_component, right_local) = atom_location.get(&right)?;
+                    if left_component != component_idx || right_component != component_idx {
+                        return None;
+                    }
+                    let left_position = atoms[left].position;
+                    let right_position = atoms[right].position;
+                    let dx = f64::from(left_position.x - right_position.x);
+                    let dy = f64::from(left_position.y - right_position.y);
+                    let dz = f64::from(left_position.z - right_position.z);
+                    Some(BondConstraint {
+                        atom_i: left_local,
+                        atom_j: right_local,
+                        target_distance: (dx * dx + dy * dy + dz * dz).sqrt(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut neighbors = vec![Vec::new(); component.len()];
+            for bond in &internal_bonds {
+                neighbors[bond.atom_i].push(bond.atom_j);
+                neighbors[bond.atom_j].push(bond.atom_i);
+            }
+            let reference_coords = component
+                .iter()
+                .map(|&atom_idx| {
+                    let position = atoms[atom_idx].position;
+                    [
+                        f64::from(position.x),
+                        f64::from(position.y),
+                        f64::from(position.z),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let chirality = neighbors
+                .iter()
+                .enumerate()
+                .filter_map(|(center, adjacent)| {
+                    if adjacent.len() < 3 {
+                        return None;
+                    }
+                    let sign = local_signed_volume_sign(
+                        reference_coords[center],
+                        reference_coords[adjacent[0]],
+                        reference_coords[adjacent[1]],
+                        reference_coords[adjacent[2]],
+                    );
+                    (sign != 0).then_some(ChiralConstraint {
+                        center,
+                        neighbor_a: adjacent[0],
+                        neighbor_b: adjacent[1],
+                        neighbor_c: adjacent[2],
+                        reference_sign: sign,
+                    })
+                })
+                .collect();
+            ResidueTemplate {
+                name: component_residues[component_idx]
+                    .iter()
+                    .map(|&residue_idx| {
+                        let residue = &residues[residue_idx];
+                        format!("{}:{}:{}", residue.chain, residue.resid, residue.resname)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("+"),
+                atom_names: component
+                    .iter()
+                    .map(|&atom_idx| source_atom_name(&atoms[atom_idx]))
+                    .collect(),
+                elements: component
+                    .iter()
+                    .map(|&atom_idx| atoms[atom_idx].element.clone())
+                    .collect(),
+                residue_names: component
+                    .iter()
+                    .map(|&atom_idx| atoms[atom_idx].resname.clone())
+                    .collect(),
+                residue_ids: component
+                    .iter()
+                    .map(|&atom_idx| atoms[atom_idx].resid)
+                    .collect(),
+                chains: component
+                    .iter()
+                    .map(|&atom_idx| atoms[atom_idx].chain.to_string())
+                    .collect(),
+                source_atom_indices: component.clone(),
+                reference_coords,
+                bead_sites: sites_by_component[component_idx].clone(),
+                bonds: internal_bonds,
+                chirality,
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut links = Vec::new();
+    for &(left, right) in bonds {
+        let (Some(&(left_residue, left_local)), Some(&(right_residue, right_local))) =
+            (atom_location.get(&left), atom_location.get(&right))
+        else {
+            continue;
+        };
+        if left_residue != right_residue {
+            links.push(Link {
+                from_template: left_residue,
+                from_atom: left_local,
+                to_template: right_residue,
+                to_atom: right_local,
+                target_distance: Some({
+                    let left_position = atoms[left].position;
+                    let right_position = atoms[right].position;
+                    let dx = f64::from(left_position.x - right_position.x);
+                    let dy = f64::from(left_position.y - right_position.y);
+                    let dz = f64::from(left_position.z - right_position.z);
+                    (dx * dx + dy * dy + dz * dz).sqrt()
+                }),
+            });
+        }
+    }
+    links.sort_by_key(|link| {
+        (
+            link.from_template,
+            link.to_template,
+            link.from_atom,
+            link.to_atom,
+        )
+    });
+    links.dedup();
+    let plan = BackmapPlan {
+        templates,
+        links,
+        fudge_factor: 1.0,
+    };
+    let cg_coords = atom_groups
+        .iter()
+        .map(|group| {
+            let mut total = 0.0;
+            let sum = group.iter().fold([0.0; 3], |mut sum, &atom_idx| {
+                let position = atoms[atom_idx].position;
+                let weight = if mass_weighted {
+                    element_mass(&atoms[atom_idx].element)
+                } else {
+                    1.0
+                };
+                sum[0] += f64::from(position.x) * weight;
+                sum[1] += f64::from(position.y) * weight;
+                sum[2] += f64::from(position.z) * weight;
+                total += weight;
+                sum
+            });
+            [sum[0] / total, sum[1] / total, sum[2] / total]
+        })
+        .collect::<Vec<_>>();
+    plan.validate(&cg_coords)
+        .map_err(|err| anyhow!("generated backmap plan is invalid: {err}"))?;
+    Ok(plan)
+}
+
+fn element_mass(element: &str) -> f64 {
+    match element.trim().to_ascii_uppercase().as_str() {
+        "H" => 1.008,
+        "C" => 12.011,
+        "N" => 14.007,
+        "O" => 15.999,
+        "F" => 18.998,
+        "P" => 30.974,
+        "S" => 32.06,
+        "CL" => 35.45,
+        "BR" => 79.904,
+        "I" => 126.904,
+        _ => 1.0,
+    }
+}
+
+fn local_signed_volume_sign(
+    center: [f64; 3],
+    neighbor_a: [f64; 3],
+    neighbor_b: [f64; 3],
+    neighbor_c: [f64; 3],
+) -> i8 {
+    let a = [
+        neighbor_a[0] - center[0],
+        neighbor_a[1] - center[1],
+        neighbor_a[2] - center[2],
+    ];
+    let b = [
+        neighbor_b[0] - center[0],
+        neighbor_b[1] - center[1],
+        neighbor_b[2] - center[2],
+    ];
+    let c = [
+        neighbor_c[0] - center[0],
+        neighbor_c[1] - center[1],
+        neighbor_c[2] - center[2],
+    ];
+    let cross = [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+    let volume = cross[0] * c[0] + cross[1] * c[1] + cross[2] * c[2];
+    if volume > 1.0e-12 {
+        1
+    } else if volume < -1.0e-12 {
+        -1
+    } else {
+        0
+    }
 }
 
 fn source_bead_name(
@@ -132,6 +448,39 @@ pub(super) fn bead_center(atom_indices: &[usize], atoms: &[AtomRecord]) -> [f32;
         center[2] += pos.z;
     }
     [center[0] / count, center[1] / count, center[2] / count]
+}
+
+pub(super) fn source_mapping_mass_weighted(request: &CgRequest) -> bool {
+    request
+        .trajectory_source
+        .as_ref()
+        .and_then(|source| source.mass_weighted)
+        .unwrap_or(false)
+}
+
+pub(super) fn mapped_bead_center(
+    atom_indices: &[usize],
+    atoms: &[AtomRecord],
+    mass_weighted: bool,
+) -> [f32; 3] {
+    if !mass_weighted {
+        return bead_center(atom_indices, atoms);
+    }
+    let mut center = [0.0f64; 3];
+    let mut total = 0.0;
+    for &atom_idx in atom_indices {
+        let weight = element_mass(&atoms[atom_idx].element);
+        let position = atoms[atom_idx].position;
+        center[0] += f64::from(position.x) * weight;
+        center[1] += f64::from(position.y) * weight;
+        center[2] += f64::from(position.z) * weight;
+        total += weight;
+    }
+    [
+        (center[0] / total) as f32,
+        (center[1] / total) as f32,
+        (center[2] / total) as f32,
+    ]
 }
 
 fn source_mapping_mode(request: &CgRequest) -> &str {
@@ -609,7 +958,11 @@ pub(super) fn build_source_mapping(
                     format!("T{}", local_bead_idx + 1)
                 };
             }
-            let coord = bead_center(group, &molecule.atoms);
+            let coord = mapped_bead_center(
+                group,
+                &molecule.atoms,
+                source_mapping_mass_weighted(request),
+            );
             bead_names.push(bead_name.clone());
             atom_groups.push(group.clone());
             residue_beads.push(global_bead_idx);
@@ -686,6 +1039,13 @@ pub(super) fn build_source_mapping(
     );
 
     Ok(SourceMappingResult {
+        backmap_plan: Some(source_backmap_plan(
+            &molecule.atoms,
+            &residues,
+            &atom_groups,
+            &molecule.bonds,
+            source_mapping_mass_weighted(request),
+        )?),
         mapping: MappingResult {
             bead_names,
             atom_groups,

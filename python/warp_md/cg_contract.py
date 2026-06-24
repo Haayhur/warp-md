@@ -83,6 +83,23 @@ def _native_forcefield() -> Any:
     return native
 
 
+def _native_backmap() -> Any:
+    native = _native()
+    required = (
+        "cg_backmap_schema",
+        "cg_backmap_capabilities",
+        "cg_backmap_validate",
+        "cg_backmap_run",
+    )
+    missing = [name for name in required if not hasattr(native, name)]
+    if missing:
+        raise RuntimeError(
+            "warp-md backmapping bindings unavailable in this build. Missing: "
+            + ", ".join(missing)
+        )
+    return native
+
+
 def _render_payload(payload: Dict[str, Any], fmt: str) -> str:
     if fmt == "json":
         return json.dumps(payload, indent=2)
@@ -240,6 +257,34 @@ def cg_forcefield_install(
     return payload
 
 
+def render_cg_backmap_schema(target: str = "request", fmt: str = "json") -> str:
+    payload = _native_backmap().cg_backmap_schema(target)
+    return _render_payload(payload, fmt)
+
+
+def cg_backmap_capabilities() -> Dict[str, Any]:
+    payload = _native_backmap().cg_backmap_capabilities()
+    if not isinstance(payload, dict):
+        raise RuntimeError("native backmap capabilities must decode to a dict")
+    return payload
+
+
+def validate_backmap_request_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    exit_code, result = _native_backmap().cg_backmap_validate(json.dumps(payload))
+    if not isinstance(result, dict):
+        raise RuntimeError("native backmap validation must decode to a dict")
+    if exit_code and result.get("valid") is True:
+        raise RuntimeError("native backmap validation returned inconsistent result")
+    return result
+
+
+def run_cg_backmap_request(payload: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    exit_code, result = _native_backmap().cg_backmap_run(json.dumps(payload))
+    if not isinstance(result, dict):
+        raise RuntimeError("native backmap result must decode to a dict")
+    return int(exit_code), result
+
+
 __all__ = [
     "CG_AGENT_SCHEMA_VERSION",
     "CG_AGENT_RESULT_VERSION",
@@ -248,6 +293,10 @@ __all__ = [
     "cg_capabilities",
     "validate_request_payload",
     "run_cg_request",
+    "render_cg_backmap_schema",
+    "cg_backmap_capabilities",
+    "validate_backmap_request_payload",
+    "run_cg_backmap_request",
     "render_cg_build_schema",
     "build_example_request",
     "cg_build_capabilities",

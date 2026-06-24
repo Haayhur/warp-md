@@ -12,10 +12,10 @@ use super::agent_bonded_classing::resolve_bonded_classing;
 use super::agent_source_bonded_terms::template_bonded_term_set;
 use super::agent_source_mapping::{
     append_bead_count_mismatch_warnings, append_chemistry_hint_warnings, apply_source_selection,
-    atom_group_is_connected, atom_name_bonds_for_group, bead_center, load_mapping_template,
+    atom_group_is_connected, atom_name_bonds_for_group, load_mapping_template, mapped_bead_center,
     read_source_box_vectors, residue_role, resolve_bonds, source_atom_element, source_atom_name,
-    source_connections_from_mapping, source_mapping_provenance, source_mapping_template_ref,
-    source_residues, template_policy,
+    source_backmap_plan, source_connections_from_mapping, source_mapping_mass_weighted,
+    source_mapping_provenance, source_mapping_template_ref, source_residues, template_policy,
 };
 use super::{
     CgRequest, SourceBeadClassContext, SourceBeadRecord, SourceHandoff, SourceMappingResult,
@@ -224,7 +224,11 @@ pub(super) fn build_template_source_mapping(
                 )?;
             }
             let global_bead_idx = bead_names.len();
-            let coord = bead_center(&group, &molecule.atoms);
+            let coord = mapped_bead_center(
+                &group,
+                &molecule.atoms,
+                source_mapping_mass_weighted(request),
+            );
             bead_names.push(bead_name.clone());
             atom_groups.push(group.clone());
             residue_bead_indices.push(global_bead_idx);
@@ -361,6 +365,13 @@ pub(super) fn build_template_source_mapping(
     let warning_count = warnings.len();
 
     Ok(SourceMappingResult {
+        backmap_plan: Some(source_backmap_plan(
+            &molecule.atoms,
+            &residues,
+            &atom_groups,
+            &molecule.bonds,
+            source_mapping_mass_weighted(request),
+        )?),
         mapping: MappingResult {
             bead_names,
             atom_groups,

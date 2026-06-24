@@ -8,8 +8,8 @@ use crate::gromacs_ndx::read_gromacs_ndx_mapping;
 use crate::mapping::MappingResult;
 
 use super::agent_source_mapping::{
-    bead_center, residue_role_for_policy, source_atom_name, source_mapping_provenance,
-    source_polymer_enabled,
+    mapped_bead_center, residue_role_for_policy, source_atom_name, source_backmap_plan,
+    source_mapping_mass_weighted, source_mapping_provenance, source_polymer_enabled,
 };
 use super::{CgRequest, SourceBeadRecord, SourceHandoff, SourceMappingResult, SourceResidue};
 
@@ -75,7 +75,11 @@ pub(super) fn build_ndx_source_mapping(
                 .iter()
                 .map(|idx| source_atom_name(&molecule.atoms[*idx]))
                 .collect(),
-            coord: bead_center(group, &molecule.atoms),
+            coord: mapped_bead_center(
+                group,
+                &molecule.atoms,
+                source_mapping_mass_weighted(request),
+            ),
         });
     }
 
@@ -133,6 +137,14 @@ pub(super) fn build_ndx_source_mapping(
     );
 
     Ok(SourceMappingResult {
+        backmap_plan: source_backmap_plan(
+            &molecule.atoms,
+            residues,
+            &ndx_mapping.atom_indices,
+            &molecule.bonds,
+            source_mapping_mass_weighted(request),
+        )
+        .ok(),
         mapping: MappingResult {
             bead_names: ndx_mapping.bead_names,
             atom_groups: ndx_mapping.atom_indices,

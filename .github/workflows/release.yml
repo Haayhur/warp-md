@@ -72,6 +72,9 @@ jobs:
           python -m pip install maturin==1.13.1
           python -m pip install pytest
 
+      - name: Run warp-cg production tests
+        run: cargo test -p warp-cg
+
       - name: Build CPU wheels (manylinux2014)
         uses: PyO3/maturin-action@v1
         env:
@@ -113,7 +116,7 @@ jobs:
             EOF
             chmod +x "$CMAKE_PATH"
 
-      - name: Install CPU wheel and run pack export tests
+      - name: Install CPU wheel and run release-critical tests
         run: |
           WHEEL=$(python - <<'PY'
           import glob
@@ -127,7 +130,9 @@ jobs:
           PY
           )
           python -m pip install "$WHEEL"
-          python -m pytest python/warp_md/tests/test_pack.py
+          python -m pytest \
+            python/warp_md/tests/test_pack.py \
+            python/warp_md/tests/test_cg_cli.py
 
       - name: Build CPU sdist
         run: maturin sdist --out target/wheels
@@ -413,7 +418,7 @@ jobs:
           name: cuda-wheels
           path: target/wheels
 
-      - name: Install CUDA wheel and run pack export tests
+      - name: Install CUDA wheel and run release-critical tests
         run: |
           python -m pip install --upgrade pip
           python -m pip install pytest
@@ -429,7 +434,9 @@ jobs:
           PY
           )
           python -m pip install "$WHEEL"
-          python -m pytest python/warp_md/tests/test_pack.py
+          python -m pytest \
+            python/warp_md/tests/test_pack.py \
+            python/warp_md/tests/test_cg_cli.py
 
       - name: Publish CUDA package to PyPI (warp-md-cuda)
         uses: pypa/gh-action-pypi-publish@release/v1

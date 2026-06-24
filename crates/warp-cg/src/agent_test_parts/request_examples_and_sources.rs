@@ -121,6 +121,7 @@ fn downstream_setup_artifacts_include_pdb_itp_top_and_parameter_map() {
     assert!(artifact_kinds.contains(&"martini_topology_itp"));
     assert!(artifact_kinds.contains(&"martini_topology_top"));
     assert!(artifact_kinds.contains(&"bonded_parameter_map_json"));
+    assert!(artifact_kinds.contains(&"backmap_plan_json"));
     assert!(tmp.path().join("benzene_cg.pdb").exists());
     assert!(tmp.path().join("benzene_martini.itp").exists());
     assert!(tmp.path().join("benzene_martini.top").exists());
@@ -128,6 +129,7 @@ fn downstream_setup_artifacts_include_pdb_itp_top_and_parameter_map() {
         .path()
         .join("benzene_bonded_parameter_map.json")
         .exists());
+    assert!(tmp.path().join("benzene_backmap_plan.json").exists());
 }
 
 #[test]
@@ -377,6 +379,38 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
     assert!(artifact_kinds.contains(&"martini_topology_top"));
     assert!(artifact_kinds.contains(&"bonded_parameter_map_json"));
     assert!(artifact_kinds.contains(&"mapping_template_json"));
+    assert!(artifact_kinds.contains(&"backmap_plan_json"));
+
+    let mapping: Value = serde_json::from_slice(
+        &std::fs::read(tmp.path().join("paa_source_martini_mapping.json")).unwrap(),
+    )
+    .unwrap();
+    let backmap_artifact: Value = serde_json::from_slice(
+        &std::fs::read(tmp.path().join("paa_source_backmap_plan.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        backmap_artifact["schema_version"],
+        "warp-cg.backmap-plan.v1"
+    );
+    let backmap_plan: crate::backmap::BackmapPlan =
+        serde_json::from_value(backmap_artifact["plan"].clone()).unwrap();
+    let cg_coords = backmap_plan
+        .templates
+        .iter()
+        .flat_map(|template| template.bead_sites.iter())
+        .map(|site| {
+            let mapping_bead = &mapping["beads"][site.target_bead_index];
+            [
+                mapping_bead["coord"][0].as_f64().unwrap(),
+                mapping_bead["coord"][1].as_f64().unwrap(),
+                mapping_bead["coord"][2].as_f64().unwrap(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let rebuilt = backmap_plan.execute(&cg_coords).unwrap();
+    assert_eq!(rebuilt.len(), 6);
+    assert!(rebuilt.iter().flatten().all(|value| value.is_finite()));
 
     let pdb = std::fs::read_to_string(tmp.path().join("paa_source_cg.pdb")).unwrap();
     assert_eq!(pdb.matches("\nTER").count(), 0);
@@ -401,10 +435,6 @@ fn coordinates_topology_source_runs_residue_mapping_without_smiles() {
     assert_eq!(first_atom[5], "1");
     assert_eq!(first_atom[6].parse::<f64>().unwrap(), 0.0);
 
-    let mapping: Value = serde_json::from_slice(
-        &std::fs::read(tmp.path().join("paa_source_martini_mapping.json")).unwrap(),
-    )
-    .unwrap();
     assert_eq!(mapping["kind"], "martini_source_residue_mapping");
     assert_eq!(mapping["beads"][0]["bead_type"], "SC2");
     assert_eq!(

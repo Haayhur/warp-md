@@ -1,4 +1,8 @@
 pub mod agent;
+pub mod backmap;
+pub mod backmap_contract;
+mod backmap_contract_io;
+mod backmap_geometry;
 pub mod bonded_terms;
 pub mod build_box;
 pub mod build_contract;

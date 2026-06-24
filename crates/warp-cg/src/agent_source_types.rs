@@ -1,3 +1,4 @@
+use crate::backmap::BackmapPlan;
 use crate::bonded_terms::BondedTermSet;
 use crate::mapping::MappingResult;
 use serde_json::Value;
@@ -37,6 +38,7 @@ pub(super) struct SourceBeadRecord {
 
 pub(super) struct SourceMappingResult {
     pub(super) mapping: MappingResult,
+    pub(super) backmap_plan: Option<BackmapPlan>,
     pub(super) bonded_terms: Option<BondedTermSet>,
     pub(super) beads: Vec<SourceBeadRecord>,
     pub(super) residue_count: usize,

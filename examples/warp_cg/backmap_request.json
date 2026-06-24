@@ -1,0 +1,27 @@
+{
+  "schema_version": "warp-cg.backmap.v1",
+  "plan_path": "outputs/model_backmap_plan.json",
+  "trajectory_path": "outputs/model_cg.xtc",
+  "chunk_frames": 64,
+  "include_coordinates": false,
+  "make_whole": true,
+  "box_vectors": [
+    [10.0, 0.0, 0.0],
+    [0.0, 10.0, 0.0],
+    [0.0, 0.0, 10.0]
+  ],
+  "quality": {
+    "max_bead_error": 0.00001,
+    "max_link_bond_error": 0.25,
+    "max_internal_bond_error": 0.000001,
+    "max_chirality_inversions": 0,
+    "max_steric_clashes": 0,
+    "on_violation": "error"
+  },
+  "output": {
+    "out_dir": "outputs/backmapped",
+    "prefix": "model_aa",
+    "formats": ["pdb", "xtc", "json"],
+    "minimization_handoff": true
+  }
+}

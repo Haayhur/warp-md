@@ -5,9 +5,12 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use petgraph::visit::EdgeRef;
+use sci_form::embed;
 use serde_json::json;
 use traj_core::{minimum_image_vector, Box3};
-use warp_structure::model::BoxVectors;
+use warp_structure::model::{AtomRecord, AtomRecordKind, BoxVectors};
+use warp_structure::Vec3;
 
 use crate::bonded_terms::BondedTermSet;
 use crate::mapping::{map_molecule_with_options, MappingOptions};
@@ -32,7 +35,7 @@ use super::agent_runtime::{
     native_options, normalized_trajectory_source, resolve_output_path, run_optimization,
     source_native_options, xtb_run_config,
 };
-use super::agent_source_mapping::build_source_mapping;
+use super::agent_source_mapping::{build_source_mapping, source_backmap_plan, source_residues};
 use super::agent_source_validation::{default_target_terms, resolve_source_handoff};
 use super::{
     active_tuning_request, artifact_paths, input_mode, mapping_mode, CgArtifact, CgRequest,
@@ -79,6 +82,7 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
     let mut reference_result = None;
     let mut reference_metrics = BTreeMap::new();
     let mut reference_frames_read = None;
+    let mut backmap_reference_coords = None;
     let bead_mapping = BeadMapping {
         bead_names: mapping.bead_names.clone(),
         atom_indices: mapping.atom_groups.clone(),
@@ -92,6 +96,11 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
     )? {
         append_reference_artifacts(&mut artifacts, &reference_data);
         reference_result = Some(reference_result_from_data(&reference_data));
+        backmap_reference_coords = reference_data
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == "xtb_optimized_xyz")
+            .and_then(|artifact| read_xyz_coords(&artifact.path).ok());
         bond_stats = reference_data.bonded_stats.bonds;
         angle_stats = reference_data.bonded_stats.angles;
         dihedral_stats = reference_data.bonded_stats.dihedrals;
@@ -99,6 +108,25 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
         reference_frames_read = nonzero_frames_read(reference_data.metadata.frames_read);
         first_cg_coords = reference_data.first_cg_coords;
         reference_targets = reference_data.target_set;
+    }
+
+    if request.output.write_mapping_json {
+        if let Some(plan) = small_molecule_backmap_plan(
+            molecule_identity,
+            &mol,
+            &mapping.atom_groups,
+            backmap_reference_coords.as_deref(),
+        )? {
+            let backmap_path = out_dir.join(format!("{}_backmap_plan.json", request.name));
+            std::fs::write(
+                &backmap_path,
+                serde_json::to_vec_pretty(&crate::backmap::BackmapArtifact::new(plan))?,
+            )?;
+            artifacts.push(CgArtifact {
+                path: backmap_path.to_string_lossy().to_string(),
+                kind: "backmap_plan_json".to_string(),
+            });
+        }
     }
 
     let active_tuning = active_tuning_request(request);
@@ -173,6 +201,91 @@ pub(super) fn run_request(request: &CgRequest, started: Instant) -> Result<CgRes
         optimization: optimization_result,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+fn small_molecule_backmap_plan(
+    smiles: &str,
+    molecule: &Molecule,
+    atom_groups: &[Vec<usize>],
+    preferred_coords: Option<&[[f64; 3]]>,
+) -> Result<Option<crate::backmap::BackmapPlan>> {
+    let embedded;
+    let coords = if let Some(coords) = preferred_coords {
+        coords
+    } else {
+        embedded = {
+            let conformer = embed(smiles, 42);
+            if conformer.coords.len() != conformer.num_atoms * 3 {
+                return Ok(None);
+            }
+            conformer
+                .coords
+                .chunks_exact(3)
+                .map(|coord| [coord[0], coord[1], coord[2]])
+                .collect::<Vec<_>>()
+        };
+        &embedded
+    };
+    if coords.len() != molecule.graph.node_count() {
+        return Ok(None);
+    }
+    let atoms = molecule
+        .graph
+        .node_indices()
+        .map(|idx| {
+            let atom = &molecule.graph[idx];
+            let coord = coords[idx.index()];
+            AtomRecord {
+                record_kind: AtomRecordKind::HetAtom,
+                name: format!("{}{}", atom.symbol, idx.index() + 1),
+                element: atom.symbol.clone(),
+                resname: "MOL".to_string(),
+                resid: 1,
+                chain: 'A',
+                segid: String::new(),
+                charge: atom.formal_charge as f32,
+                position: Vec3::new(coord[0] as f32, coord[1] as f32, coord[2] as f32),
+                mol_id: 1,
+                pdb_metadata: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let bonds = molecule
+        .graph
+        .edge_references()
+        .map(|edge| (edge.source().index(), edge.target().index()))
+        .collect::<Vec<_>>();
+    let residues = source_residues(&atoms);
+    source_backmap_plan(&atoms, &residues, atom_groups, &bonds, false).map(Some)
+}
+
+fn read_xyz_coords(path: &Path) -> Result<Vec<[f64; 3]>> {
+    let text = std::fs::read_to_string(path)?;
+    let mut lines = text.lines();
+    let count = lines
+        .next()
+        .ok_or_else(|| anyhow!("XYZ missing atom count"))?
+        .trim()
+        .parse::<usize>()?;
+    let _comment = lines.next();
+    let coords = lines
+        .take(count)
+        .map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 4 {
+                return Err(anyhow!("invalid XYZ atom line"));
+            }
+            Ok([
+                fields[1].parse::<f64>()?,
+                fields[2].parse::<f64>()?,
+                fields[3].parse::<f64>()?,
+            ])
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if coords.len() != count {
+        return Err(anyhow!("XYZ atom count mismatch"));
+    }
+    Ok(coords)
 }
 
 fn small_molecule_mapping_options(request: &CgRequest) -> MappingOptions {
@@ -461,6 +574,19 @@ fn run_source_request(request: &CgRequest, started: Instant) -> Result<CgResult>
             path: template_path.to_string_lossy().to_string(),
             kind: "mapping_template_json".to_string(),
         });
+        if let Some(backmap_plan) = &source_mapping.backmap_plan {
+            let backmap_path = out_dir.join(format!("{}_backmap_plan.json", request.name));
+            std::fs::write(
+                &backmap_path,
+                serde_json::to_vec_pretty(&crate::backmap::BackmapArtifact::new(
+                    backmap_plan.clone(),
+                ))?,
+            )?;
+            artifacts.push(CgArtifact {
+                path: backmap_path.to_string_lossy().to_string(),
+                kind: "backmap_plan_json".to_string(),
+            });
+        }
     }
 
     let mut bond_stats: Vec<BondStats> = Vec::new();

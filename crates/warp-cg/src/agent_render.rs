@@ -91,6 +91,13 @@ pub(super) fn source_mapping_json(
         "aa_atom_count": source_mapping.aa_atom_count,
         "mapped_residue_count": source_mapping.residue_count,
         "bead_count": source_mapping.mapping.bead_names.len(),
+        "backmapping": {
+            "available": source_mapping.backmap_plan.is_some(),
+            "artifact_kind": source_mapping.backmap_plan.as_ref().map(|_| "backmap_plan_json"),
+            "unavailable_reason": source_mapping.backmap_plan.is_none().then_some(
+                "forward mapping contains overlapping atom groups and does not define a unique inverse"
+            )
+        },
         "beads": source_mapping.beads.iter().map(|bead| {
             json!({
                 "index": bead.index,

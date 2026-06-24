@@ -15,6 +15,7 @@ These files are machine-readable request templates for `warp-cg run <request.jso
 - `solvated_external_bo_request.json`: map a target molecule from a solvated external trajectory, write CG coordinate/topology artifacts, and tune bonded parameters with native Bayesian optimization.
 - `xtb_pso_request.json`: initiate an xTB reference workflow from SMILES, map the resulting reference, write CG coordinate/topology artifacts, and tune bonded parameters with PSO.
 - `simulation_fit_bo_request.json`: precomputed reference targets plus the managed Martini/OpenMM runner; use this for BO over real candidate CG simulations. Change `optimization.method` to `pso` and set `swarm_size` for the same loop with PSO.
+- `backmap_request.json`: bounded-memory CG trajectory to AA reconstruction using a generated `warp-cg.backmap-plan.v1` artifact, strict scientific quality gates, XTC/PDB/JSON output, and minimization handoff.
 
 Paths are placeholders. Replace topology, trajectory, and output directories with real project paths before running.
 

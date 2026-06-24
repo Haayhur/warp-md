@@ -62,6 +62,43 @@ def test_cg_cli_forcefield_inspect(monkeypatch, capsys) -> None:
     assert "martini_v3.0.0.itp" in output
 
 
+def test_cg_cli_backmap_run(monkeypatch, capsys, tmp_path: Path) -> None:
+    request = tmp_path / "backmap.json"
+    request.write_text(
+        json.dumps({"schema_version": "warp-cg.backmap.v1", "frames": [[[0, 0, 0]]]}),
+        encoding="utf-8",
+    )
+
+    def fake_run(_payload: dict) -> tuple[int, dict]:
+        return 0, {
+            "schema_version": "warp-cg.backmap-result.v1",
+            "status": "completed",
+            "frame_count": 1,
+            "atom_count": 2,
+        }
+
+    monkeypatch.setattr(cg_cli, "run_cg_backmap_request", fake_run)
+    assert cg_cli.run_cli(["backmap", "run", str(request)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "completed"
+    assert payload["atom_count"] == 2
+
+
+def test_cg_cli_backmap_capabilities(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cg_cli,
+        "cg_backmap_capabilities",
+        lambda: {
+            "tool": "warp-cg backmap",
+            "outputs": ["json", "pdb", "gro", "xtc", "dcd"],
+        },
+    )
+    assert cg_cli.run_cli(["backmap", "capabilities"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["tool"] == "warp-cg backmap"
+    assert "xtc" in payload["outputs"]
+
+
 def test_cg_contract_native_forcefield_install_writes_bundled_files(tmp_path: Path) -> None:
     if cg_contract.traj_py is None:
         pytest.skip("native warp-md bindings unavailable")
@@ -254,6 +291,7 @@ def test_cg_contract_native_run_writes_mapping_and_itp(tmp_path: Path) -> None:
     assert result["bead_count"] == 3
     artifact_kinds = {artifact["kind"] for artifact in result["artifacts"]}
     assert "martini_mapping_json" in artifact_kinds
+    assert "backmap_plan_json" in artifact_kinds
     assert "martini_topology_itp" in artifact_kinds
     assert "martini_topology_top" in artifact_kinds
 
@@ -266,6 +304,63 @@ def test_cg_contract_native_capabilities_report_bonded_terms() -> None:
 
     assert capabilities["optimization"]["methods"] == ["bayesian_optimization", "pso"]
     assert capabilities["optimization"]["terms"] == ["bonds", "angles", "dihedrals"]
+
+
+def test_cg_contract_native_backmap_agent_roundtrip(tmp_path: Path) -> None:
+    if cg_contract.traj_py is None:
+        pytest.skip("native warp-md bindings unavailable")
+
+    plan = {
+        "schema_version": "warp-cg.backmap-plan.v1",
+        "plan": {
+            "templates": [
+                {
+                    "name": "MOL",
+                    "atom_names": ["A", "B"],
+                    "elements": ["C", "C"],
+                    "residue_names": ["MOL", "MOL"],
+                    "residue_ids": [1, 1],
+                    "chains": ["A", "A"],
+                    "source_atom_indices": [0, 1],
+                    "reference_coords": [[-1, 0, 0], [1, 0, 0]],
+                    "bead_sites": [
+                        {
+                            "target_bead_index": 0,
+                            "atom_indices": [0, 1],
+                        }
+                    ],
+                    "bonds": [
+                        {"atom_i": 0, "atom_j": 1, "target_distance": 2.0}
+                    ],
+                    "chirality": [],
+                }
+            ],
+            "links": [],
+            "fudge_factor": 1.0,
+        },
+    }
+    request = {
+        "schema_version": "warp-cg.backmap.v1",
+        "plan": plan,
+        "frames": [[[5.0, 6.0, 7.0]]],
+        "output": {
+            "out_dir": str(tmp_path),
+            "prefix": "aa",
+            "formats": ["pdb", "gro", "json"],
+            "minimization_handoff": True,
+        },
+    }
+
+    validation = cg_contract.validate_backmap_request_payload(request)
+    assert validation["valid"] is True
+    exit_code, result = cg_contract.run_cg_backmap_request(request)
+    assert exit_code == 0
+    assert result["status"] == "completed"
+    assert result["diagnostics"][0]["mapped_bead_max_error"] < 1.0e-12
+    assert result["diagnostics"][0]["internal_bond_max_error"] < 1.0e-12
+    assert (tmp_path / "aa.pdb").is_file()
+    assert (tmp_path / "aa.gro").is_file()
+    assert (tmp_path / "aa_minimization_handoff.json").is_file()
 
 
 def test_cg_cli_build_capabilities_exposes_biomolecular_surface(capsys) -> None:

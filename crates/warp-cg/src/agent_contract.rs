@@ -558,6 +558,7 @@ pub fn capabilities() -> Value {
             },
             "implemented_outputs": [
                 "mapping_template_json",
+                "backmap_plan_json",
                 "repeat_unit_bead_template",
                 "head_middle_tail_bead_templates",
                 "residue_to_bead_map",
@@ -588,6 +589,7 @@ pub fn capabilities() -> Value {
         "outputs": [
             "martini_bead_mapping_json",
             "mapping_template_json",
+            "backmap_plan_json",
             "coarse_grained_pdb",
             "optional_coarse_grained_trajectory_xtc_dcd_gro_g96_cpt_trr_h5md",
             "reference_targets_json",
@@ -600,6 +602,7 @@ pub fn capabilities() -> Value {
             "martini_topology_itp",
             "martini_topology_top"
         ],
-        "force_field": "Martini 3 coarse-grained bead assignment"
+        "force_field": "Martini 3 coarse-grained bead assignment",
+        "backmapping": crate::backmap_contract::capabilities()
     })
 }

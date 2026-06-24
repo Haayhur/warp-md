@@ -654,7 +654,7 @@ fn map_frame(
         .collect()
 }
 
-fn open_reader(
+pub(crate) fn open_reader(
     path: &Path,
     format: Option<&str>,
     length_scale: Option<f32>,
